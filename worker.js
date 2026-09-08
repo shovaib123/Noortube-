@@ -216,6 +216,15 @@ async function handleRequest(request, env) {
       ).bind(u.id).all();
       return json({ videos: rows.results.map(videoOut) });
     }
+    if (method === "GET" && path === "/api/me/votes") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      const vRows = await db.prepare("SELECT video_id, value FROM video_likes WHERE user_id = ?").bind(u.id).all();
+      const rRows = await db.prepare("SELECT reel_id FROM reel_likes WHERE user_id = ?").bind(u.id).all();
+      const videoVotes = {};
+      for (const row of vRows.results) videoVotes[row.video_id] = row.value;
+      return json({ videoVotes, reelLikes: rRows.results.map(row => row.reel_id) });
+    }
     if (method === "GET" && path === "/api/me/watch-history") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
