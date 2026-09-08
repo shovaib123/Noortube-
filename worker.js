@@ -81,6 +81,7 @@ function reelOut(r) {
     id: r.id, ownerId: r.owner_id, title: r.title, tags: JSON.parse(r.tags || "[]"), fileUrl: r.file_url,
     thumbnail: r.thumbnail, trimStart: r.trim_start, trimEnd: r.trim_end, views: r.views, likes: r.likes,
     uploadedAt: r.uploaded_at, channel: r.owner_name, channelAvatar: r.owner_avatar_color, commentCount: r.comment_count || 0,
+    mixCategory: r.mix_category || null,
   };
 }
 function statusOut(s) {
@@ -435,8 +436,8 @@ async function handleRequest(request, env) {
       const b = await request.json().catch(() => ({}));
       if (!b.title) return err("Title is required");
       const id = uid("r");
-      await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end) VALUES (?,?,?,?,?,?,?,?)")
-        .bind(id, u.id, b.title, JSON.stringify(b.tags || []), b.fileUrl || null, b.thumbnail || null, b.trimStart ?? null, b.trimEnd ?? null).run();
+      await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end, mix_category) VALUES (?,?,?,?,?,?,?,?,?)")
+        .bind(id, u.id, b.title, JSON.stringify(b.tags || []), b.fileUrl || null, b.thumbnail || null, b.trimStart ?? null, b.trimEnd ?? null, b.mixCategory || null).run();
       return json({ ok: true, id });
     }
     if (method === "DELETE" && (m = path.match(/^\/api\/reels\/([^/]+)$/))) {
