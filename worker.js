@@ -14,7 +14,7 @@ function cors() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Upload-Secret, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, X-Upload-Secret, Authorization, X-Anon-Id",
   };
 }
 function json(data, status = 200) {
@@ -55,6 +55,27 @@ async function currentUser(request, env) {
     "SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token = ?"
   ).bind(token).first();
   return row || null;
+}
+async function currentUserOrGuest(request, env) {
+  const real = await currentUser(request, env);
+  if (real) return real;
+  const anonId = (request.headers.get("X-Anon-Id") || "").trim();
+  if (!anonId || anonId.length < 8 || anonId.length > 128) return null;
+  const db = env.NOOR_DB;
+  const existing = await db.prepare(
+    "SELECT users.* FROM anon_sessions JOIN users ON users.id = anon_sessions.user_id WHERE anon_sessions.anon_id = ?"
+  ).bind(anonId).first();
+  if (existing) return existing;
+  const id = uid("guest");
+  const email = `${anonId}@guest.noortube.local`;
+  const guestNum = 1000 + (Math.abs(anonId.split("").reduce((a, c) => a * 31 + c.charCodeAt(0), 7)) % 9000);
+  const guestName = `Guest ${guestNum}`;
+  const { hash, salt } = await hashPassword(crypto.randomUUID());
+  await db.prepare(
+    "INSERT INTO users (id, name, email, password_hash, password_salt, role) VALUES (?,?,?,?,?,'guest')"
+  ).bind(id, guestName, email, hash, salt).run();
+  await db.prepare("INSERT INTO anon_sessions (anon_id, user_id) VALUES (?, ?)").bind(anonId, id).run();
+  return { id, name: guestName, email, avatar_color: "#0d9488", avatar_image: null, role: "guest", suspended: 0, strikes: 0 };
 }
 function publicUser(u) {
   if (!u) return null;
@@ -300,8 +321,36 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/admin/users") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      const rows = await db.prepare("SELECT * FROM users ORDER BY created_at DESC").all();
+      const rows = await db.prepare("SELECT * FROM users WHERE role != 'guest' ORDER BY created_at DESC").all();
       return json({ users: rows.results.map(publicUser) });
+    }
+    if (method === "POST" && path === "/api/feedback") {
+      const u = await currentUser(request, env);
+      const b = await request.json().catch(() => ({}));
+      if (!b.message || !b.message.trim()) return err("Message is required");
+      const id = uid("fb");
+      await db.prepare("INSERT INTO feedback (id, user_id, name, email, message) VALUES (?,?,?,?,?)")
+        .bind(id, u ? u.id : null, b.name || (u ? u.name : null) || null, b.email || (u ? u.email : null) || null, b.message.trim()).run();
+      return json({ ok: true });
+    }
+    if (method === "GET" && path === "/api/admin/feedback") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const rows = await db.prepare("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 200").all();
+      return json({ feedback: rows.results.map(f => ({ id: f.id, userId: f.user_id, name: f.name, email: f.email, message: f.message, reply: f.reply, repliedAt: f.replied_at, createdAt: f.created_at })) });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/feedback\/([^/]+)\/reply$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const { reply } = await request.json().catch(() => ({}));
+      if (!reply || !reply.trim()) return err("Reply message is required");
+      const fbRow = await db.prepare("SELECT * FROM feedback WHERE id = ?").bind(m[1]).first();
+      if (!fbRow) return err("Feedback not found", 404);
+      await db.prepare("UPDATE feedback SET reply = ?, replied_at = datetime('now') WHERE id = ?").bind(reply.trim(), m[1]).run();
+      if (fbRow.user_id) {
+        await addNotification(db, fbRow.user_id, "info", "Reply to your feedback", reply.trim());
+      }
+      return json({ ok: true });
     }
 
     // ---------- VIDEOS ----------
@@ -372,7 +421,7 @@ async function handleRequest(request, env) {
       return json({ ok: true });
     }
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/like$/))) {
-      const u = await currentUser(request, env);
+      const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { value } = await request.json().catch(() => ({ value: 1 })); // 1 = like, -1 = dislike
       const existing = await db.prepare("SELECT value FROM video_likes WHERE user_id = ? AND video_id = ?").bind(u.id, m[1]).first();
@@ -413,7 +462,7 @@ async function handleRequest(request, env) {
       return json({ comments: rows.results.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/comments$/))) {
-      const u = await currentUser(request, env);
+      const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { text } = await request.json().catch(() => ({}));
       if (!text || !text.trim()) return err("Comment text is required");
@@ -454,7 +503,7 @@ async function handleRequest(request, env) {
       return json({ ok: true });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/like$/))) {
-      const u = await currentUser(request, env);
+      const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const existing = await db.prepare("SELECT 1 FROM reel_likes WHERE user_id = ? AND reel_id = ?").bind(u.id, m[1]).first();
       if (existing) {
@@ -474,7 +523,7 @@ async function handleRequest(request, env) {
       return json({ comments: rows.results.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/comments$/))) {
-      const u = await currentUser(request, env);
+      const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { text } = await request.json().catch(() => ({}));
       if (!text || !text.trim()) return err("Comment text is required");
