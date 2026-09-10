@@ -56,6 +56,13 @@ async function currentUser(request, env) {
   ).bind(token).first();
   return row || null;
 }
+async function lookupGuestIfExists(request, env) {
+  const anonId = (request.headers.get("X-Anon-Id") || "").trim();
+  if (!anonId) return null;
+  return await env.NOOR_DB.prepare(
+    "SELECT users.* FROM anon_sessions JOIN users ON users.id = anon_sessions.user_id WHERE anon_sessions.anon_id = ?"
+  ).bind(anonId).first();
+}
 async function currentUserOrGuest(request, env) {
   const real = await currentUser(request, env);
   if (real) return real;
@@ -239,8 +246,8 @@ async function handleRequest(request, env) {
       return json({ videos: rows.results.map(videoOut) });
     }
     if (method === "GET" && path === "/api/me/votes") {
-      const u = await currentUser(request, env);
-      if (!u) return err("Not signed in", 401);
+      const u = (await currentUser(request, env)) || (await lookupGuestIfExists(request, env));
+      if (!u) return json({ videoVotes: {}, reelLikes: [] });
       const vRows = await db.prepare("SELECT video_id, value FROM video_likes WHERE user_id = ?").bind(u.id).all();
       const rRows = await db.prepare("SELECT reel_id FROM reel_likes WHERE user_id = ?").bind(u.id).all();
       const videoVotes = {};
