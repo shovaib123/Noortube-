@@ -311,6 +311,24 @@ async function handleRequest(request, env) {
       else await db.prepare("INSERT INTO follows (follower_id, followee_id) VALUES (?, ?)").bind(u.id, targetId).run();
       return json({ ok: true, following: !existing });
     }
+    if (method === "GET" && (m = path.match(/^\/api\/follow-status\/([^/]+)$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return json({ following: false, bell: false });
+      const row = await db.prepare("SELECT bell FROM follows WHERE follower_id = ? AND followee_id = ?").bind(u.id, m[1]).first();
+      return json({ following: !!row, bell: !!(row && row.bell) });
+    }
+    if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)\/my-vote$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return json({ value: null });
+      const row = await db.prepare("SELECT value FROM video_likes WHERE user_id = ? AND video_id = ?").bind(u.id, m[1]).first();
+      return json({ value: row ? row.value : null });
+    }
+    if (method === "GET" && (m = path.match(/^\/api\/reels\/([^/]+)\/my-vote$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return json({ liked: false });
+      const row = await db.prepare("SELECT 1 FROM reel_likes WHERE user_id = ? AND reel_id = ?").bind(u.id, m[1]).first();
+      return json({ liked: !!row });
+    }
     if (method === "POST" && (m = path.match(/^\/api\/follow\/([^/]+)\/bell$/))) {
       const u = await currentUser(request, env);
       if (!u) return err("Sign in required", 401);
