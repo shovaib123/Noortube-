@@ -13,9 +13,31 @@
 function cors() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Upload-Secret, Authorization, X-Anon-Id",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Upload-Secret, X-Upload-Token, X-Upload-Expiry, Authorization, X-Anon-Id, Range",
+    "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, ETag",
   };
+}
+// Parses a standard "bytes=start-end" Range header against a known total size.
+// Handles open-ended ("500-") and suffix ("-500") forms. Returns null if the
+// header is missing, malformed, or outside the object's bounds.
+function parseRangeHeader(rangeHeader, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader || "");
+  if (!m) return null;
+  let start = m[1] === "" ? null : parseInt(m[1], 10);
+  let end = m[2] === "" ? null : parseInt(m[2], 10);
+  if (start === null && end === null) return null;
+  if (start === null) {
+    const suffixLength = end;
+    if (!suffixLength || suffixLength <= 0) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else if (end === null) {
+    end = size - 1;
+  }
+  if (isNaN(start) || isNaN(end) || start > end || start >= size) return null;
+  end = Math.min(end, size - 1);
+  return { start, end };
 }
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -35,6 +57,18 @@ async function addNotification(db, userId, type, title, message) {
 }
 function toB64(buf) {
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function toB64Url(buf) {
+  return toB64(buf).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+// Signs "key.expiry" with the server-only UPLOAD_SECRET so the client never
+// needs to know the secret itself - it only ever receives a token that is
+// valid for one specific file key and expires shortly after issue.
+async function signUploadToken(key, expiry, secret) {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(`${key}.${expiry}`));
+  return toB64Url(sig);
 }
 async function hashPassword(password, saltB64) {
   const enc = new TextEncoder();
@@ -138,23 +172,86 @@ async function handleRequest(request, env) {
     const method = request.method;
     if (method === "OPTIONS") return new Response(null, { headers: cors() });
 
+    // ---------- UPLOAD AUTHORIZATION ----------
+    // Signed-in users request a short-lived, single-file token here. The raw
+    // UPLOAD_SECRET stays on the server and is never sent to the browser.
+    if (method === "POST" && path === "/api/upload-token") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      if (u.suspended) return err("Your account is suspended. Uploads are not allowed.", 403);
+      const body = await request.json().catch(() => ({}));
+      const rawName = (body.filename || "upload").toString().replace(/[^a-zA-Z0-9._-]/g, "_").slice(-150);
+      const key = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${rawName}`;
+      const expiry = Date.now() + 20 * 60 * 1000; // 20 minutes to complete the upload
+      const uploadUrl = `${url.origin}/upload/${encodeURIComponent(key)}`;
+      if (!env.UPLOAD_SECRET) return json({ key, uploadUrl, token: null, expiry });
+      const token = await signUploadToken(key, expiry, env.UPLOAD_SECRET);
+      return json({ key, uploadUrl, token, expiry });
+    }
+
     // ---------- R2 FILE STORAGE (unchanged from Phase 0) ----------
     if (method === "PUT" && path.startsWith("/upload/")) {
-      if (env.UPLOAD_SECRET && request.headers.get("X-Upload-Secret") !== env.UPLOAD_SECRET) return err("Unauthorized", 401);
       const key = decodeURIComponent(path.replace("/upload/", ""));
       if (!key) return err("Missing filename", 400);
+      if (env.UPLOAD_SECRET) {
+        const token = request.headers.get("X-Upload-Token");
+        const expiry = Number(request.headers.get("X-Upload-Expiry") || 0);
+        if (!token || !expiry) return err("Unauthorized", 401);
+        if (expiry < Date.now()) return err("Upload authorization expired", 401);
+        const expected = await signUploadToken(key, expiry, env.UPLOAD_SECRET);
+        if (token !== expected) return err("Unauthorized", 401);
+      }
       await env.NOOR_BUCKET.put(key, request.body, { httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" } });
       return json({ ok: true, key, url: `${url.origin}/file/${encodeURIComponent(key)}` });
     }
+    if (method === "HEAD" && path.startsWith("/file/")) {
+      const key = decodeURIComponent(path.replace("/file/", ""));
+      const head = await env.NOOR_BUCKET.head(key);
+      if (!head) return err("Not found", 404);
+      const headers = new Headers(cors());
+      head.writeHttpMetadata(headers);
+      headers.set("etag", head.httpEtag);
+      headers.set("Cache-Control", "public, max-age=31536000, immutable");
+      headers.set("Accept-Ranges", "bytes");
+      headers.set("Content-Length", String(head.size));
+      return new Response(null, { headers });
+    }
     if (method === "GET" && path.startsWith("/file/")) {
       const key = decodeURIComponent(path.replace("/file/", ""));
-      const obj = await env.NOOR_BUCKET.get(key);
+      const rangeHeader = request.headers.get("Range");
+      if (!rangeHeader) {
+        const obj = await env.NOOR_BUCKET.get(key);
+        if (!obj) return err("Not found", 404);
+        const headers = new Headers(cors());
+        obj.writeHttpMetadata(headers);
+        headers.set("etag", obj.httpEtag);
+        headers.set("Cache-Control", "public, max-age=31536000, immutable");
+        headers.set("Accept-Ranges", "bytes");
+        headers.set("Content-Length", String(obj.size));
+        return new Response(obj.body, { headers });
+      }
+      // A Range header is present (this is how browsers stream/seek video) -
+      // look up the object's size first so we can resolve open-ended and
+      // suffix ranges, then serve only the requested byte window as 206.
+      const head = await env.NOOR_BUCKET.head(key);
+      if (!head) return err("Not found", 404);
+      const parsed = parseRangeHeader(rangeHeader, head.size);
+      if (!parsed) {
+        const headers = new Headers(cors());
+        headers.set("Content-Range", `bytes */${head.size}`);
+        return new Response(null, { status: 416, headers });
+      }
+      const { start, end } = parsed;
+      const obj = await env.NOOR_BUCKET.get(key, { range: { offset: start, length: end - start + 1 } });
       if (!obj) return err("Not found", 404);
       const headers = new Headers(cors());
       obj.writeHttpMetadata(headers);
       headers.set("etag", obj.httpEtag);
       headers.set("Cache-Control", "public, max-age=31536000, immutable");
-      return new Response(obj.body, { headers });
+      headers.set("Accept-Ranges", "bytes");
+      headers.set("Content-Range", `bytes ${start}-${end}/${head.size}`);
+      headers.set("Content-Length", String(end - start + 1));
+      return new Response(obj.body, { status: 206, headers });
     }
     if (method === "DELETE" && path.startsWith("/file/")) {
       if (env.UPLOAD_SECRET && request.headers.get("X-Upload-Secret") !== env.UPLOAD_SECRET) return err("Unauthorized", 401);
@@ -448,6 +545,79 @@ async function handleRequest(request, env) {
         await addNotification(db, fbRow.user_id, "info", "Reply to your feedback", reply.trim());
       }
       return json({ ok: true });
+    }
+
+    // ---------- REPORTS ----------
+    await db.prepare(`CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      reporter_id TEXT,
+      reason TEXT NOT NULL,
+      status TEXT DEFAULT 'open',
+      created_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+
+    if (method === "POST" && (m = path.match(/^\/api\/(videos|reels)\/([^/]+)\/report$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return err("Sign in required", 401);
+      const targetType = m[1] === "videos" ? "video" : "reel";
+      const targetId = m[2];
+      const b = await request.json().catch(() => ({}));
+      const reason = (b.reason || "").trim();
+      if (!reason) return err("Reason is required");
+      const table = targetType === "video" ? "videos" : "reels";
+      const exists = await db.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(targetId).first();
+      if (!exists) return err(targetType === "video" ? "Video not found" : "Reel not found", 404);
+      const id = uid("rp");
+      await db.prepare("INSERT INTO reports (id, target_type, target_id, reporter_id, reason, status) VALUES (?,?,?,?,?,'open')")
+        .bind(id, targetType, targetId, u.id, reason).run();
+      return json({ ok: true, id });
+    }
+    if (method === "GET" && path === "/api/admin/reports") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const rows = await db.prepare(`
+        SELECT reports.*,
+          CASE WHEN reports.target_type = 'video' THEN (SELECT title FROM videos WHERE id = reports.target_id)
+               WHEN reports.target_type = 'reel' THEN (SELECT title FROM reels WHERE id = reports.target_id)
+               ELSE NULL END as target_title,
+          CASE WHEN reports.target_type = 'video' THEN (SELECT hidden FROM videos WHERE id = reports.target_id)
+               WHEN reports.target_type = 'reel' THEN (SELECT hidden FROM reels WHERE id = reports.target_id)
+               ELSE 0 END as target_hidden,
+          CASE WHEN reports.target_type = 'video' THEN (SELECT removed FROM videos WHERE id = reports.target_id)
+               ELSE 0 END as target_removed,
+          (SELECT name FROM users WHERE id = reports.reporter_id) as reporter_name
+        FROM reports
+        ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, created_at DESC
+        LIMIT 300
+      `).all();
+      return json({
+        reports: rows.results.map(r => ({
+          id: r.id,
+          targetType: r.target_type,
+          targetId: r.target_id,
+          targetTitle: r.target_title || "(deleted)",
+          targetHidden: !!r.target_hidden,
+          targetRemoved: !!r.target_removed,
+          reporterId: r.reporter_id,
+          reporterName: r.reporter_name || "Guest",
+          reason: r.reason,
+          status: r.status,
+          createdAt: r.created_at,
+        })),
+      });
+    }
+    if (method === "PATCH" && (m = path.match(/^\/api\/admin\/reports\/([^/]+)$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const b = await request.json().catch(() => ({}));
+      const status = b.status === "resolved" || b.status === "dismissed" ? b.status : null;
+      if (!status) return err("status must be 'resolved' or 'dismissed'");
+      const row = await db.prepare("SELECT * FROM reports WHERE id = ?").bind(m[1]).first();
+      if (!row) return err("Report not found", 404);
+      await db.prepare("UPDATE reports SET status = ? WHERE id = ?").bind(status, m[1]).run();
+      return json({ ok: true, status });
     }
 
     // ---------- VIDEOS ----------
