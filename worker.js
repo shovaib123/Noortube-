@@ -81,11 +81,61 @@ async function verifyPassword(password, hash, salt) {
   const { hash: computed } = await hashPassword(password, salt);
   return computed === hash;
 }
+// ---------- SESSION EXPIRY (30 days, sliding) ----------
+// Adds an expires_at column on first use. If that is impossible for any reason, this feature
+// switches itself off and sessions behave exactly as before, so login can never break because of it.
+const SESSION_MS = 30 * 24 * 3600 * 1000;
+let sessionExpiryReady = null;
+async function ensureSessionExpiry(db) {
+  if (sessionExpiryReady !== null) return sessionExpiryReady;
+  try {
+    try { await db.prepare("ALTER TABLE sessions ADD COLUMN expires_at INTEGER").run(); } catch (_) { /* column already exists */ }
+    await db.prepare("SELECT expires_at FROM sessions LIMIT 1").first();
+    try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions (expires_at)").run(); } catch (_) {}
+    sessionExpiryReady = true;
+  } catch (_) { sessionExpiryReady = false; }
+  return sessionExpiryReady;
+}
+async function createSession(db, token, userId) {
+  if (await ensureSessionExpiry(db)) {
+    await db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").bind(token, userId, Date.now() + SESSION_MS).run();
+    if (Math.random() < 0.01) {
+      try { await db.prepare("DELETE FROM sessions WHERE token IN (SELECT token FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT 200)").bind(Date.now()).run(); } catch (_) {}
+    }
+  } else {
+    await db.prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").bind(token, userId).run();
+  }
+}
+
+// ---------- UPLOAD RULES ----------
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB per file
+const EXT_TYPES = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", mkv: "video/x-matroska", "3gp": "video/3gpp", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
+function pickUploadType(headerType, key) {
+  const ct = String(headerType || "").split(";")[0].trim().toLowerCase();
+  if ((ct.startsWith("video/") || ct.startsWith("image/")) && ct !== "image/svg+xml") return ct;
+  const ext = (String(key).split(".").pop() || "").toLowerCase();
+  return EXT_TYPES[ext] || null;
+}
+
 async function currentUser(request, env) {
   const auth = request.headers.get("Authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   if (!token) return null;
-  const row = await env.NOOR_DB.prepare(
+  const db = env.NOOR_DB;
+  if (await ensureSessionExpiry(db)) {
+    const row = await db.prepare(
+      "SELECT users.*, sessions.expires_at AS _session_exp FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token = ?"
+    ).bind(token).first();
+    if (!row) return null;
+    const now = Date.now(), exp = row._session_exp;
+    if (exp && exp < now) return null; // expired: user must sign in again
+    if (!exp || exp - now < SESSION_MS / 2) { // old sessions get an expiry; active users stay signed in
+      try { await db.prepare("UPDATE sessions SET expires_at = ? WHERE token = ?").bind(now + SESSION_MS, token).run(); } catch (_) {}
+    }
+    delete row._session_exp;
+    return row;
+  }
+  const row = await db.prepare(
     "SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token = ?"
   ).bind(token).first();
   return row || null;
@@ -118,12 +168,107 @@ async function currentUserOrGuest(request, env) {
   await db.prepare("INSERT INTO anon_sessions (anon_id, user_id) VALUES (?, ?)").bind(anonId, id).run();
   return { id, name: guestName, email, avatar_color: "#0d9488", avatar_image: null, role: "guest", suspended: 0, strikes: 0 };
 }
-function publicUser(u) {
+// ---------- LOGIN RATE LIMIT ----------
+// Only FAILED logins are written to the database, so normal traffic costs one small indexed read.
+// If anything in here errors, the limiter "fails open" and login keeps working.
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_PER_EMAIL = 5;   // wrong passwords for one email from one IP
+const LOGIN_MAX_PER_IP = 30;     // wrong passwords from one IP across all emails
+let loginTableReady = false;
+async function ensureLoginTable(db) {
+  if (loginTableReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, email TEXT NOT NULL, ts INTEGER NOT NULL)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_ts ON login_attempts (ip, ts)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_ts ON login_attempts (ts)").run();
+  loginTableReady = true;
+}
+async function loginBlocked(db, ip, email) {
+  try {
+    await ensureLoginTable(db);
+    const since = Date.now() - LOGIN_WINDOW_MS;
+    const r = await db.prepare(
+      "SELECT COUNT(*) AS ip_c, COALESCE(SUM(CASE WHEN email = ? THEN 1 ELSE 0 END), 0) AS em_c FROM login_attempts WHERE ip = ? AND ts > ?"
+    ).bind(email, ip, since).first();
+    return !!r && (r.em_c >= LOGIN_MAX_PER_EMAIL || r.ip_c >= LOGIN_MAX_PER_IP);
+  } catch (_) { return false; }
+}
+async function recordLoginFailure(db, ip, email) {
+  try {
+    await ensureLoginTable(db);
+    await db.prepare("INSERT INTO login_attempts (ip, email, ts) VALUES (?, ?, ?)").bind(ip, email, Date.now()).run();
+    if (Math.random() < 0.02) await db.prepare("DELETE FROM login_attempts WHERE ts < ?").bind(Date.now() - 24 * 3600 * 1000).run();
+  } catch (_) {}
+}
+
+// ---------- CREATOR PAYOUTS (rates, creator share, "mark as paid" records) ----------
+// Everything is counted in whole cents. Creators only ever receive THEIR share; platform numbers stay admin-only.
+const PAYOUT_LIMITS = { vrpm: [0.10, 0.70], rrpm: [0.01, 0.03] }; // allowed $ per 1,000 views. Raise later as the app grows.
+const PAYOUT_DEFAULTS = { vrpm: 0.40, rrpm: 0.02, share: 60, inr: 85 };
+let payoutTablesReady = false;
+async function ensurePayoutTables(db) {
+  if (payoutTablesReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS payout_settings (id INTEGER PRIMARY KEY, vrpm REAL NOT NULL, rrpm REAL NOT NULL, share REAL NOT NULL, inr REAL NOT NULL)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS payout_records (user_id TEXT PRIMARY KEY, v_views INTEGER NOT NULL DEFAULT 0, r_views INTEGER NOT NULL DEFAULT 0, paid_cents INTEGER NOT NULL DEFAULT 0, last_paid_at INTEGER)").run();
+  payoutTablesReady = true;
+}
+async function getPayoutSettings(db) {
+  await ensurePayoutTables(db);
+  const r = await db.prepare("SELECT vrpm, rrpm, share, inr FROM payout_settings WHERE id = 1").first();
+  return r ? { vrpm: r.vrpm, rrpm: r.rrpm, share: r.share, inr: r.inr } : { ...PAYOUT_DEFAULTS };
+}
+function payoutCents(vNew, rNew, S) {
+  const gV = Math.round(vNew / 1000 * S.vrpm * 100 + 1e-9), gR = Math.round(rNew / 1000 * S.rrpm * 100 + 1e-9);
+  const cV = Math.round(gV * S.share / 100 + 1e-9), cR = Math.round(gR * S.share / 100 + 1e-9);
+  return { gV, gR, cV, cR, creator: cV + cR, platform: gV + gR - cV - cR };
+}
+function payoutFromTotals(totals, rec, S) {
+  const vNew = Math.max(0, totals.v - (rec ? rec.v_views : 0)), rNew = Math.max(0, totals.r - (rec ? rec.r_views : 0));
+  return { vNew, rNew, c: payoutCents(vNew, rNew, S), paidCents: rec ? rec.paid_cents : 0, lastPaidAt: rec ? rec.last_paid_at : null };
+}
+async function computeEarnings(db, userId, S) {
+  const v = await db.prepare("SELECT COALESCE(SUM(views), 0) AS n FROM videos WHERE owner_id = ? AND monetized = 1 AND removed = 0").bind(userId).first();
+  const r = await db.prepare("SELECT COALESCE(SUM(views), 0) AS n FROM reels WHERE owner_id = ?").bind(userId).first();
+  const totals = { v: (v && v.n) || 0, r: (r && r.n) || 0 };
+  let rec = await db.prepare("SELECT v_views, r_views, paid_cents, last_paid_at FROM payout_records WHERE user_id = ?").bind(userId).first();
+  if (rec && (totals.v < rec.v_views || totals.r < rec.r_views)) { // creator deleted content: lower the baseline so new views keep counting
+    rec = { ...rec, v_views: Math.min(rec.v_views, totals.v), r_views: Math.min(rec.r_views, totals.r) };
+    try { await db.prepare("UPDATE payout_records SET v_views = ?, r_views = ? WHERE user_id = ?").bind(rec.v_views, rec.r_views, userId).run(); } catch (_) {}
+  }
+  return { totals, ...payoutFromTotals(totals, rec, S) };
+}
+
+// ---------- WITHDRAWAL REQUESTS (creator taps "Request Withdrawal", admin pays and marks it) ----------
+// Separate table with its own "ready" flag, so the existing payout system above can never be affected by it.
+// A request freezes the creator's current unpaid earnings (amount + view totals at that moment).
+// Nothing is deducted until the admin marks it Paid.
+const WITHDRAW_MIN_CENTS = 10000; // minimum $100.00 to request a withdrawal
+let withdrawTableReady = false;
+async function ensureWithdrawTable(db) {
+  if (withdrawTableReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS withdraw_requests (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, v_snap INTEGER NOT NULL, r_snap INTEGER NOT NULL, method TEXT, account_name TEXT, account_number TEXT, routing_code TEXT, status TEXT NOT NULL DEFAULT 'Pending', created_at INTEGER NOT NULL, resolved_at INTEGER, note TEXT)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_wr_status ON withdraw_requests (status, created_at)").run();
+  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_wr_one_pending ON withdraw_requests (user_id) WHERE status = 'Pending'").run();
+  withdrawTableReady = true;
+}
+// Never throws: if the table is unavailable for any reason it simply reports "no pending request".
+async function getPendingWithdraw(db, userId) {
+  try {
+    await ensureWithdrawTable(db);
+    return await db.prepare("SELECT * FROM withdraw_requests WHERE user_id = ? AND status = 'Pending' LIMIT 1").bind(userId).first();
+  } catch (_) { return null; }
+}
+
+function publicUser(u, withPrivate = false) {
   if (!u) return null;
+  if (!withPrivate) {
+    // Public view: only what other people legitimately need. No email, payout, strikes etc.
+    return { id: u.id, name: u.name, avatarColor: u.avatar_color, avatarImage: u.avatar_image, role: u.role };
+  }
   return {
     id: u.id, name: u.name, email: u.email, avatarColor: u.avatar_color, avatarImage: u.avatar_image,
     role: u.role, suspended: !!u.suspended, strikes: u.strikes, monetizationEnabled: !!u.monetization_enabled,
     watchHours: u.watch_hours,
+    // payoutInfo (bank/UPI details) is private: only returned to the user themself or an admin
     payoutInfo: u.payout_method ? { method: u.payout_method, accountName: u.payout_account_name, accountNumber: u.payout_account_number, routingCode: u.payout_routing_code } : null,
   };
 }
@@ -201,7 +346,15 @@ async function handleRequest(request, env) {
         const expected = await signUploadToken(key, expiry, env.UPLOAD_SECRET);
         if (token !== expected) return err("Unauthorized", 401);
       }
-      await env.NOOR_BUCKET.put(key, request.body, { httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" } });
+      const upType = pickUploadType(request.headers.get("Content-Type"), key);
+      if (!upType) return err("Only video and image files can be uploaded", 415);
+      const declaredSize = Number(request.headers.get("Content-Length") || 0);
+      if (declaredSize > MAX_UPLOAD_BYTES) return err("File is too large (max 200 MB)", 413);
+      await env.NOOR_BUCKET.put(key, request.body, { httpMetadata: { contentType: upType } });
+      if (!declaredSize) { // size was not announced: verify after the fact and remove if too big
+        const stored = await env.NOOR_BUCKET.head(key);
+        if (stored && stored.size > MAX_UPLOAD_BYTES) { await env.NOOR_BUCKET.delete(key); return err("File is too large (max 200 MB)", 413); }
+      }
       return json({ ok: true, key, url: `${url.origin}/file/${encodeURIComponent(key)}` });
     }
     if (method === "HEAD" && path.startsWith("/file/")) {
@@ -268,6 +421,10 @@ async function handleRequest(request, env) {
       const body = await request.json().catch(() => ({}));
       const { name, email, password } = body;
       if (!name || !email || !password) return err("name, email and password are required");
+      if (typeof name !== "string" || typeof email !== "string" || typeof password !== "string") return err("Invalid input");
+      if (name.trim().length < 1 || name.length > 60) return err("Name must be 1-60 characters");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 254) return err("Enter a valid email address");
+      if (password.length < 6 || password.length > 200) return err("Password must be at least 6 characters");
       const existing = await db.prepare("SELECT id FROM users WHERE email = ?").bind(email.toLowerCase()).first();
       if (existing) return err("An account with this email already exists");
       const { hash, salt } = await hashPassword(password);
@@ -275,18 +432,25 @@ async function handleRequest(request, env) {
       await db.prepare("INSERT INTO users (id, name, email, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)")
         .bind(id, name, email.toLowerCase(), hash, salt).run();
       const token = crypto.randomUUID();
-      await db.prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").bind(token, id).run();
+      await createSession(db, token, id);
       const user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
-      return json({ ok: true, token, user: publicUser(user) });
+      return json({ ok: true, token, user: publicUser(user, true) });
     }
     if (method === "POST" && path === "/api/login") {
       const { email, password } = await request.json().catch(() => ({}));
       if (!email || !password) return err("email and password are required");
-      const user = await db.prepare("SELECT * FROM users WHERE email = ?").bind(email.toLowerCase()).first();
-      if (!user || !(await verifyPassword(password, user.password_hash, user.password_salt))) return err("Invalid email or password", 401);
+      if (typeof email !== "string" || typeof password !== "string") return err("Invalid input");
+      const loginIp = request.headers.get("CF-Connecting-IP") || "unknown";
+      const loginEmail = email.toLowerCase().slice(0, 254);
+      if (await loginBlocked(db, loginIp, loginEmail)) return err("Too many failed attempts. Please try again in 10 minutes.", 429);
+      const user = await db.prepare("SELECT * FROM users WHERE email = ?").bind(loginEmail).first();
+      if (!user || !(await verifyPassword(password, user.password_hash, user.password_salt))) {
+        await recordLoginFailure(db, loginIp, loginEmail);
+        return err("Invalid email or password", 401);
+      }
       const token = crypto.randomUUID();
-      await db.prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").bind(token, user.id).run();
-      return json({ ok: true, token, user: publicUser(user) });
+      await createSession(db, token, user.id);
+      return json({ ok: true, token, user: publicUser(user, true) });
     }
     if (method === "POST" && path === "/api/logout") {
       const auth = request.headers.get("Authorization") || "";
@@ -297,7 +461,7 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/me") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
-      return json({ user: publicUser(u) });
+      return json({ user: publicUser(u, true) });
     }
     if (method === "DELETE" && path === "/api/me") {
       const u = await currentUser(request, env);
@@ -323,6 +487,7 @@ async function handleRequest(request, env) {
       if (!u) return err("Not signed in", 401);
       const { currentPassword, newPassword } = await request.json().catch(() => ({}));
       if (!currentPassword || !newPassword) return err("Current and new password are required");
+      if (typeof newPassword !== "string" || newPassword.length < 6 || newPassword.length > 200) return err("New password must be at least 6 characters");
       if (!(await verifyPassword(currentPassword, u.password_hash, u.password_salt))) return err("Current password is incorrect", 401);
       const { hash, salt } = await hashPassword(newPassword);
       await db.prepare("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?").bind(hash, salt, u.id).run();
@@ -382,19 +547,38 @@ async function handleRequest(request, env) {
       if (!u) return err("Not signed in", 401);
       const b = await request.json().catch(() => ({}));
       const fields = [], vals = [];
-      if (b.name !== undefined) { fields.push("name = ?"); vals.push(b.name); }
+      if (b.name !== undefined) {
+        const nm = String(b.name).trim();
+        if (!nm || nm.length > 60) return err("Name must be 1-60 characters");
+        fields.push("name = ?"); vals.push(nm);
+      }
       if (b.avatarColor !== undefined) { fields.push("avatar_color = ?"); vals.push(b.avatarColor); }
       if (b.avatarImage !== undefined) { fields.push("avatar_image = ?"); vals.push(b.avatarImage); }
-      if (b.monetizationEnabled !== undefined) { fields.push("monetization_enabled = ?"); vals.push(b.monetizationEnabled ? 1 : 0); }
+      if (b.monetizationEnabled !== undefined) {
+        // Turning monetization ON must be earned: the server re-checks the rules so nobody can
+        // enable it by calling the API directly. Turning it OFF is always allowed.
+        if (b.monetizationEnabled && !u.monetization_enabled && u.role !== "admin") {
+          if (u.suspended) return err("Suspended accounts cannot enable monetization", 403);
+          const fc = await db.prepare("SELECT COUNT(*) as c FROM follows WHERE followee_id = ?").bind(u.id).first();
+          const cutoff = new Date(Date.now() - 62 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+          const rv = await db.prepare("SELECT COALESCE(SUM(views), 0) as v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
+          const ok = (fc?.c || 0) >= 1000 && (u.watch_hours || 0) >= 3000 && (rv?.v || 0) >= 2500000;
+          if (!ok) return err("Monetization requirements not met", 403);
+        }
+        fields.push("monetization_enabled = ?"); vals.push(b.monetizationEnabled ? 1 : 0);
+      }
       if (b.payoutInfo !== undefined) {
+        const pi = b.payoutInfo;
+        if (!pi || typeof pi !== "object" || !["bank", "paypal", "upi", "mobile"].includes(pi.method)) return err("Invalid payout details");
+        const clean = (v, n) => String(v == null ? "" : v).trim().slice(0, n);
         fields.push("payout_method = ?", "payout_account_name = ?", "payout_account_number = ?", "payout_routing_code = ?");
-        vals.push(b.payoutInfo.method, b.payoutInfo.accountName, b.payoutInfo.accountNumber, b.payoutInfo.routingCode);
+        vals.push(pi.method, clean(pi.accountName, 100), clean(pi.accountNumber, 100), clean(pi.routingCode, 50));
       }
       if (!fields.length) return err("Nothing to update");
       vals.push(u.id);
       await db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).bind(...vals).run();
       const updated = await db.prepare("SELECT * FROM users WHERE id = ?").bind(u.id).first();
-      return json({ ok: true, user: publicUser(updated) });
+      return json({ ok: true, user: publicUser(updated, true) });
     }
 
     // ---------- FOLLOW ----------
@@ -440,11 +624,148 @@ async function handleRequest(request, env) {
       const followers = await db.prepare("SELECT COUNT(*) as c FROM follows WHERE followee_id = ?").bind(m[1]).first();
       return json({ user: publicUser(user), followerCount: followers.c });
     }
+    // ----- creator: my own earnings (creator share only; never rates, share % or platform numbers) -----
+    if (method === "GET" && path === "/api/me/earnings") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (!u.monetization_enabled) return json({ enabled: false });
+      const S = await getPayoutSettings(db);
+      const e = await computeEarnings(db, u.id, S);
+      const pend = await getPendingWithdraw(db, u.id);
+      let last = null;
+      try { last = await db.prepare("SELECT status, amount_cents, resolved_at, note FROM withdraw_requests WHERE user_id = ? AND status != 'Pending' ORDER BY created_at DESC LIMIT 1").bind(u.id).first(); } catch (_) {}
+      const pendCents = pend ? pend.amount_cents : 0;
+      return json({ enabled: true, videoUsd: e.c.cV / 100, reelsUsd: e.c.cR / 100, totalUsd: e.c.creator / 100, videoViews: e.vNew, reelViews: e.rNew, paidUsd: e.paidCents / 100, lastPaidAt: e.lastPaidAt,
+        minWithdrawUsd: WITHDRAW_MIN_CENTS / 100, pendingUsd: pendCents / 100, availableUsd: Math.max(0, e.c.creator - pendCents) / 100,
+        hasPayoutInfo: !!(u.payout_method && u.payout_account_number),
+        pendingRequest: pend ? { id: pend.id, amountUsd: pend.amount_cents / 100, createdAt: pend.created_at } : null,
+        lastRequest: last ? { status: last.status, amountUsd: last.amount_cents / 100, resolvedAt: last.resolved_at, note: last.note || "" } : null });
+    }
+    // ----- creator: request a withdrawal of the full unpaid balance (needs minimum + payout details) -----
+    if (method === "POST" && path === "/api/me/withdraw") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (u.role === "guest") return err("Sign in to withdraw", 403);
+      if (u.suspended) return err("Suspended accounts cannot withdraw", 403);
+      if (!u.monetization_enabled) return err("Monetization is not enabled for your channel", 403);
+      if (!u.payout_method || !u.payout_account_number) return err("Add your payout details first", 400);
+      const S = await getPayoutSettings(db);
+      try { await ensureWithdrawTable(db); } catch (_) { return err("Withdrawals are temporarily unavailable. Try again later.", 503); }
+      if (await getPendingWithdraw(db, u.id)) return err("You already have a withdrawal request pending", 409);
+      const e = await computeEarnings(db, u.id, S);
+      if (e.c.creator < WITHDRAW_MIN_CENTS) return err("Minimum limit not reached. You need at least $" + (WITHDRAW_MIN_CENTS / 100).toFixed(2) + " to withdraw.", 400);
+      const id = uid("wr");
+      try {
+        await db.prepare("INSERT INTO withdraw_requests (id, user_id, amount_cents, v_snap, r_snap, method, account_name, account_number, routing_code, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,'Pending',?)")
+          .bind(id, u.id, e.c.creator, e.totals.v, e.totals.r, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now()).run();
+      } catch (_) { return err("You already have a withdrawal request pending", 409); }
+      return json({ ok: true, id, amountUsd: e.c.creator / 100 });
+    }
+    // ----- admin: pending withdrawal requests -----
+    if (method === "GET" && path === "/api/admin/withdraw-requests") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      await ensureWithdrawTable(db);
+      const rows = await db.prepare("SELECT w.*, users.name AS user_name, users.email AS user_email FROM withdraw_requests w JOIN users ON users.id = w.user_id WHERE w.status = 'Pending' ORDER BY w.created_at ASC").all();
+      return json({ minWithdrawUsd: WITHDRAW_MIN_CENTS / 100, requests: (rows.results || []).map((w) => ({
+        id: w.id, userId: w.user_id, name: w.user_name, email: w.user_email, amountCents: w.amount_cents, amountUsd: w.amount_cents / 100, createdAt: w.created_at,
+        payoutInfo: w.method ? { method: w.method, accountName: w.account_name, accountNumber: w.account_number, routingCode: w.routing_code } : null,
+      })) });
+    }
+    // ----- admin: after paying the creator, mark the request Paid (this also resets their balance by the paid amount) -----
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/withdraw-requests\/([^/]+)\/mark-paid$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      await ensureWithdrawTable(db);
+      await ensurePayoutTables(db);
+      const w = await db.prepare("SELECT * FROM withdraw_requests WHERE id = ?").bind(m[1]).first();
+      if (!w) return err("Request not found", 404);
+      if (w.status !== "Pending") return err("This request was already handled", 409);
+      const rec = await db.prepare("SELECT v_views, r_views FROM payout_records WHERE user_id = ?").bind(w.user_id).first();
+      if (rec && (rec.v_views > w.v_snap || rec.r_views > w.r_snap)) return err("This creator's payout record changed after the request was made. Reject this request and ask them to request again.", 409);
+      const now = Date.now();
+      // One batch (one transaction): the payout record is only written while the request is still Pending, so a double tap can never pay twice.
+      const res = await db.batch([
+        db.prepare("INSERT INTO payout_records (user_id, v_views, r_views, paid_cents, last_paid_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM withdraw_requests WHERE id = ? AND status = 'Pending') ON CONFLICT(user_id) DO UPDATE SET v_views = excluded.v_views, r_views = excluded.r_views, paid_cents = payout_records.paid_cents + excluded.paid_cents, last_paid_at = excluded.last_paid_at")
+          .bind(w.user_id, w.v_snap, w.r_snap, w.amount_cents, now, w.id),
+        db.prepare("UPDATE withdraw_requests SET status = 'Paid', resolved_at = ? WHERE id = ? AND status = 'Pending'").bind(now, w.id),
+      ]);
+      const changed = res && res[1] && res[1].meta ? res[1].meta.changes : 0;
+      if (changed !== 1) return err("This request was already handled", 409);
+      try { await addNotification(db, w.user_id, "info", "Withdrawal Paid", "Your withdrawal of $" + (w.amount_cents / 100).toFixed(2) + " has been paid."); } catch (_) {}
+      return json({ ok: true, paidUsd: w.amount_cents / 100 });
+    }
+    // ----- admin: reject a request (balance stays with the creator, nothing is deducted) -----
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/withdraw-requests\/([^/]+)\/reject$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      await ensureWithdrawTable(db);
+      const b = await request.json().catch(() => ({}));
+      const note = String(b.note || "").trim().slice(0, 300);
+      const w = await db.prepare("SELECT * FROM withdraw_requests WHERE id = ?").bind(m[1]).first();
+      if (!w) return err("Request not found", 404);
+      const r = await db.prepare("UPDATE withdraw_requests SET status = 'Rejected', resolved_at = ?, note = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), note, w.id).run();
+      if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
+      try { await addNotification(db, w.user_id, "info", "Withdrawal Request Rejected", "Your withdrawal request of $" + (w.amount_cents / 100).toFixed(2) + " was not approved." + (note ? " Reason: " + note : " Please check your payout details and request again.")); } catch (_) {}
+      return json({ ok: true });
+    }
+    // ----- admin: payouts overview -----
+    if (method === "GET" && path === "/api/admin/payouts") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const S = await getPayoutSettings(db);
+      const users = await db.prepare("SELECT * FROM users WHERE monetization_enabled = 1 AND role != 'guest' ORDER BY created_at DESC").all();
+      const vRows = await db.prepare("SELECT owner_id, COALESCE(SUM(views), 0) AS n FROM videos WHERE monetized = 1 AND removed = 0 GROUP BY owner_id").all();
+      const rRows = await db.prepare("SELECT owner_id, COALESCE(SUM(views), 0) AS n FROM reels GROUP BY owner_id").all();
+      const recRows = await db.prepare("SELECT user_id, v_views, r_views, paid_cents, last_paid_at FROM payout_records").all();
+      const pendSet = {};
+      try { await ensureWithdrawTable(db); const pr = await db.prepare("SELECT user_id FROM withdraw_requests WHERE status = 'Pending'").all(); (pr.results || []).forEach((x) => { pendSet[x.user_id] = true; }); } catch (_) {}
+      const vMap = {}, rMap = {}, recMap = {};
+      (vRows.results || []).forEach((x) => { vMap[x.owner_id] = x.n; });
+      (rRows.results || []).forEach((x) => { rMap[x.owner_id] = x.n; });
+      (recRows.results || []).forEach((x) => { recMap[x.user_id] = x; });
+      const rows = (users.results || []).map((usr) => {
+        const e = payoutFromTotals({ v: vMap[usr.id] || 0, r: rMap[usr.id] || 0 }, recMap[usr.id] || null, S);
+        const pu = publicUser(usr, true);
+        return { id: usr.id, name: usr.name, email: usr.email, payoutInfo: pu.payoutInfo, videoViews: e.vNew, reelViews: e.rNew,
+          videoRevenueUsd: e.c.gV / 100, reelRevenueUsd: e.c.gR / 100, creatorCents: e.c.creator, creatorUsd: e.c.creator / 100,
+          platformUsd: e.c.platform / 100, paidUsd: e.paidCents / 100, lastPaidAt: e.lastPaidAt, hasPendingRequest: !!pendSet[usr.id] };
+      });
+      return json({ settings: S, limits: PAYOUT_LIMITS, rows, minWithdrawUsd: WITHDRAW_MIN_CENTS / 100 });
+    }
+    if (method === "PUT" && path === "/api/admin/payout-settings") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const b = await request.json().catch(() => ({}));
+      const vrpm = Number(b.vrpm), rrpm = Number(b.rrpm), share = Number(b.share), inr = Number(b.inr);
+      if (!(vrpm >= PAYOUT_LIMITS.vrpm[0] && vrpm <= PAYOUT_LIMITS.vrpm[1])) return err("Video rate must be between $" + PAYOUT_LIMITS.vrpm[0].toFixed(2) + " and $" + PAYOUT_LIMITS.vrpm[1].toFixed(2) + " per 1,000 views");
+      if (!(rrpm >= PAYOUT_LIMITS.rrpm[0] && rrpm <= PAYOUT_LIMITS.rrpm[1])) return err("Reels rate must be between $" + PAYOUT_LIMITS.rrpm[0].toFixed(2) + " and $" + PAYOUT_LIMITS.rrpm[1].toFixed(2) + " per 1,000 views");
+      if (!(share >= 0 && share <= 100)) return err("Creator share must be between 0 and 100");
+      if (!(inr > 0 && inr < 1000)) return err("Enter a valid rupee rate");
+      await ensurePayoutTables(db);
+      await db.prepare("INSERT INTO payout_settings (id, vrpm, rrpm, share, inr) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET vrpm = excluded.vrpm, rrpm = excluded.rrpm, share = excluded.share, inr = excluded.inr").bind(vrpm, rrpm, share, inr).run();
+      return json({ ok: true, settings: { vrpm, rrpm, share, inr } });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/payouts\/([^/]+)\/mark-paid$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const b = await request.json().catch(() => ({}));
+      const target = await db.prepare("SELECT id, monetization_enabled FROM users WHERE id = ?").bind(m[1]).first();
+      if (!target || !target.monetization_enabled) return err("Creator not found or not monetized", 404);
+      if (await getPendingWithdraw(db, target.id)) return err("This creator has a pending withdrawal request. Handle it from the Withdrawal Requests list.", 409);
+      const S = await getPayoutSettings(db);
+      const e = await computeEarnings(db, target.id, S);
+      if (e.c.creator <= 0) return err("Nothing to pay right now", 400);
+      if (Number(b.expectedCents) !== e.c.creator) return err("Earnings changed since you opened this page. Refresh and check the amount again.", 409);
+      await db.prepare("INSERT INTO payout_records (user_id, v_views, r_views, paid_cents, last_paid_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET v_views = excluded.v_views, r_views = excluded.r_views, paid_cents = payout_records.paid_cents + ?, last_paid_at = excluded.last_paid_at")
+        .bind(target.id, e.totals.v, e.totals.r, e.c.creator, Date.now(), e.c.creator).run();
+      return json({ ok: true, paidUsd: e.c.creator / 100 });
+    }
     if (method === "GET" && path === "/api/admin/users") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
       const rows = await db.prepare("SELECT * FROM users WHERE role != 'guest' ORDER BY created_at DESC").all();
-      return json({ users: rows.results.map(publicUser) });
+      return json({ users: rows.results.map((r) => publicUser(r, true)) });
     }
     if (method === "PATCH" && (m = path.match(/^\/api\/admin\/users\/([^/]+)\/suspend$/))) {
       const u = await currentUser(request, env);
@@ -732,7 +1053,8 @@ async function handleRequest(request, env) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { text } = await request.json().catch(() => ({}));
-      if (!text || !text.trim()) return err("Comment text is required");
+      if (!text || typeof text !== "string" || !text.trim()) return err("Comment text is required");
+      if (text.length > 1000) return err("Comment is too long (max 1000 characters)");
       const id = uid("c");
       await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text) VALUES (?, 'video', ?, ?, ?)").bind(id, m[1], u.id, text.trim()).run();
       return json({ ok: true, id });
@@ -793,7 +1115,8 @@ async function handleRequest(request, env) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { text } = await request.json().catch(() => ({}));
-      if (!text || !text.trim()) return err("Comment text is required");
+      if (!text || typeof text !== "string" || !text.trim()) return err("Comment text is required");
+      if (text.length > 1000) return err("Comment is too long (max 1000 characters)");
       const id = uid("c");
       await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text) VALUES (?, 'reel', ?, ?, ?)").bind(id, m[1], u.id, text.trim()).run();
       return json({ ok: true, id });
