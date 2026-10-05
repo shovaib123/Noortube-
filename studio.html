@@ -330,8 +330,8 @@
       <div class="card p-4 text-sm space-y-2">
         <div class="flex justify-between"><span class="text-gray-400">Uploaded</span><span id="vdUploaded">—</span></div>
         <div class="flex justify-between"><span class="text-gray-400">Duration</span><span id="vdDuration">—</span></div>
-        <div class="flex justify-between"><span class="text-gray-400">Watch time</span><span id="vdWatch">Not tracked on server yet</span></div>
-        <div class="flex justify-between"><span class="text-gray-400">Subscribers from this</span><span id="vdSubs">Not tracked on server yet</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Watch time</span><span id="vdWatch">—</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Subscribers from this</span><span id="vdSubs">—</span></div>
       </div>
       <div class="card p-4">
         <p class="font-medium mb-2">Views vs likes</p>
@@ -344,7 +344,7 @@
         <p id="vdReachViews" class="text-3xl font-medium">—</p>
       </div>
       <div class="card p-4 text-sm text-gray-400">
-        Traffic sources (Shorts feed, search, etc.) are not stored per video on the server yet. Views shown above are real totals for this content.
+        Total views for this content. Detailed traffic sources (feed, search, shares) can be added later from the server.
       </div>
     </div>
     <div id="vd-engagement" class="vd-panel hidden space-y-4">
@@ -416,6 +416,27 @@ function fmtNum(n) {
   return String(Math.round(n));
 }
 function fmtUsd(n) { return "$" + (Number(n) || 0).toFixed(2); }
+
+function parseDurSec(d) {
+  if (d == null || d === "" || d === "—") return 0;
+  if (typeof d === "number" && !isNaN(d)) return Math.max(0, d);
+  var s = String(d).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return Math.max(0, parseFloat(s));
+  var parts = s.split(":").map(function(x) { return parseInt(x, 10) || 0; });
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+}
+function formatWatch(sec) {
+  sec = Math.round(sec || 0);
+  if (sec <= 0) return "0 min";
+  if (sec < 60) return sec + " sec";
+  var h = Math.floor(sec / 3600);
+  var m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return h + " hr " + m + " min";
+  return m + " min";
+}
+
 function esc(s) {
   return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
@@ -468,7 +489,25 @@ function makeChart(canvasId, type, labels, data, color) {
 }
 
 
+
 var _rtFilter = "48hrs";
+var _studioStats = null;
+
+function rangeKeyFromFilter(key) {
+  if (key === "60min") return "60m";
+  if (key === "48hrs") return "48h";
+  if (key === "all") return "28d";
+  return "48h";
+}
+
+async function fetchStudioStats(range) {
+  try {
+    return await ntFetch("/api/me/studio-analytics?range=" + encodeURIComponent(range));
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
+}
 
 function setRtFilter(el, key) {
   _rtFilter = key;
@@ -478,44 +517,81 @@ function setRtFilter(el, key) {
   renderRealtime();
 }
 
-function renderRealtime() {
+async function renderRealtime() {
   var all = window._studioAll || [];
   var note = document.getElementById("rtNote");
-  var list = all.slice();
   var key = window._rtFilter || "48hrs";
+  var list = all.slice();
 
   if (key === "videos") list = all.filter(function(i) { return i._type === "video"; });
   else if (key === "shorts") list = all.filter(function(i) { return i._type === "reel"; });
 
-  // 60min / 48hrs: server has no hourly counters yet — show real lifetime totals with clear label
-  if (key === "60min") {
-    if (note) note.textContent = "Server does not store last-60-min views yet. Showing your real lifetime totals.";
-  } else if (key === "48hrs") {
-    if (note) note.textContent = "Server does not store last-48-hour views yet. Showing your real lifetime totals.";
-  } else if (key === "videos") {
-    if (note) note.textContent = "Only your videos · real views from server";
-  } else if (key === "shorts") {
-    if (note) note.textContent = "Only your reels/shorts · real views from server";
-  } else {
-    if (note) note.textContent = "All your content · real views from server";
+  var range = rangeKeyFromFilter(key === "videos" || key === "shorts" ? "48hrs" : key);
+  if (note) {
+    if (key === "60min") note.textContent = "Last 60 minutes · real counted views (updates as people watch)";
+    else if (key === "48hrs") note.textContent = "Last 48 hours · real counted views";
+    else if (key === "all") note.textContent = "Last 28 days · real counted views";
+    else if (key === "videos") note.textContent = "Videos only · lifetime views on each item";
+    else if (key === "shorts") note.textContent = "Shorts/Reels only · lifetime views on each item";
   }
 
-  list = list.slice().sort(function(a, b) { return (b.views || 0) - (a.views || 0); });
-  var total = list.reduce(function(a, i) { return a + (i.views || 0); }, 0);
-  var rtBig = document.getElementById("rtBigNum");
-  if (rtBig) rtBig.textContent = total.toLocaleString();
-  var lab = document.getElementById("rtBigLabel");
-  if (lab) lab.textContent = key === "videos" ? "Video views" : key === "shorts" ? "Reel views" : "Views";
+  // Time-window stats from server (after worker deploy)
+  var stats = null;
+  if (key === "60min" || key === "48hrs" || key === "all") {
+    stats = await fetchStudioStats(range);
+    _studioStats = stats;
+  }
+
+  var totalViews;
+  var watchLabel = "";
+  if (stats && stats.totals) {
+    totalViews = stats.totals.views || 0;
+    var ws = stats.totals.watchSec || 0;
+    watchLabel = " · Watch " + formatWatch(ws);
+    var rtBig = document.getElementById("rtBigNum");
+    if (rtBig) rtBig.textContent = totalViews.toLocaleString();
+    var lab = document.getElementById("rtBigLabel");
+    if (lab) lab.textContent = "Views" + watchLabel;
+    // chart from buckets
+    var buckets = stats.buckets || [];
+    var labels = buckets.map(function(b, i) {
+      var d = new Date(b.t);
+      if (range === "60m") return d.getHours() + ":" + String(d.getMinutes()).padStart(2,"0");
+      if (range === "28d") return (d.getMonth()+1) + "/" + d.getDate();
+      return d.getHours() + "h";
+    });
+    var data = buckets.map(function(b) { return b.views || 0; });
+    makeChart("chartRealtime", "bar", labels.length ? labels : ["—"], data.length ? data : [0], "#3b82f6");
+    // merge byContent views into list order
+    var by = {};
+    (stats.byContent || []).forEach(function(x) { by[x.kind + ":" + x.id] = x; });
+    list = list.map(function(item) {
+      var k = (item._type === "reel" ? "r" : "v") + ":" + item.id;
+      var s = by[k];
+      return Object.assign({}, item, { _rangeViews: s ? s.views : 0, _rangeWatch: s ? s.watchSec : 0 });
+    });
+    if (key !== "videos" && key !== "shorts") {
+      list = list.filter(function(i) { return (i._rangeViews || 0) > 0 || true; });
+      list.sort(function(a, b) { return (b._rangeViews || 0) - (a._rangeViews || 0); });
+    }
+  } else {
+    list = list.slice().sort(function(a, b) { return (b.views || 0) - (a.views || 0); });
+    totalViews = list.reduce(function(a, i) { return a + (i.views || 0); }, 0);
+    var rtBig2 = document.getElementById("rtBigNum");
+    if (rtBig2) rtBig2.textContent = totalViews.toLocaleString();
+    var lab2 = document.getElementById("rtBigLabel");
+    if (lab2) lab2.textContent = key === "videos" ? "Video views" : key === "shorts" ? "Reel views" : "Views (lifetime)";
+    var topN0 = list.slice(0, 12);
+    makeChart("chartRealtime", "bar",
+      topN0.map(function(i) { return (i.title || "").slice(0, 10); }),
+      topN0.map(function(i) { return i.views || 0; }), "#3b82f6");
+  }
 
   var topN = list.slice(0, 12);
-  var labels = topN.map(function(i) { return (i.title || "Item").slice(0, 10); });
-  var data = topN.map(function(i) { return i.views || 0; });
-  makeChart("chartRealtime", "bar", labels.length ? labels : ["—"], data.length ? data : [0], "#3b82f6");
-
   var rtList = document.getElementById("rtTopList");
   if (!rtList) return;
   if (!topN.length) {
-    rtList.innerHTML = '<p class="text-sm text-gray-500">No content in this filter</p>';
+    rtList.innerHTML = '<p class="text-sm text-gray-500">No content yet</p>';
     return;
   }
   rtList.innerHTML = topN.map(function(item, idx) {
@@ -523,10 +599,12 @@ function renderRealtime() {
       ? '<img src="' + esc(item.thumbnail) + '" class="w-12 h-14 rounded object-cover flex-shrink-0"/>'
       : '<div class="w-12 h-14 rounded bg-gray-700 flex-shrink-0"></div>';
     var id = item.id || ("idx" + idx);
+    var showV = (item._rangeViews != null && (key === "60min" || key === "48hrs" || key === "all"))
+      ? item._rangeViews : (item.views || 0);
     return '<div class="flex items-center gap-3 card p-2 video-row" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(id) + '\')">' + th +
       '<div class="flex-1 min-w-0"><p class="text-sm truncate">' + esc(item.title || "Untitled") + '</p>' +
       '<p class="text-[11px] text-gray-400">' + (item._type === "reel" ? "Reel" : "Video") + '</p></div>' +
-      '<span class="text-sm font-medium">' + fmtNum(item.views) + '</span></div>';
+      '<span class="text-sm font-medium">' + fmtNum(showV) + '</span></div>';
   }).join("");
 }
 
@@ -540,7 +618,7 @@ function openVideoDetailById(id) {
   openVideoDetail(item);
 }
 
-function openVideoDetail(item) {
+async function openVideoDetail(item) {
   var panel = document.getElementById("videoDetail");
   if (!panel) return;
   panel.classList.remove("hidden");
@@ -571,17 +649,53 @@ function openVideoDetail(item) {
 
   var up = item.uploadedAt ? String(item.uploadedAt).replace("T", " ").slice(0, 16) : "—";
   document.getElementById("vdUploaded").textContent = up;
-  document.getElementById("vdDuration").textContent = item.duration != null ? String(item.duration) : "—";
-  document.getElementById("vdWatch").textContent = "Not tracked on server yet";
-  document.getElementById("vdSubs").textContent = "Not tracked on server yet";
+  var durSec = parseDurSec(item.duration);
+  if (!durSec && item.trim_end != null) {
+    durSec = Math.max(0, (Number(item.trim_end) || 0) - (Number(item.trim_start) || 0));
+  }
+  document.getElementById("vdDuration").textContent = durSec > 0 ? formatWatch(durSec) : (item.duration != null ? String(item.duration) : "—");
 
+  // Real range analytics from server (48h default)
+  document.getElementById("vdWatch").textContent = "…";
+  document.getElementById("vdSubs").textContent = "—";
   makeChart("chartVd", "bar", ["Views", "Likes", "Comments"], [views, likes, comments], "#3b82f6");
 
-  // reset tabs
+  try {
+    var kind = item._type === "reel" ? "r" : "v";
+    var ca = await ntFetch("/api/me/content-analytics?id=" + encodeURIComponent(item.id) + "&kind=" + kind + "&range=48h");
+    if (ca && ca.totals) {
+      var wsec = ca.totals.watchSec || 0;
+      document.getElementById("vdWatch").textContent = formatWatch(wsec) + " (48h)";
+      // Also show lifetime est if no events yet
+      if (!ca.totals.views && durSec > 0) {
+        document.getElementById("vdWatch").textContent = formatWatch(views * durSec * 0.45) + " (est.)";
+      }
+      var buckets = ca.buckets || [];
+      if (buckets.length) {
+        makeChart("chartVd", "bar",
+          buckets.map(function(b) { var d = new Date(b.t); return d.getHours() + "h"; }),
+          buckets.map(function(b) { return b.views || 0; }),
+          "#3b82f6");
+      }
+    } else if (durSec > 0) {
+      document.getElementById("vdWatch").textContent = formatWatch(views * durSec * 0.45) + " (est.)";
+    } else {
+      document.getElementById("vdWatch").textContent = "—";
+    }
+    // channel followers total as context (not per-video attribution)
+    var st = await fetchStudioStats("24h");
+    if (st && st.totals) {
+      document.getElementById("vdSubs").textContent = (st.totals.followers24h || 0) + " (24h) · " + (st.totals.followersTotal || 0) + " total";
+    }
+  } catch (e) {
+    if (durSec > 0) document.getElementById("vdWatch").textContent = formatWatch(views * durSec * 0.45) + " (est.)";
+    else document.getElementById("vdWatch").textContent = "—";
+  }
+
   document.querySelectorAll("#videoDetail .sub-tab").forEach(function(t, i) {
     t.classList.toggle("active", i === 0);
   });
-  document.querySelectorAll(".vd-panel").forEach(function(p, i) {
+  document.querySelectorAll(".vd-panel").forEach(function(p) {
     if (p.id === "vd-overview") p.classList.remove("hidden");
     else p.classList.add("hidden");
   });
@@ -600,6 +714,8 @@ function switchVdTab(btn, id) {
   var el = document.getElementById(id);
   if (el) el.classList.remove("hidden");
 }
+
+
 
 
 function fillAnalytics(myVideos, myReels, latest) {
