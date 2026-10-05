@@ -8,6 +8,7 @@
 <link rel="manifest" href="studio-manifest.json">
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root, [data-theme="dark"] {
     --bg: #0f0f0f;
@@ -44,6 +45,18 @@
   .bottom-nav { box-shadow: 0 -1px 0 var(--nav-shadow); background: var(--bg-header) !important; border-color: var(--border) !important; }
   header.sticky { background: var(--bg-header) !important; border-color: var(--border) !important; }
   #themeBtn { width: 36px; height: 36px; border-radius: 9999px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .sub-tab { color: var(--text-muted); border-bottom: 2px solid transparent; padding: 8px 4px; font-size: 14px; white-space: nowrap; background: none; border-top: none; border-left: none; border-right: none; cursor: pointer; }
+  .sub-tab.active { color: var(--text); border-bottom-color: var(--text); font-weight: 500; }
+  .an-panel { display: none; }
+  .an-panel.active { display: block; }
+  .chip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 9999px; padding: 6px 12px; font-size: 13px; white-space: nowrap; cursor: pointer; color: var(--text-muted); display: inline-block; }
+  .chip.active { background: var(--text); color: var(--bg); font-weight: 600; border-color: transparent; }
+  #videoDetail.hidden { display: none !important; }
+  #videoDetail:not(.hidden) { display: block; }
+  .vd-panel.hidden { display: none !important; }
+
+
+
 </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -111,23 +124,144 @@
   </div>
 
   <div id="tab-analytics" class="tab-content space-y-4">
-    <div class="grid grid-cols-2 gap-3">
-      <div class="card p-4">
-        <p class="text-xs text-gray-400">Total views</p>
-        <p id="anViews" class="text-2xl font-medium">—</p>
+    <div class="flex gap-4 overflow-x-auto border-b pb-0" style="border-color: var(--border);">
+      <button type="button" class="sub-tab active" data-an="overview" onclick="switchAn(this,'overview')">Overview</button>
+      <button type="button" class="sub-tab" data-an="realtime" onclick="switchAn(this,'realtime')">Real time</button>
+      <button type="button" class="sub-tab" data-an="reach" onclick="switchAn(this,'reach')">Reach</button>
+      <button type="button" class="sub-tab" data-an="engagement" onclick="switchAn(this,'engagement')">Engagement</button>
+      <button type="button" class="sub-tab" data-an="audience" onclick="switchAn(this,'audience')">Audience</button>
+    </div>
+
+    <!-- OVERVIEW -->
+    <div id="an-overview" class="an-panel active space-y-4">
+      <div class="flex gap-3 overflow-x-auto pb-1">
+        <div class="card p-4 min-w-[140px] flex-shrink-0">
+          <p class="text-xs text-gray-400">Views</p>
+          <p id="anViews" class="text-2xl font-medium">—</p>
+          <div class="h-14 mt-2"><canvas id="chartOvViews"></canvas></div>
+        </div>
+        <div class="card p-4 min-w-[140px] flex-shrink-0">
+          <p class="text-xs text-gray-400">Likes</p>
+          <p id="anLikes" class="text-2xl font-medium">—</p>
+          <div class="h-14 mt-2"><canvas id="chartOvLikes"></canvas></div>
+        </div>
+        <div class="card p-4 min-w-[140px] flex-shrink-0">
+          <p class="text-xs text-gray-400">Content</p>
+          <p id="anContentCount" class="text-2xl font-medium">—</p>
+          <p class="text-[11px] text-gray-400 mt-1" id="anContentSplit">—</p>
+        </div>
       </div>
       <div class="card p-4">
-        <p class="text-xs text-gray-400">Total likes</p>
-        <p id="anLikes" class="text-2xl font-medium">—</p>
+        <div class="flex justify-between mb-3">
+          <h3 class="font-semibold">Top content</h3>
+          <span class="text-xs text-gray-400">By views</span>
+        </div>
+        <div id="topContentList" class="space-y-3">
+          <p class="text-sm text-gray-500">Loading…</p>
+        </div>
+      </div>
+      <div class="card p-4">
+        <h3 class="font-semibold mb-2">Views by content</h3>
+        <div class="h-40"><canvas id="chartTopBars"></canvas></div>
       </div>
     </div>
-    <div class="card p-4">
-      <div class="flex justify-between mb-3">
-        <h3 class="font-semibold">Top content</h3>
-        <span class="text-xs text-gray-400">By views</span>
+
+    <!-- REAL TIME -->
+    <div id="an-realtime" class="an-panel space-y-4">
+      <div class="flex gap-2 overflow-x-auto pb-1" id="rtFilters">
+        <span class="chip" data-rt="60min" onclick="setRtFilter(this,'60min')">60 MIN</span>
+        <span class="chip active" data-rt="48hrs" onclick="setRtFilter(this,'48hrs')">48 HRS</span>
+        <span class="chip" data-rt="all" onclick="setRtFilter(this,'all')">All</span>
+        <span class="chip" data-rt="videos" onclick="setRtFilter(this,'videos')">Videos</span>
+        <span class="chip" data-rt="shorts" onclick="setRtFilter(this,'shorts')">Shorts</span>
       </div>
-      <div id="topContentList" class="space-y-3">
-        <p class="text-sm text-gray-500">Loading…</p>
+      <p id="rtNote" class="text-xs text-gray-400">Showing your real content totals from the server</p>
+      <div class="text-center py-2">
+        <p id="rtBigNum" class="text-5xl font-bold tracking-tight">—</p>
+        <p id="rtBigLabel" class="text-gray-400 text-sm mt-1">Views</p>
+      </div>
+      <div class="card p-4">
+        <div class="h-40"><canvas id="chartRealtime"></canvas></div>
+      </div>
+      <div>
+        <h3 class="font-semibold mb-3">Top content · tap for details</h3>
+        <div id="rtTopList" class="space-y-3">
+          <p class="text-sm text-gray-500">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- REACH -->
+    <div id="an-reach" class="an-panel space-y-4">
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Total reach (views)</p>
+        <p id="reachViews" class="text-3xl font-medium">—</p>
+        <div class="h-32 mt-3"><canvas id="chartReach"></canvas></div>
+      </div>
+      <div class="card p-4">
+        <p class="font-medium mb-3">Content mix</p>
+        <div id="reachMix" class="space-y-2 text-sm">
+          <p class="text-gray-500">Loading…</p>
+        </div>
+      </div>
+      <div class="card p-4">
+        <p class="font-medium mb-3">How viewers find content</p>
+        <p class="text-xs text-gray-400 mb-2">Detailed traffic sources need more analytics data from the server.</p>
+        <div class="space-y-2 text-sm text-gray-400">
+          <div class="flex justify-between"><span>In-app feed / browse</span><span>—</span></div>
+          <div class="flex justify-between"><span>Search</span><span>—</span></div>
+          <div class="flex justify-between"><span>External / shared</span><span>—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ENGAGEMENT -->
+    <div id="an-engagement" class="an-panel space-y-4">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Total likes</p>
+          <p id="engLikes" class="text-2xl font-medium">—</p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Total comments</p>
+          <p id="engComments" class="text-2xl font-medium">—</p>
+        </div>
+      </div>
+      <div class="card p-4">
+        <p class="font-medium mb-1">Engagement rate</p>
+        <p class="text-xs text-gray-400 mb-2">Likes + comments ÷ views</p>
+        <p id="engRate" class="text-3xl font-medium text-emerald-400">—</p>
+      </div>
+      <div class="card p-4">
+        <h3 class="font-semibold mb-3">Most engaging content</h3>
+        <div id="engTopList" class="space-y-3">
+          <p class="text-sm text-gray-500">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUDIENCE -->
+    <div id="an-audience" class="an-panel space-y-4">
+      <div class="card p-4">
+        <p class="font-medium mb-1">Audience overview</p>
+        <p class="text-xs text-gray-400 mb-3">Age, device and location need viewer analytics on the server (not available yet).</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <p class="text-xs text-gray-400">Your videos</p>
+            <p id="audVideos" class="text-xl font-medium">—</p>
+          </div>
+          <div>
+            <p class="text-xs text-gray-400">Your reels</p>
+            <p id="audReels" class="text-xl font-medium">—</p>
+          </div>
+        </div>
+      </div>
+      <div class="card p-4">
+        <p class="font-medium mb-3">Views share</p>
+        <div class="h-40"><canvas id="chartAudience"></canvas></div>
+      </div>
+      <div class="card p-4 text-sm text-gray-400">
+        When more viewers watch your content, richer audience insights can be added from the backend.
       </div>
     </div>
   </div>
@@ -155,6 +289,77 @@
     <button id="earnPayoutBtn" class="w-full bg-emerald-600 text-white font-semibold py-3.5 rounded-xl">Request Payout</button>
   </div>
 </main>
+
+<!-- VIDEO DETAIL -->
+<div id="videoDetail" class="fixed inset-0 z-[60] hidden" style="background: var(--bg);">
+  <header class="sticky top-0 z-10 border-b px-3 py-3 flex items-center gap-3" style="background: var(--bg-header); border-color: var(--border);">
+    <button type="button" onclick="closeVideoDetail()" class="text-xl px-1" aria-label="Back">←</button>
+    <div id="vdThumb" class="w-10 h-10 rounded bg-gray-700 flex-shrink-0 overflow-hidden"></div>
+    <p id="vdTitle" class="text-sm font-medium truncate flex-1">—</p>
+  </header>
+  <div class="px-3 pt-4 pb-24 space-y-4 overflow-y-auto" style="max-height: calc(100vh - 56px);">
+    <div class="flex gap-4 overflow-x-auto border-b" style="border-color: var(--border);">
+      <button type="button" class="sub-tab active" onclick="switchVdTab(this,'vd-overview')">Overview</button>
+      <button type="button" class="sub-tab" onclick="switchVdTab(this,'vd-reach')">Reach</button>
+      <button type="button" class="sub-tab" onclick="switchVdTab(this,'vd-engagement')">Engagement</button>
+    </div>
+    <div id="vd-overview" class="vd-panel space-y-4">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Views</p>
+          <p id="vdViews" class="text-2xl font-medium">—</p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Likes</p>
+          <p id="vdLikes" class="text-2xl font-medium">—</p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Comments</p>
+          <p id="vdComments" class="text-2xl font-medium">—</p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-gray-400">Type</p>
+          <p id="vdType" class="text-2xl font-medium">—</p>
+        </div>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-gray-400 mb-1">Engagement rate</p>
+        <p id="vdEngRate" class="text-3xl font-medium text-emerald-400">—</p>
+        <p class="text-xs text-gray-400 mt-1">(likes + comments) ÷ views</p>
+      </div>
+      <div class="card p-4 text-sm space-y-2">
+        <div class="flex justify-between"><span class="text-gray-400">Uploaded</span><span id="vdUploaded">—</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Duration</span><span id="vdDuration">—</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Watch time</span><span id="vdWatch">Not tracked on server yet</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Subscribers from this</span><span id="vdSubs">Not tracked on server yet</span></div>
+      </div>
+      <div class="card p-4">
+        <p class="font-medium mb-2">Views vs likes</p>
+        <div class="h-36"><canvas id="chartVd"></canvas></div>
+      </div>
+    </div>
+    <div id="vd-reach" class="vd-panel hidden space-y-4">
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Views</p>
+        <p id="vdReachViews" class="text-3xl font-medium">—</p>
+      </div>
+      <div class="card p-4 text-sm text-gray-400">
+        Traffic sources (Shorts feed, search, etc.) are not stored per video on the server yet. Views shown above are real totals for this content.
+      </div>
+    </div>
+    <div id="vd-engagement" class="vd-panel hidden space-y-4">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="card p-4"><p class="text-xs text-gray-400">Likes</p><p id="vdEngLikes" class="text-2xl font-medium">—</p></div>
+        <div class="card p-4"><p class="text-xs text-gray-400">Comments</p><p id="vdEngComments" class="text-2xl font-medium">—</p></div>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Engagement rate</p>
+        <p id="vdEngRate2" class="text-3xl font-medium text-emerald-400">—</p>
+      </div>
+    </div>
+  </div>
+</div>
+
 
 <nav class="bottom-nav fixed bottom-0 left-0 right-0 bg-[#0f0f0f] border-t border-[#222] flex justify-around py-2 z-50">
   <button onclick="switchTab('dashboard')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400 nav-active" data-tab="dashboard">
@@ -221,6 +426,261 @@ function setStatus(msg, isError) {
   el.className = "card p-3 mb-3 text-sm " + (isError ? "text-red-400" : "text-gray-400");
 }
 
+
+function switchAn(btn, id) {
+  document.querySelectorAll("#tab-analytics .sub-tab").forEach(function(t) { t.classList.remove("active"); });
+  btn.classList.add("active");
+  document.querySelectorAll(".an-panel").forEach(function(p) { p.classList.remove("active"); });
+  var el = document.getElementById("an-" + id);
+  if (el) el.classList.add("active");
+}
+
+var _charts = {};
+function makeChart(canvasId, type, labels, data, color) {
+  var canvas = document.getElementById(canvasId);
+  if (!canvas || typeof Chart === "undefined") return;
+  if (_charts[canvasId]) { _charts[canvasId].destroy(); }
+  _charts[canvasId] = new Chart(canvas, {
+    type: type,
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        backgroundColor: color || "#3b82f6",
+        borderColor: color || "#3b82f6",
+        borderWidth: type === "line" ? 2 : 0,
+        borderRadius: type === "bar" ? 3 : 0,
+        tension: 0.3,
+        pointRadius: 0,
+        fill: type === "line" ? false : true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: type === "doughnut" ? {} : {
+        x: { display: type === "bar", ticks: { color: "#888", font: { size: 9 }, maxRotation: 45 }, grid: { display: false } },
+        y: { display: type === "bar" || type === "line", ticks: { color: "#888", font: { size: 9 } }, grid: { color: "rgba(128,128,128,0.15)" } }
+      }
+    }
+  });
+}
+
+
+var _rtFilter = "48hrs";
+
+function setRtFilter(el, key) {
+  _rtFilter = key;
+  window._rtFilter = key;
+  document.querySelectorAll("#rtFilters .chip").forEach(function(c) { c.classList.remove("active"); });
+  if (el) el.classList.add("active");
+  renderRealtime();
+}
+
+function renderRealtime() {
+  var all = window._studioAll || [];
+  var note = document.getElementById("rtNote");
+  var list = all.slice();
+  var key = window._rtFilter || "48hrs";
+
+  if (key === "videos") list = all.filter(function(i) { return i._type === "video"; });
+  else if (key === "shorts") list = all.filter(function(i) { return i._type === "reel"; });
+
+  // 60min / 48hrs: server has no hourly counters yet — show real lifetime totals with clear label
+  if (key === "60min") {
+    if (note) note.textContent = "Server does not store last-60-min views yet. Showing your real lifetime totals.";
+  } else if (key === "48hrs") {
+    if (note) note.textContent = "Server does not store last-48-hour views yet. Showing your real lifetime totals.";
+  } else if (key === "videos") {
+    if (note) note.textContent = "Only your videos · real views from server";
+  } else if (key === "shorts") {
+    if (note) note.textContent = "Only your reels/shorts · real views from server";
+  } else {
+    if (note) note.textContent = "All your content · real views from server";
+  }
+
+  list = list.slice().sort(function(a, b) { return (b.views || 0) - (a.views || 0); });
+  var total = list.reduce(function(a, i) { return a + (i.views || 0); }, 0);
+  var rtBig = document.getElementById("rtBigNum");
+  if (rtBig) rtBig.textContent = total.toLocaleString();
+  var lab = document.getElementById("rtBigLabel");
+  if (lab) lab.textContent = key === "videos" ? "Video views" : key === "shorts" ? "Reel views" : "Views";
+
+  var topN = list.slice(0, 12);
+  var labels = topN.map(function(i) { return (i.title || "Item").slice(0, 10); });
+  var data = topN.map(function(i) { return i.views || 0; });
+  makeChart("chartRealtime", "bar", labels.length ? labels : ["—"], data.length ? data : [0], "#3b82f6");
+
+  var rtList = document.getElementById("rtTopList");
+  if (!rtList) return;
+  if (!topN.length) {
+    rtList.innerHTML = '<p class="text-sm text-gray-500">No content in this filter</p>';
+    return;
+  }
+  rtList.innerHTML = topN.map(function(item, idx) {
+    var th = item.thumbnail
+      ? '<img src="' + esc(item.thumbnail) + '" class="w-12 h-14 rounded object-cover flex-shrink-0"/>'
+      : '<div class="w-12 h-14 rounded bg-gray-700 flex-shrink-0"></div>';
+    var id = item.id || ("idx" + idx);
+    return '<div class="flex items-center gap-3 card p-2 video-row" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(id) + '\')">' + th +
+      '<div class="flex-1 min-w-0"><p class="text-sm truncate">' + esc(item.title || "Untitled") + '</p>' +
+      '<p class="text-[11px] text-gray-400">' + (item._type === "reel" ? "Reel" : "Video") + '</p></div>' +
+      '<span class="text-sm font-medium">' + fmtNum(item.views) + '</span></div>';
+  }).join("");
+}
+
+function openVideoDetailById(id) {
+  var all = window._studioAll || [];
+  var item = null;
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id)) { item = all[i]; break; }
+  }
+  if (!item) return;
+  openVideoDetail(item);
+}
+
+function openVideoDetail(item) {
+  var panel = document.getElementById("videoDetail");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  document.getElementById("vdTitle").textContent = item.title || "Untitled";
+  var thumb = document.getElementById("vdThumb");
+  if (item.thumbnail) {
+    thumb.innerHTML = '<img src="' + esc(item.thumbnail) + '" class="w-full h-full object-cover"/>';
+  } else {
+    thumb.innerHTML = "";
+  }
+
+  var views = item.views || 0;
+  var likes = item.likes || 0;
+  var comments = item.commentCount || 0;
+  var rate = views > 0 ? ((likes + comments) / views * 100) : 0;
+
+  document.getElementById("vdViews").textContent = fmtNum(views);
+  document.getElementById("vdLikes").textContent = fmtNum(likes);
+  document.getElementById("vdComments").textContent = fmtNum(comments);
+  document.getElementById("vdType").textContent = item._type === "reel" ? "Reel" : "Video";
+  document.getElementById("vdEngRate").textContent = rate.toFixed(1) + "%";
+  document.getElementById("vdEngRate2").textContent = rate.toFixed(1) + "%";
+  document.getElementById("vdReachViews").textContent = fmtNum(views);
+  document.getElementById("vdEngLikes").textContent = fmtNum(likes);
+  document.getElementById("vdEngComments").textContent = fmtNum(comments);
+
+  var up = item.uploadedAt ? String(item.uploadedAt).replace("T", " ").slice(0, 16) : "—";
+  document.getElementById("vdUploaded").textContent = up;
+  document.getElementById("vdDuration").textContent = item.duration != null ? String(item.duration) : "—";
+  document.getElementById("vdWatch").textContent = "Not tracked on server yet";
+  document.getElementById("vdSubs").textContent = "Not tracked on server yet";
+
+  makeChart("chartVd", "bar", ["Views", "Likes", "Comments"], [views, likes, comments], "#3b82f6");
+
+  // reset tabs
+  document.querySelectorAll("#videoDetail .sub-tab").forEach(function(t, i) {
+    t.classList.toggle("active", i === 0);
+  });
+  document.querySelectorAll(".vd-panel").forEach(function(p, i) {
+    if (p.id === "vd-overview") p.classList.remove("hidden");
+    else p.classList.add("hidden");
+  });
+}
+
+function closeVideoDetail() {
+  var panel = document.getElementById("videoDetail");
+  if (panel) panel.classList.add("hidden");
+  document.body.style.overflow = "";
+}
+
+function switchVdTab(btn, id) {
+  document.querySelectorAll("#videoDetail .sub-tab").forEach(function(t) { t.classList.remove("active"); });
+  btn.classList.add("active");
+  document.querySelectorAll(".vd-panel").forEach(function(p) { p.classList.add("hidden"); });
+  var el = document.getElementById(id);
+  if (el) el.classList.remove("hidden");
+}
+
+
+function fillAnalytics(myVideos, myReels, latest) {
+  var totalViews = myVideos.reduce(function(a, v) { return a + (v.views || 0); }, 0)
+    + myReels.reduce(function(a, r) { return a + (r.views || 0); }, 0);
+  var totalLikes = myVideos.reduce(function(a, v) { return a + (v.likes || 0); }, 0)
+    + myReels.reduce(function(a, r) { return a + (r.likes || 0); }, 0);
+  var totalComments = myVideos.reduce(function(a, v) { return a + (v.commentCount || 0); }, 0)
+    + myReels.reduce(function(a, r) { return a + (r.commentCount || 0); }, 0);
+
+  document.getElementById("anContentCount").textContent = String(myVideos.length + myReels.length);
+  document.getElementById("anContentSplit").textContent = myVideos.length + " videos · " + myReels.length + " reels";
+
+  var sorted = latest.slice().sort(function(a, b) { return (b.views || 0) - (a.views || 0); });
+  var topN = sorted.slice(0, 8);
+  var labels = topN.map(function(i) { return (i.title || "Item").slice(0, 12); });
+  var viewsData = topN.map(function(i) { return i.views || 0; });
+  var likesData = topN.map(function(i) { return i.likes || 0; });
+
+  // sparkline-style: use cumulative-ish from sorted views
+  makeChart("chartOvViews", "line", labels.length ? labels : ["—"], viewsData.length ? viewsData : [0], "#3b82f6");
+  makeChart("chartOvLikes", "line", labels.length ? labels : ["—"], likesData.length ? likesData : [0], "#10b981");
+  makeChart("chartTopBars", "bar", labels.length ? labels : ["No data"], viewsData.length ? viewsData : [0], "#3b82f6");
+
+  // Realtime — store for filters + detail
+  window._studioAll = latest.slice();
+  window._rtFilter = window._rtFilter || "48hrs";
+  renderRealtime();
+
+  // Reach
+  document.getElementById("reachViews").textContent = fmtNum(totalViews);
+  makeChart("chartReach", "line", labels.length ? labels : ["—"], viewsData.length ? viewsData : [0], "#3b82f6");
+  var vViews = myVideos.reduce(function(a, v) { return a + (v.views || 0); }, 0);
+  var rViews = myReels.reduce(function(a, r) { return a + (r.views || 0); }, 0);
+  var mix = document.getElementById("reachMix");
+  if (mix) {
+    var vPct = totalViews ? Math.round(vViews / totalViews * 100) : 0;
+    var rPct = totalViews ? Math.round(rViews / totalViews * 100) : 0;
+    mix.innerHTML =
+      '<div class="flex justify-between"><span>Videos</span><span>' + fmtNum(vViews) + ' (' + vPct + '%)</span></div>' +
+      '<div class="flex justify-between"><span>Reels</span><span>' + fmtNum(rViews) + ' (' + rPct + '%)</span></div>';
+  }
+
+  // Engagement
+  document.getElementById("engLikes").textContent = fmtNum(totalLikes);
+  document.getElementById("engComments").textContent = fmtNum(totalComments);
+  var rate = totalViews > 0 ? ((totalLikes + totalComments) / totalViews * 100) : 0;
+  document.getElementById("engRate").textContent = rate.toFixed(1) + "%";
+  var engSorted = latest.slice().sort(function(a, b) {
+    var ea = ((a.likes || 0) + (a.commentCount || 0));
+    var eb = ((b.likes || 0) + (b.commentCount || 0));
+    return eb - ea;
+  }).slice(0, 8);
+  var engBox = document.getElementById("engTopList");
+  if (engBox) {
+    engBox.innerHTML = engSorted.length ? engSorted.map(function(item) {
+      return '<div class="flex items-center gap-3">' +
+        (item.thumbnail ? '<img src="' + esc(item.thumbnail) + '" class="w-10 h-10 rounded object-cover"/>' : '<div class="w-10 h-10 rounded bg-gray-700"></div>') +
+        '<p class="text-sm flex-1 truncate">' + esc(item.title || "Untitled") + '</p>' +
+        '<span class="text-xs text-gray-400">' + fmtNum(item.likes) + ' likes · ' + fmtNum(item.commentCount) + ' cmts</span></div>';
+    }).join("") : '<p class="text-sm text-gray-500">No content yet</p>';
+  }
+
+  // Audience
+  document.getElementById("audVideos").textContent = String(myVideos.length);
+  document.getElementById("audReels").textContent = String(myReels.length);
+  var audCanvas = document.getElementById("chartAudience");
+  if (audCanvas && typeof Chart !== "undefined") {
+    if (_charts.chartAudience) _charts.chartAudience.destroy();
+    _charts.chartAudience = new Chart(audCanvas, {
+      type: "doughnut",
+      data: {
+        labels: ["Video views", "Reel views"],
+        datasets: [{ data: [vViews || 0, rViews || 0], backgroundColor: ["#3b82f6", "#10b981"] }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#888", boxWidth: 12 } } } }
+    });
+  }
+}
+
+
 async function loadStudioData() {
   var token = ntToken();
   if (!token) {
@@ -278,7 +738,7 @@ async function loadStudioData() {
         var th = item.thumbnail
           ? '<img src="' + esc(item.thumbnail) + '" class="w-16 h-10 rounded object-cover flex-shrink-0"/>'
           : '<div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>';
-        return '<div class="card p-3 flex gap-3 items-start">' + th +
+        return '<div class="card p-3 flex gap-3 items-start" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(item.id || '') + '\')">' + th +
           '<div class="flex-1 min-w-0"><p class="text-sm font-medium truncate">' + esc(item.title || "Untitled") + '</p>' +
           '<p class="text-xs text-gray-400 mt-0.5">' + (item._type === "reel" ? "Reel" : "Video") + '</p>' +
           '<div class="flex gap-3 mt-1.5 text-xs text-gray-400">' +
@@ -310,10 +770,12 @@ async function loadStudioData() {
       var th = item.thumbnail
         ? '<img src="' + esc(item.thumbnail) + '" class="w-10 h-10 rounded object-cover flex-shrink-0"/>'
         : '<div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>';
-      return '<div class="flex items-center gap-3">' + th +
+      return '<div class="flex items-center gap-3" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(item.id || '') + '\')">' + th +
         '<p class="text-sm flex-1 truncate">' + esc(item.title || "Untitled") + '</p>' +
         '<span class="text-sm font-medium">' + fmtNum(item.views) + '</span></div>';
     }).join("") : '<p class="text-sm text-gray-500">No content yet</p>';
+
+    try { fillAnalytics(myVideos, myReels, latest); } catch (err) { console.error("analytics fill", err); }
 
     if (earnRes && earnRes.enabled) {
       document.getElementById("earnAvailable").textContent = fmtUsd(earnRes.availableUsd);
