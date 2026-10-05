@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f0f0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Noortube Studio">
+<title>Noortube Studio</title>
+<link rel="manifest" href="studio-manifest.json">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  body { background: #0f0f0f; color: #f1f1f1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  .nav-active { color: #10b981 !important; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .card { background: #1c1c1c; border-radius: 12px; }
+  .chip { background: #2a2a2a; border-radius: 9999px; padding: 6px 12px; font-size: 13px; white-space: nowrap; cursor: pointer; }
+  .chip.active { background: #fff; color: #000; font-weight: 600; }
+  .sub-tab { color: #9ca3af; border-bottom: 2px solid transparent; padding-bottom: 8px; }
+  .sub-tab.active { color: #fff; border-bottom-color: #fff; font-weight: 500; }
+  .video-row { cursor: pointer; transition: background 0.15s; }
+  .video-row:active { background: #252525; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  .bottom-nav { box-shadow: 0 -1px 0 #222; }
+  #videoDetail { display: none; }
+  #videoDetail.active { display: block; }
+  #mainTabs { display: block; }
+  #mainTabs.hidden { display: none; }
+  #installBanner { display: none; }
+  #installBanner.show { display: flex; }
+</style>
+</head>
+<body class="min-h-screen pb-20">
+
+<!-- INSTALL BANNER (PWA) -->
+<div id="installBanner" class="fixed top-0 left-0 right-0 z-50 bg-emerald-700 text-white px-4 py-2.5 items-center justify-between gap-3 text-sm">
+  <span class="flex-1">Install Noortube Studio for faster access</span>
+  <button onclick="triggerInstall()" class="bg-white text-emerald-800 font-semibold px-3 py-1 rounded-full text-xs">Install</button>
+  <button onclick="document.getElementById('installBanner').classList.remove('show')" class="text-white/80 text-lg leading-none">&times;</button>
+</div>
+
+<!-- TOP BAR -->
+<header id="mainHeader" class="sticky top-0 z-40 bg-[#0f0f0f] border-b border-[#222] px-4 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-2">
+    <a href="/" title="Back to Noortube" class="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center font-bold text-sm text-white no-underline">NT</a>
+    <span class="font-semibold text-[17px]">Studio</span>
+  </div>
+  <div class="flex items-center gap-5 text-xl text-gray-300">
+    <i class="fa-solid fa-plus"></i>
+    <i class="fa-solid fa-magnifying-glass text-lg"></i>
+    <i class="fa-regular fa-bell"></i>
+    <div class="w-8 h-8 rounded-full bg-emerald-700 flex items-center justify-center text-xs font-bold">CN</div>
+  </div>
+</header>
+
+<!-- VIDEO DETAIL HEADER (hidden by default) -->
+<header id="detailHeader" class="sticky top-0 z-40 bg-[#0f0f0f] border-b border-[#222] px-3 py-3 hidden">
+  <div class="flex items-center gap-3">
+    <button onclick="closeVideoDetail()" class="text-xl text-gray-300"><i class="fa-solid fa-arrow-left"></i></button>
+    <div class="w-8 h-8 rounded bg-gray-700 flex-shrink-0"></div>
+    <p id="detailTitle" class="text-sm font-medium truncate flex-1">Jacks parro #shortvideo</p>
+  </div>
+</header>
+
+<main class="px-3 pt-3">
+
+<!-- ========== MAIN TABS ========== -->
+<div id="mainTabs">
+
+<!-- DASHBOARD -->
+<div id="tab-dashboard" class="tab-content active space-y-5">
+  <div class="flex items-center gap-3">
+    <div class="w-14 h-14 rounded-full bg-emerald-700 flex items-center justify-center text-xl font-bold">CN</div>
+    <div>
+      <h2 class="font-semibold text-[18px]">Noortube Creator</h2>
+      <p class="text-[15px] text-gray-300">1,248</p>
+      <p class="text-xs text-gray-500">Total subscribers</p>
+    </div>
+  </div>
+  <div>
+    <div class="flex justify-between items-center mb-2">
+      <h3 class="font-semibold text-[16px]">Channel analytics</h3>
+      <span class="text-xs text-gray-400">Last 28 days</span>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Views</p>
+        <p class="text-[22px] font-medium mt-1">58.2K</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Watch time (hours)</p>
+        <p class="text-[22px] font-medium mt-1">303</p>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h3 class="font-semibold text-[16px] mb-3">Latest published content</h3>
+    <div class="space-y-3">
+      <div class="card p-3 flex gap-3 items-start video-row" onclick="openVideoDetail('Jacks parow new idea #shortvideo', '21', '+0')">
+        <div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium truncate">Jacks parow new idea #shortvideo ...</p>
+          <p class="text-xs text-gray-400 mt-0.5">First 11 hours, 21 minutes</p>
+          <div class="flex gap-3 mt-1.5 text-xs text-gray-400">
+            <span><i class="fa-solid fa-play"></i> 21</span>
+            <span><i class="fa-regular fa-thumbs-up"></i> 2</span>
+            <span><i class="fa-regular fa-comment"></i> 0</span>
+          </div>
+        </div>
+        <i class="fa-solid fa-chevron-down text-gray-500 text-xs mt-1"></i>
+      </div>
+      <div class="card p-3 flex gap-3 items-start video-row" onclick="openVideoDetail('Jacks parow #shortvideo #ytshorts', '1.1K', '+2')">
+        <div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium truncate">Jacks parow #shortvideo #ytshort...</p>
+          <p class="text-xs text-gray-400 mt-0.5">First 14 hours, 10 minutes</p>
+          <div class="flex gap-3 mt-1.5 text-xs text-gray-400">
+            <span><i class="fa-solid fa-play"></i> 1.1K</span>
+            <span><i class="fa-regular fa-thumbs-up"></i> 39</span>
+            <span><i class="fa-regular fa-comment"></i> 0</span>
+          </div>
+        </div>
+        <i class="fa-solid fa-chevron-down text-gray-500 text-xs mt-1"></i>
+      </div>
+      <div class="card p-3 flex gap-3 items-start video-row" onclick="openVideoDetail('Fingers in your mind #shortvideo', '1.2K', '+1')">
+        <div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium truncate">Fingers in your mind #shortvideo #...</p>
+          <p class="text-xs text-gray-400 mt-0.5">First 16 hours, 53 minutes</p>
+          <div class="flex gap-3 mt-1.5 text-xs text-gray-400">
+            <span><i class="fa-solid fa-play"></i> 1.2K</span>
+            <span><i class="fa-regular fa-thumbs-up"></i> 13</span>
+            <span><i class="fa-regular fa-comment"></i> 0</span>
+          </div>
+        </div>
+        <i class="fa-solid fa-chevron-down text-gray-500 text-xs mt-1"></i>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h3 class="font-semibold text-[16px] mb-2">Comments</h3>
+    <div class="card p-4 text-sm text-gray-400">No new comments</div>
+  </div>
+</div>
+
+<!-- CONTENT -->
+<div id="tab-content" class="tab-content space-y-4">
+  <div class="flex gap-2 overflow-x-auto pb-1">
+    <button class="chip"><i class="fa-solid fa-sliders text-xs"></i></button>
+    <button class="chip">Type <i class="fa-solid fa-caret-down text-[10px] ml-1"></i></button>
+    <button class="chip">Visibility <i class="fa-solid fa-caret-down text-[10px] ml-1"></i></button>
+    <button class="chip">Views <i class="fa-solid fa-caret-down text-[10px] ml-1"></i></button>
+    <button class="chip">Restriction <i class="fa-solid fa-caret-down text-[10px] ml-1"></i></button>
+  </div>
+  <div>
+    <div class="flex justify-between items-center mb-2">
+      <h3 class="font-semibold">Videos</h3>
+      <button class="text-sm text-gray-400 border border-gray-600 rounded-full px-3 py-0.5">View all</button>
+    </div>
+    <div class="flex gap-3 overflow-x-auto pb-2">
+      <div class="w-36 flex-shrink-0" onclick="openVideoDetail('jalwa hai hamara', '8', '+0')">
+        <div class="aspect-video rounded-lg bg-gray-700 relative"><span class="absolute bottom-1 right-1 bg-black/80 text-[10px] px-1 rounded">0:09</span></div>
+        <p class="text-xs mt-1.5 truncate">jalwa hai hamara...</p>
+        <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> 8 <i class="fa-regular fa-thumbs-up ml-1"></i> 3</p>
+      </div>
+      <div class="w-36 flex-shrink-0">
+        <div class="aspect-video rounded-lg bg-gray-700 relative"><span class="absolute bottom-1 right-1 bg-black/80 text-[10px] px-1 rounded">0:09</span></div>
+        <p class="text-xs mt-1.5 truncate">Jalwa hai hamar...</p>
+        <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> 10 <i class="fa-regular fa-thumbs-up ml-1"></i> 2</p>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div class="flex justify-between items-center mb-2">
+      <h3 class="font-semibold">Reels</h3>
+      <button class="text-sm text-gray-400 border border-gray-600 rounded-full px-3 py-0.5">View all</button>
+    </div>
+    <div class="flex gap-3 overflow-x-auto pb-2">
+      <div class="w-28 flex-shrink-0 video-row" onclick="openVideoDetail('Jacks parro #shortvideo', '28.6K', '+8')">
+        <div class="aspect-[9/16] rounded-lg bg-gray-700"></div>
+        <p class="text-xs mt-1.5 truncate">Jacks par...</p>
+        <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> 28.6K</p>
+      </div>
+      <div class="w-28 flex-shrink-0 video-row" onclick="openVideoDetail('Ab maar bhi do bro', '6.4K', '+3')">
+        <div class="aspect-[9/16] rounded-lg bg-gray-700"></div>
+        <p class="text-xs mt-1.5 truncate">Ab maar...</p>
+        <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> 6.4K</p>
+      </div>
+      <div class="w-28 flex-shrink-0 video-row" onclick="openVideoDetail('Fingers in your mind', '1.2K', '+1')">
+        <div class="aspect-[9/16] rounded-lg bg-gray-700"></div>
+        <p class="text-xs mt-1.5 truncate">Fingers in...</p>
+        <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> 1.2K</p>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h3 class="font-semibold mb-2">Creator toolkit</h3>
+    <div class="card p-4 flex items-center gap-3">
+      <i class="fa-solid fa-bullhorn text-gray-400"></i>
+      <span>Promotions</span>
+    </div>
+  </div>
+</div>
+
+<!-- ANALYTICS -->
+<div id="tab-analytics" class="tab-content space-y-4">
+  <div class="flex gap-5 border-b border-[#222] text-[15px] overflow-x-auto">
+    <button class="sub-tab active" onclick="switchSub(this,'an-overview')">Overview</button>
+    <button class="sub-tab" onclick="switchSub(this,'an-realtime')">Real time</button>
+    <button class="sub-tab" onclick="switchSub(this,'an-reach')">Reach</button>
+    <button class="sub-tab" onclick="switchSub(this,'an-engagement')">Engagement</button>
+    <button class="sub-tab" onclick="switchSub(this,'an-audience')">Audience</button>
+  </div>
+
+  <!-- Channel Overview -->
+  <div id="an-overview" class="sub-panel space-y-4">
+    <!-- Horizontal scrollable cards -->
+    <div class="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+      <div class="card p-4 min-w-[160px] flex-shrink-0">
+        <p class="text-xs text-gray-400">Views · 28 days</p>
+        <p class="text-2xl font-medium">58.2K</p>
+        <div class="h-16 mt-2"><canvas id="ovViews"></canvas></div>
+      </div>
+      <div class="card p-4 min-w-[160px] flex-shrink-0">
+        <p class="text-xs text-gray-400">Watch time (hours)</p>
+        <p class="text-2xl font-medium">303 <span class="text-emerald-400 text-sm">↑</span></p>
+        <p class="text-[11px] text-emerald-400">89% more</p>
+        <div class="h-14 mt-1"><canvas id="ovWatch"></canvas></div>
+      </div>
+      <div class="card p-4 min-w-[160px] flex-shrink-0">
+        <p class="text-xs text-gray-400">Subscribers · 28 days</p>
+        <p class="text-2xl font-medium text-emerald-400">+128</p>
+        <p class="text-[11px] text-emerald-400">↑ 24% more</p>
+        <div class="h-14 mt-1"><canvas id="ovSubs"></canvas></div>
+      </div>
+    </div>
+    <div class="card p-4 flex items-center justify-between">
+      <span class="text-sm text-gray-300">Your weekly recap is here</span>
+      <i class="fa-solid fa-clipboard-list text-purple-400 text-xl"></i>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between mb-3">
+        <h3 class="font-semibold">Top content</h3>
+        <span class="text-xs text-gray-400">Views · Last 28 days</span>
+      </div>
+      <div class="space-y-3">
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Jacks parro #shortvideo #youtubeshorts', '28.6K', '+8')">
+          <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Jacks parro #shortvideo #youtubeshorts</p>
+          <span class="text-sm font-medium">28.6K</span>
+        </div>
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Ab maar bhi do bro #shortvideo', '6.4K', '+3')">
+          <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Ab maar bhi do bro #shortvideo</p>
+          <span class="text-sm font-medium">6.4K</span>
+        </div>
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Chalo jeet ke dikhao #shortvideo', '2.5K', '+1')">
+          <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Chalo jeet ke dikhao #shortvideo</p>
+          <span class="text-sm font-medium">2.5K</span>
+        </div>
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Budde me dm hai #animeedit', '1.7K', '+0')">
+          <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Budde me dm hai #animeedit</p>
+          <span class="text-sm font-medium">1.7K</span>
+        </div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between mb-1">
+        <h3 class="font-semibold">Real time</h3>
+        <span class="text-xs text-gray-400">Views · 48 hours</span>
+      </div>
+      <p class="text-3xl font-medium">52,165</p>
+      <div class="h-12 mt-2"><canvas id="ovRealtime"></canvas></div>
+      <div class="mt-3 space-y-2.5">
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Jacks parro #shortvideo', '46.4K', '+14')">
+          <div class="w-8 h-8 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Jacks parro #shortvideo</p>
+          <span class="text-sm">46.4K</span>
+        </div>
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Jacks parow death #shortvideo', '3.1K', '+2')">
+          <div class="w-8 h-8 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Jacks parow 💀 death</p>
+          <span class="text-sm">3.1K</span>
+        </div>
+        <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Fingers in your mind', '1.2K', '+1')">
+          <div class="w-8 h-8 rounded bg-gray-700 flex-shrink-0"></div>
+          <p class="text-sm flex-1 truncate">Fingers in your mind</p>
+          <span class="text-sm">1.2K</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REAL TIME FULL -->
+  <div id="an-realtime" class="sub-panel hidden space-y-4">
+    <!-- Time filters -->
+    <div class="flex gap-2 overflow-x-auto pb-1" id="rtFilters">
+      <span class="chip" onclick="setRtFilter(this,'60min')">60 MIN</span>
+      <span class="chip active" onclick="setRtFilter(this,'48hrs')">48 HRS</span>
+      <span class="chip" onclick="setRtFilter(this,'all')">All</span>
+      <span class="chip" onclick="setRtFilter(this,'videos')">Videos</span>
+      <span class="chip" onclick="setRtFilter(this,'shorts')">Shorts</span>
+    </div>
+
+    <!-- Big number -->
+    <div class="text-center py-2">
+      <p class="text-5xl font-bold tracking-tight" id="rtBigNum">52,341</p>
+      <p class="text-gray-400 text-sm mt-1" id="rtLabel">Views</p>
+    </div>
+
+    <!-- Main bar chart -->
+    <div class="h-52 relative px-1">
+      <canvas id="rtFull"></canvas>
+      <div class="absolute bottom-0 left-0 right-0 flex justify-between text-[10px] text-gray-500 px-1">
+        <span id="rtLeftLabel">48 hours ago</span>
+        <span>Now</span>
+      </div>
+    </div>
+
+    <!-- Top traffic sources -->
+    <div class="card p-4">
+      <p class="font-medium mb-3">Top traffic sources</p>
+      <div class="space-y-3 text-sm">
+        <div class="flex items-center gap-3">
+          <span class="flex-1 text-gray-300">Shorts feed</span>
+          <span class="font-medium w-14 text-right">45.3K</span>
+          <div class="w-16 h-5"><canvas id="traf1"></canvas></div>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="flex-1 text-gray-300">Other features</span>
+          <span class="font-medium w-14 text-right">832</span>
+          <div class="w-16 h-5"><canvas id="traf2"></canvas></div>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="flex-1 text-gray-300">Search</span>
+          <span class="font-medium w-14 text-right">192</span>
+          <div class="w-16 h-5"><canvas id="traf3"></canvas></div>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="flex-1 text-gray-300">Browse features</span>
+          <span class="font-medium w-14 text-right">99</span>
+          <div class="w-16 h-5"><canvas id="traf4"></canvas></div>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="flex-1 text-gray-300">Channel pages</span>
+          <span class="font-medium w-14 text-right">34</span>
+          <div class="w-16 h-5"><canvas id="traf5"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top videos -->
+    <div>
+      <h3 class="font-semibold mb-3">Top videos</h3>
+      <div class="space-y-4">
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Jacks parro #shortvideo #youtubeshorts', '46.6K', '+14')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Jacks parro #shortvideo #youtubeshorts</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">46.6K</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp1"></canvas></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Jacks parow death #shortvideo', '3.1K', '+2')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Jacks parow 💀 death #shortvideo</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">3.1K</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp2"></canvas></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Fingers in your mind #shortvideo', '1.2K', '+1')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Fingers in your mind #shortvideo</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">1.2K</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp3"></canvas></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Jacks parow #shortvideo', '1.1K', '+1')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Jacks parow #shortvideo</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">1.1K</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp4"></canvas></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Mr beast in india #shortvideo', '74', '+0')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Mr beast in india #shortvideo</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">74</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp5"></canvas></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Emotional video #youtubeshorts', '34', '+0')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">Emotional video #youtubeshorts</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">Reel · 48 hrs</p>
+          </div>
+          <div class="text-right">
+            <p class="text-sm font-medium">34</p>
+            <div class="w-16 h-5 mt-0.5"><canvas id="sp6"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REACH / ENGAGEMENT / AUDIENCE (channel level - simplified) -->
+  <div id="an-reach" class="sub-panel hidden space-y-4">
+    <div class="card p-4">
+      <p class="text-xs text-gray-400">Views</p>
+      <p class="text-3xl font-medium">46.5K <span class="text-emerald-400 text-sm">↑</span></p>
+      <p class="text-xs text-emerald-400">45.4K more than usual</p>
+      <div class="h-36 mt-3"><canvas id="reachChart"></canvas></div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">How viewers find this video</p>
+      <p class="text-xs text-gray-400 mb-3">Views · Since published</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-400"></span>Shorts feed</span><span>97.5%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-600"></span>Other features</span><span>1.8%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-800"></span>Search</span><span>0.4%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-gray-500"></span>Other</span><span>0.3%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="an-engagement" class="sub-panel hidden space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4"><p class="text-xs text-gray-400">Engaged views</p><p class="text-2xl font-medium">26.0K</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-400">Unique viewers</p><p class="text-2xl font-medium">16.0K</p></div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">How viewers engaged</p>
+      <div class="flex h-2.5 rounded-full overflow-hidden mb-2 mt-2">
+        <div class="bg-pink-500" style="width:81.1%"></div>
+        <div class="bg-pink-800" style="width:18.9%"></div>
+      </div>
+      <div class="flex justify-between text-xs">
+        <span><span class="text-pink-400 font-medium">81.1%</span> Stayed to watch</span>
+        <span><span class="text-pink-700 font-medium">18.9%</span> Swiped away</span>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between mb-1">
+        <div><p class="font-medium">Audience retention</p><p class="text-xs text-gray-400">Average view duration · Lifetime</p></div>
+        <p class="text-sm font-medium">0:49 <span class="text-emerald-400">(83.4%)</span></p>
+      </div>
+      <div class="h-40 mt-2"><canvas id="retention"></canvas></div>
+    </div>
+  </div>
+
+  <div id="an-audience" class="sub-panel hidden space-y-4">
+    <div class="card p-4">
+      <p class="font-medium mb-1">Device type</p>
+      <p class="text-xs text-gray-400 mb-3">Watch time · Since published</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-300"></span>Mobile</span><span>70.2%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-500"></span>Computer</span><span>13.9%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-700"></span>Tablet</span><span>10.9%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-pink-600"></span>TV</span><span>4.9%</span></div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">Age</p>
+      <p class="text-xs text-gray-400 mb-3">Since published · Views</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">13–17</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:1.3%"></div></div><span class="text-xs">1.3%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">18–24</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:0.8%"></div></div><span class="text-xs">0.8%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">25–34</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:5.4%"></div></div><span class="text-xs">5.4%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">35–44</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:14.2%"></div></div><span class="text-xs">14.2%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">45–54</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:21.8%"></div></div><span class="text-xs">21.8%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">55–64</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:31.3%"></div></div><span class="text-xs">31.3%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">65+</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:25.3%"></div></div><span class="text-xs">25.3%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- COMMUNITY -->
+<div id="tab-community" class="tab-content space-y-4">
+  <div class="grid grid-cols-2 gap-3">
+    <div class="card p-4 text-center"><p class="text-2xl font-medium">2</p><p class="text-xs text-gray-400">Comments · 28D</p></div>
+    <div class="card p-4 text-center"><p class="text-2xl font-medium">28.8K</p><p class="text-xs text-gray-400">Monthly audience</p></div>
+  </div>
+  <div class="card p-4">
+    <h3 class="font-semibold mb-3">Comments</h3>
+    <p class="text-sm text-gray-400">No new comments</p>
+  </div>
+</div>
+
+<!-- EARN -->
+<div id="tab-earn" class="tab-content space-y-4">
+  <div class="grid grid-cols-2 gap-3">
+    <div class="card p-4">
+      <p class="text-xs text-gray-400 uppercase">Available Balance</p>
+      <p class="text-2xl font-bold text-emerald-400 mt-1">$42.80</p>
+      <p class="text-xs text-gray-500 mt-1">Min. $100</p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-gray-400 uppercase">Lifetime Earnings</p>
+      <p class="text-2xl font-bold mt-1">$187.45</p>
+    </div>
+  </div>
+  <button onclick="alert('Minimum payout is $100.\\nCurrent balance: $42.80')" class="w-full bg-emerald-600 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
+    <i class="fa-solid fa-wallet"></i> Request Payout
+  </button>
+  <div class="card p-4">
+    <h3 class="font-semibold mb-3">Monetization Eligibility</h3>
+    <div class="mb-3">
+      <div class="flex justify-between text-sm mb-1"><span>Subscribers</span><span>1,248 / 1,000</span></div>
+      <div class="h-1.5 bg-gray-700 rounded"><div class="h-full bg-emerald-500 rounded w-full"></div></div>
+    </div>
+    <div class="mb-3">
+      <div class="flex justify-between text-sm mb-1"><span>Valid watch hours</span><span>1,840 / 4,000</span></div>
+      <div class="h-1.5 bg-gray-700 rounded"><div class="h-full bg-emerald-500 rounded" style="width:46%"></div></div>
+    </div>
+    <div>
+      <div class="flex justify-between text-sm mb-1"><span>Valid Reels views</span><span>86K / 100K</span></div>
+      <div class="h-1.5 bg-gray-700 rounded"><div class="h-full bg-emerald-500 rounded" style="width:86%"></div></div>
+    </div>
+  </div>
+</div>
+
+</div><!-- end mainTabs -->
+
+<!-- ========== VIDEO DETAIL PAGE ========== -->
+<div id="videoDetail" class="space-y-4">
+  <!-- Video level tabs -->
+  <div class="flex gap-5 border-b border-[#222] text-[15px] overflow-x-auto">
+    <button class="sub-tab active" onclick="switchVideoTab(this,'vd-overview')">Overview</button>
+    <button class="sub-tab" onclick="switchVideoTab(this,'vd-reach')">Reach</button>
+    <button class="sub-tab" onclick="switchVideoTab(this,'vd-engagement')">Engagement</button>
+    <button class="sub-tab" onclick="switchVideoTab(this,'vd-audience')">Audience</button>
+  </div>
+
+  <!-- Video Overview (matches the screenshot you sent) -->
+  <div id="vd-overview" class="vd-panel space-y-4">
+    <p class="text-[15px] text-center text-gray-200 leading-snug px-2">
+      Wow! You got lots more views and your Short is being shared more than usual.
+    </p>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Views</p>
+        <p class="text-2xl font-medium" id="vdViews">46.4K <span class="text-emerald-400 text-sm">↑</span></p>
+        <p class="text-[11px] text-emerald-400">45.3K more than usual</p>
+        <div class="h-24 mt-2"><canvas id="vdViewsChart"></canvas></div>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-gray-400">Subscribers</p>
+        <p class="text-2xl font-medium text-emerald-400" id="vdSubs">+14</p>
+        <div class="h-24 mt-2"><canvas id="vdSubsChart"></canvas></div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between mb-1">
+        <div>
+          <p class="font-medium">Audience retention</p>
+          <p class="text-xs text-gray-400">Average view duration · Lifetime</p>
+        </div>
+        <p class="text-sm font-medium">0:49 <span class="text-emerald-400">(83.4%)</span></p>
+      </div>
+      <div class="h-40 mt-2"><canvas id="vdRetention"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Video Reach -->
+  <div id="vd-reach" class="vd-panel hidden space-y-4">
+    <div class="card p-4">
+      <p class="text-xs text-gray-400">Views</p>
+      <p class="text-3xl font-medium">46.5K <span class="text-emerald-400 text-sm">↑</span></p>
+      <p class="text-xs text-emerald-400">45.4K more than usual</p>
+      <div class="h-36 mt-3"><canvas id="vdReachChart"></canvas></div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">How viewers find this video</p>
+      <p class="text-xs text-gray-400 mb-3">Views · Since published</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-400"></span>Shorts feed</span><span>97.5%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-600"></span>Other YouTube features</span><span>1.8%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-800"></span>YouTube search</span><span>0.4%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-500"></span>Browse features</span><span>0.2%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-gray-500"></span>Other</span><span>0.1%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Video Engagement -->
+  <div id="vd-engagement" class="vd-panel hidden space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4"><p class="text-xs text-gray-400">Engaged views</p><p class="text-2xl font-medium">26.0K</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-400">Unique viewers</p><p class="text-2xl font-medium">16.0K</p></div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium">Hype</p>
+      <p class="text-xs text-gray-400 mb-3">First 7 days</p>
+      <div class="flex justify-around text-center">
+        <div><p class="text-2xl font-medium">0</p><p class="text-xs text-gray-400">Hype points</p></div>
+        <div class="w-px bg-gray-700"></div>
+        <div><p class="text-2xl font-medium">0</p><p class="text-xs text-gray-400">Hypes</p></div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">How viewers engaged</p>
+      <p class="text-xs text-gray-400 mb-2">Since published</p>
+      <div class="flex h-2.5 rounded-full overflow-hidden mb-2">
+        <div class="bg-pink-500" style="width:81.1%"></div>
+        <div class="bg-pink-800" style="width:18.9%"></div>
+      </div>
+      <div class="flex justify-between text-xs">
+        <span><span class="text-pink-400 font-medium">81.1%</span> Stayed to watch</span>
+        <span><span class="text-pink-700 font-medium">18.9%</span> Swiped away</span>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between mb-1">
+        <div><p class="font-medium">Audience retention</p><p class="text-xs text-gray-400">Average view duration · Lifetime</p></div>
+        <p class="text-sm font-medium">0:49 <span class="text-emerald-400">(83.4%)</span></p>
+      </div>
+      <div class="h-40 mt-2"><canvas id="vdEngRetention"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Video Audience -->
+  <div id="vd-audience" class="vd-panel hidden space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4"><p class="text-xs text-gray-400">Unique viewers</p><p class="text-2xl font-medium">16.0K</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-400">Subscribers</p><p class="text-2xl font-medium text-emerald-400">+14</p></div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">Device type</p>
+      <p class="text-xs text-gray-400 mb-3">Watch time · Since published</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-300"></span>Mobile</span><span>70.2%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-500"></span>Computer</span><span>13.9%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-purple-700"></span>Tablet</span><span>10.9%</span></div>
+        <div class="flex justify-between"><span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-pink-600"></span>TV</span><span>4.9%</span></div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <p class="font-medium mb-1">Age</p>
+      <p class="text-xs text-gray-400 mb-3">Since published · Views</p>
+      <div class="space-y-2 text-sm">
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">13–17 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:1.3%"></div></div><span class="text-xs">1.3%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">18–24 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:0.8%"></div></div><span class="text-xs">0.8%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">25–34 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:5.4%"></div></div><span class="text-xs">5.4%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">35–44 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:14.2%"></div></div><span class="text-xs">14.2%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">45–54 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:21.8%"></div></div><span class="text-xs">21.8%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">55–64 years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:31.3%"></div></div><span class="text-xs">31.3%</span></div>
+        <div class="flex items-center gap-3"><span class="w-20 text-gray-400 text-xs">65+ years</span><div class="flex-1 h-1.5 bg-gray-700 rounded"><div class="h-full bg-purple-500 rounded" style="width:25.3%"></div></div><span class="text-xs">25.3%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<!-- BOTTOM NAV -->
+<nav id="bottomNav" class="bottom-nav fixed bottom-0 left-0 right-0 bg-[#0f0f0f] border-t border-[#222] flex justify-around py-2 z-50">
+  <button onclick="switchTab('dashboard')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400 nav-active" data-tab="dashboard">
+    <i class="fa-solid fa-table-cells text-lg"></i><span>Dashboard</span>
+  </button>
+  <button onclick="switchTab('content')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400" data-tab="content">
+    <i class="fa-regular fa-circle-play text-lg"></i><span>Content</span>
+  </button>
+  <button onclick="switchTab('analytics')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400" data-tab="analytics">
+    <i class="fa-solid fa-chart-simple text-lg"></i><span>Analytics</span>
+  </button>
+  <button onclick="switchTab('community')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400" data-tab="community">
+    <i class="fa-solid fa-users text-lg"></i><span>Community</span>
+  </button>
+  <button onclick="switchTab('earn')" class="nav-btn flex flex-col items-center gap-0.5 text-[10px] text-gray-400" data-tab="earn">
+    <i class="fa-solid fa-dollar-sign text-lg"></i><span>Earn</span>
+  </button>
+</nav>
+
+<script>
+function switchTab(id) {
+  document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b => {
+    b.classList.remove('nav-active');
+    if (b.dataset.tab === id) b.classList.add('nav-active');
+  });
+  window.scrollTo(0,0);
+}
+function switchSub(btn, id) {
+  document.querySelectorAll('#tab-analytics .sub-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#tab-analytics .sub-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById(id).classList.remove('hidden');
+}
+function switchVideoTab(btn, id) {
+  document.querySelectorAll('#videoDetail .sub-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.vd-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById(id).classList.remove('hidden');
+}
+
+function openVideoDetail(title, views, subs) {
+  document.getElementById('detailTitle').textContent = title;
+  document.getElementById('vdViews').innerHTML = views + ' <span class="text-emerald-400 text-sm">↑</span>';
+  document.getElementById('vdSubs').textContent = subs;
+
+  document.getElementById('mainTabs').classList.add('hidden');
+  document.getElementById('mainHeader').classList.add('hidden');
+  document.getElementById('bottomNav').classList.add('hidden');
+  document.getElementById('detailHeader').classList.remove('hidden');
+  document.getElementById('videoDetail').classList.add('active');
+
+  // reset to overview tab
+  document.querySelectorAll('#videoDetail .sub-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('#videoDetail .sub-tab').classList.add('active');
+  document.querySelectorAll('.vd-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById('vd-overview').classList.remove('hidden');
+
+  window.scrollTo(0,0);
+}
+
+function closeVideoDetail() {
+  document.getElementById('videoDetail').classList.remove('active');
+  document.getElementById('detailHeader').classList.add('hidden');
+  document.getElementById('mainTabs').classList.remove('hidden');
+  document.getElementById('mainHeader').classList.remove('hidden');
+  document.getElementById('bottomNav').classList.remove('hidden');
+}
+
+// Real time filter data
+const rtData = {
+  '60min': {
+    num: '1,248',
+    label: 'Views',
+    left: '60 min ago',
+    bars: [0.1,0.2,0.15,0.3,0.4,0.25,0.35,0.5,0.6,0.45,0.7,0.8]
+  },
+  '48hrs': {
+    num: '52,341',
+    label: 'Views',
+    left: '48 hours ago',
+    bars: [0.1,0.2,0.15,0.3,0.4,0.25,0.2,0.35,0.5,0.3,0.4,0.6,0.8,1.2,0.9,0.5,0.3,0.7,1.1,0.8,1.5,2.8,3.2,2.5,1.8,1.2,0.9,1.4,2.1,3.5,4.2,8.9,6.5,2.8,1.5,1.1,0.8,1.0,1.3,0.9,1.2,1.6,2.4,2.9,3.1,2.7,3.3,1.8]
+  },
+  'all': {
+    num: '58,200',
+    label: 'Views',
+    left: '28 days ago',
+    bars: [1,2,1.5,3,4,2,3,5,6,4,7,8,5,6,9,10,8,7,11,12,9,10,14,15,12,11,13,16,14,12,15,18,16,14,17,19,15,16,20,18,17,19,21,20,18,22,25,29]
+  },
+  'videos': {
+    num: '3,840',
+    label: 'Views · Videos',
+    left: '48 hours ago',
+    bars: [0.05,0.1,0.08,0.12,0.15,0.1,0.2,0.18,0.25,0.22,0.3,0.28,0.35,0.3,0.4,0.38,0.45,0.4,0.5,0.48]
+  },
+  'shorts': {
+    num: '48,501',
+    label: 'Views · Shorts',
+    left: '48 hours ago',
+    bars: [0.2,0.3,0.25,0.4,0.6,0.5,0.4,0.7,0.9,0.6,0.8,1.1,1.5,1.8,1.2,0.8,0.6,1.0,1.4,1.1,2.0,3.5,4.0,3.0,2.2,1.5,1.1,1.8,2.5,4.0,5.0,9.5,7.0,3.2,1.8,1.3,1.0,1.2,1.5,1.1,1.4,1.8,2.8,3.2,3.5,3.0,3.8,2.0]
+  }
+};
+
+let rtChart = null;
+
+function setRtFilter(el, key) {
+  document.querySelectorAll('#rtFilters .chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  const d = rtData[key];
+  document.getElementById('rtBigNum').textContent = d.num;
+  document.getElementById('rtLabel').textContent = d.label;
+  document.getElementById('rtLeftLabel').textContent = d.left;
+  if (rtChart) {
+    rtChart.data.labels = Array(d.bars.length).fill(0);
+    rtChart.data.datasets[0].data = d.bars;
+    rtChart.update();
+  }
+}
+
+const opt = { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{display:false},y:{display:false}}, elements:{point:{radius:0}} };
+
+new Chart(document.getElementById('ovViews'), { type:'line', data:{ labels:[1,2,3,4,5,6], datasets:[{ data:[1,2,1.5,3,4,29], borderColor:'#3b82f6', borderWidth:2, tension:0.3 }] }, options:opt });
+new Chart(document.getElementById('ovWatch'), { type:'line', data:{ labels:[1,2,3,4,5,6], datasets:[{ data:[5,10,8,20,30,225], borderColor:'#10b981', borderWidth:2, tension:0.3 }] }, options:opt });
+new Chart(document.getElementById('ovSubs'), { type:'line', data:{ labels:[1,2,3,4,5,6], datasets:[{ data:[2,5,8,15,40,128], borderColor:'#10b981', borderWidth:2, tension:0.3 }] }, options:opt });
+new Chart(document.getElementById('ovRealtime'), { type:'bar', data:{ labels:Array(20).fill(0), datasets:[{ data:[0.5,1,0.8,2,3,5,2,1,1.5,3,4,6,3,2,2.5,3.5,2,3,4,3.5], backgroundColor:'#3b82f6', borderRadius:1 }] }, options:opt });
+
+rtChart = new Chart(document.getElementById('rtFull'), {
+  type:'bar',
+  data:{ 
+    labels: Array(48).fill(0), 
+    datasets:[{ 
+      data: [0.1,0.2,0.15,0.3,0.4,0.25,0.2,0.35,0.5,0.3,0.4,0.6,0.8,1.2,0.9,0.5,0.3,0.7,1.1,0.8,1.5,2.8,3.2,2.5,1.8,1.2,0.9,1.4,2.1,3.5,4.2,8.9,6.5,2.8,1.5,1.1,0.8,1.0,1.3,0.9,1.2,1.6,2.4,2.9,3.1,2.7,3.3,1.8], 
+      backgroundColor: '#3b82f6', 
+      borderRadius: 1,
+      barPercentage: 0.9,
+      categoryPercentage: 0.95
+    }] 
+  },
+  options: { 
+    ...opt, 
+    scales: { 
+      x: { display: false }, 
+      y: { 
+        display: true, 
+        ticks: { color: '#555', font: { size: 10 }, callback: v => v + '.0K', maxTicksLimit: 5 }, 
+        grid: { color: '#222', drawBorder: false } 
+      } 
+    } 
+  }
+});
+
+function spark(id,d){ new Chart(document.getElementById(id),{type:'bar',data:{labels:d.map((_,i)=>i),datasets:[{data:d,backgroundColor:'#3b82f6',borderRadius:1}]},options:opt}); }
+spark('sp1',[1,2,3,5,8,4,3,6,9,7,4,5,6,5]);
+spark('sp2',[0.5,0.8,1,0.7,0.9,1.1,0.8,0.6]);
+spark('sp3',[0.3,0.5,0.4,0.7,0.6,0.5]);
+spark('sp4',[0.4,0.6,0.5,0.8,0.7]);
+spark('sp5',[0.1,0.2,0.15,0.25]);
+spark('sp6',[0.05,0.1,0.08,0.12]);
+
+// Traffic source sparklines
+spark('traf1',[2,3,4,6,9,5,4,7,10,8,5,6,7,6]);
+spark('traf2',[0.3,0.5,0.4,0.6,0.5,0.4,0.7,0.5]);
+spark('traf3',[0.1,0.2,0.15,0.25,0.2,0.18]);
+spark('traf4',[0.08,0.12,0.1,0.15,0.11]);
+spark('traf5',[0.03,0.05,0.04,0.06]);
+
+new Chart(document.getElementById('reachChart'),{type:'line',data:{labels:Array(20).fill(0),datasets:[{data:[1,2,3,5,8,12,18,22,25,28,30,32,35,38,40,42,44,45,46,46.5],borderColor:'#3b82f6',borderWidth:2,tension:0.3}]},options:opt});
+new Chart(document.getElementById('retention'), {
+  type: 'line',
+  data: {
+    labels: Array(20).fill(0),
+    datasets: [{
+      data: [100,92,85,78,72,68,64,60,57,54,52,50,48,47,46,45,44,43,42,40],
+      borderColor: '#ec4899',
+      borderWidth: 2,
+      tension: 0.4
+    }]
+  },
+  options: {
+    ...opt,
+    scales: {
+      x: { display: false },
+      y: { display: true, min: 0, max: 100, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#222' } }
+    }
+  }
+});
+
+// Video detail charts
+new Chart(document.getElementById('vdViewsChart'),{type:'line',data:{labels:Array(20).fill(0),datasets:[{data:[1,2,3,5,8,12,18,22,25,28,30,32,35,38,40,42,44,45,46,46.4],borderColor:'#3b82f6',borderWidth:2,tension:0.3}]},options:opt});
+new Chart(document.getElementById('vdSubsChart'),{type:'line',data:{labels:Array(10).fill(0),datasets:[{data:[0,1,2,3,4,5,7,9,11,14],borderColor:'#10b981',borderWidth:2,tension:0.3}]},options:opt});
+new Chart(document.getElementById('vdRetention'), {
+  type: 'line',
+  data: {
+    labels: Array(20).fill(0),
+    datasets: [{
+      data: [100,92,85,78,72,68,64,60,57,54,52,50,48,47,46,45,44,43,42,40],
+      borderColor: '#ec4899',
+      borderWidth: 2,
+      tension: 0.4
+    }]
+  },
+  options: {
+    ...opt,
+    scales: {
+      x: { display: false },
+      y: { display: true, min: 0, max: 100, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#222' } }
+    }
+  }
+});
+new Chart(document.getElementById('vdReachChart'),{type:'line',data:{labels:Array(20).fill(0),datasets:[{data:[1,2,3,5,8,12,18,22,25,28,30,32,35,38,40,42,44,45,46,46.5],borderColor:'#3b82f6',borderWidth:2,tension:0.3}]},options:opt});
+new Chart(document.getElementById('vdEngRetention'), {
+  type: 'line',
+  data: {
+    labels: Array(20).fill(0),
+    datasets: [{
+      data: [100,92,85,78,72,68,64,60,57,54,52,50,48,47,46,45,44,43,42,40],
+      borderColor: '#ec4899',
+      borderWidth: 2,
+      tension: 0.4
+    }]
+  },
+  options: {
+    ...opt,
+    scales: {
+      x: { display: false },
+      y: { display: true, min: 0, max: 100, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#222' } }
+    }
+  }
+});
+
+// ---------- PWA Install Prompt ----------
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  // Show banner only if not already installed / dismissed recently
+  if (!localStorage.getItem('studio_install_dismissed')) {
+    document.getElementById('installBanner').classList.add('show');
+  }
+});
+function triggerInstall() {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then((choice) => {
+    if (choice.outcome === 'accepted') {
+      document.getElementById('installBanner').classList.remove('show');
+    } else {
+      localStorage.setItem('studio_install_dismissed', '1');
+      document.getElementById('installBanner').classList.remove('show');
+    }
+    deferredPrompt = null;
+  });
+}
+// Register service worker if available (optional, for offline shell)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/studio-sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
