@@ -53,7 +53,7 @@
     <i class="fa-solid fa-plus"></i>
     <i class="fa-solid fa-magnifying-glass text-lg"></i>
     <i class="fa-regular fa-bell"></i>
-    <div class="w-8 h-8 rounded-full bg-emerald-700 flex items-center justify-center text-xs font-bold">CN</div>
+    <div id="headerAvatar" class="w-8 h-8 rounded-full bg-emerald-700 flex items-center justify-center text-xs font-bold">CN</div>
   </div>
 </header>
 
@@ -74,10 +74,10 @@
 <!-- DASHBOARD -->
 <div id="tab-dashboard" class="tab-content active space-y-5">
   <div class="flex items-center gap-3">
-    <div class="w-14 h-14 rounded-full bg-emerald-700 flex items-center justify-center text-xl font-bold">CN</div>
+    <div id="dashAvatar" class="w-14 h-14 rounded-full bg-emerald-700 flex items-center justify-center text-xl font-bold">CN</div>
     <div>
-      <h2 class="font-semibold text-[18px]">Noortube Creator</h2>
-      <p class="text-[15px] text-gray-300">1,248</p>
+      <h2 id="dashName" class="font-semibold text-[18px]">Noortube Creator</h2>
+      <p id="dashSubs" class="text-[15px] text-gray-300">—</p>
       <p class="text-xs text-gray-500">Total subscribers</p>
     </div>
   </div>
@@ -89,17 +89,17 @@
     <div class="grid grid-cols-2 gap-3">
       <div class="card p-4">
         <p class="text-xs text-gray-400">Views</p>
-        <p class="text-[22px] font-medium mt-1">58.2K</p>
+        <p id="dashViews" class="text-[22px] font-medium mt-1">—</p>
       </div>
       <div class="card p-4">
         <p class="text-xs text-gray-400">Watch time (hours)</p>
-        <p class="text-[22px] font-medium mt-1">303</p>
+        <p id="dashWatch" class="text-[22px] font-medium mt-1">—</p>
       </div>
     </div>
   </div>
   <div>
     <h3 class="font-semibold text-[16px] mb-3">Latest published content</h3>
-    <div class="space-y-3">
+    <div id="latestContent" class="space-y-3">
       <div class="card p-3 flex gap-3 items-start video-row" onclick="openVideoDetail('Jacks parow new idea #shortvideo', '21', '+0')">
         <div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>
         <div class="flex-1 min-w-0">
@@ -161,7 +161,7 @@
       <h3 class="font-semibold">Videos</h3>
       <button class="text-sm text-gray-400 border border-gray-600 rounded-full px-3 py-0.5">View all</button>
     </div>
-    <div class="flex gap-3 overflow-x-auto pb-2">
+    <div id="contentVideos" class="flex gap-3 overflow-x-auto pb-2">
       <div class="w-36 flex-shrink-0" onclick="openVideoDetail('jalwa hai hamara', '8', '+0')">
         <div class="aspect-video rounded-lg bg-gray-700 relative"><span class="absolute bottom-1 right-1 bg-black/80 text-[10px] px-1 rounded">0:09</span></div>
         <p class="text-xs mt-1.5 truncate">jalwa hai hamara...</p>
@@ -179,7 +179,7 @@
       <h3 class="font-semibold">Reels</h3>
       <button class="text-sm text-gray-400 border border-gray-600 rounded-full px-3 py-0.5">View all</button>
     </div>
-    <div class="flex gap-3 overflow-x-auto pb-2">
+    <div id="contentReels" class="flex gap-3 overflow-x-auto pb-2">
       <div class="w-28 flex-shrink-0 video-row" onclick="openVideoDetail('Jacks parro #shortvideo', '28.6K', '+8')">
         <div class="aspect-[9/16] rounded-lg bg-gray-700"></div>
         <p class="text-xs mt-1.5 truncate">Jacks par...</p>
@@ -247,7 +247,7 @@
         <h3 class="font-semibold">Top content</h3>
         <span class="text-xs text-gray-400">Views · Last 28 days</span>
       </div>
-      <div class="space-y-3">
+      <div id="topContentList" class="space-y-3">
         <div class="flex items-center gap-3 video-row" onclick="openVideoDetail('Jacks parro #shortvideo #youtubeshorts', '28.6K', '+8')">
           <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>
           <p class="text-sm flex-1 truncate">Jacks parro #shortvideo #youtubeshorts</p>
@@ -358,7 +358,7 @@
     <!-- Top videos -->
     <div>
       <h3 class="font-semibold mb-3">Top videos</h3>
-      <div class="space-y-4">
+      <div id="rtTopList" class="space-y-4">
         <div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('Jacks parro #shortvideo #youtubeshorts', '46.6K', '+14')">
           <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0"></div>
           <div class="flex-1 min-w-0">
@@ -518,12 +518,12 @@
   <div class="grid grid-cols-2 gap-3">
     <div class="card p-4">
       <p class="text-xs text-gray-400 uppercase">Available Balance</p>
-      <p class="text-2xl font-bold text-emerald-400 mt-1">$42.80</p>
+      <p id="earnAvailable" class="text-2xl font-bold text-emerald-400 mt-1">$0.00</p>
       <p class="text-xs text-gray-500 mt-1">Min. $100</p>
     </div>
     <div class="card p-4">
       <p class="text-xs text-gray-400 uppercase">Lifetime Earnings</p>
-      <p class="text-2xl font-bold mt-1">$187.45</p>
+      <p id="earnLifetime" class="text-2xl font-bold mt-1">$0.00</p>
     </div>
   </div>
   <button onclick="alert('Minimum payout is $100.\\nCurrent balance: $42.80')" class="w-full bg-emerald-600 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
@@ -699,6 +699,213 @@
 </nav>
 
 <script>
+
+// ===== Noortube real API =====
+const NT_API = "https://noortube-storage.mk7233624.workers.dev";
+const NT_TOKEN_KEY = "nt_token";
+
+function ntToken() {
+  try { return localStorage.getItem(NT_TOKEN_KEY); } catch { return null; }
+}
+async function ntFetch(path) {
+  const headers = { "Content-Type": "application/json" };
+  const t = ntToken();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  const r = await fetch(NT_API + path, { headers, cache: "no-store" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function fmtNum(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(Math.round(n));
+}
+function fmtUsd(n) {
+  n = Number(n) || 0;
+  return "$" + n.toFixed(2);
+}
+function escapeHtml(s) {
+  return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function loadStudioData() {
+  const token = ntToken();
+  if (!token) {
+    document.getElementById("dashName").textContent = "Sign in required";
+    document.getElementById("dashSubs").textContent = "—";
+    const box = document.getElementById("latestContent");
+    if (box) box.innerHTML = '<div class="card p-4 text-sm text-gray-400">Please open Studio from the main Noortube app while signed in.</div>';
+    return;
+  }
+  try {
+    const meRes = await ntFetch("/api/me");
+    const me = meRes.user || meRes;
+    const myId = me.id;
+    document.getElementById("dashName").textContent = me.name || "Creator";
+    document.getElementById("dashAvatar").textContent = (me.name || "C").slice(0, 2).toUpperCase();
+    document.getElementById("headerAvatar").textContent = (me.name || "C").slice(0, 2).toUpperCase();
+
+    // followers approx from public user if available — use votes/following as fallback display
+    let subs = "—";
+    try {
+      // channel page style: not always on /api/me; keep placeholder if unknown
+      if (me.followers != null) subs = fmtNum(me.followers);
+    } catch (_) {}
+    document.getElementById("dashSubs").textContent = subs;
+
+    const [vidRes, reelRes, earnRes] = await Promise.all([
+      ntFetch("/api/videos").catch(() => ({ videos: [] })),
+      ntFetch("/api/reels").catch(() => ({ reels: [] })),
+      ntFetch("/api/me/earnings").catch(() => ({ enabled: false })),
+    ]);
+
+    const myVideos = (vidRes.videos || []).filter(v => v.ownerId === myId);
+    const myReels = (reelRes.reels || []).filter(r => r.ownerId === myId);
+
+    const totalViews = myVideos.reduce((a, v) => a + (v.views || 0), 0) + myReels.reduce((a, r) => a + (r.views || 0), 0);
+    const totalLikes = myVideos.reduce((a, v) => a + (v.likes || 0), 0) + myReels.reduce((a, r) => a + (r.likes || 0), 0);
+
+    // Dashboard stats
+    const elViews = document.getElementById("dashViews");
+    if (elViews) elViews.textContent = fmtNum(totalViews);
+    const elWatch = document.getElementById("dashWatch");
+    if (elWatch) elWatch.textContent = fmtNum(Math.round(totalViews * 0.4 / 60)); // rough hours estimate
+
+    // Analytics overview
+    const ovV = document.getElementById("ovViewsNum");
+    if (ovV) ovV.textContent = fmtNum(totalViews);
+    const ovW = document.getElementById("ovWatchNum");
+    if (ovW) ovW.textContent = fmtNum(Math.round(totalViews * 0.4 / 60));
+
+    // Latest content on dashboard
+    const latest = [
+      ...myVideos.map(v => ({ ...v, _type: "video" })),
+      ...myReels.map(r => ({ ...r, _type: "reel" })),
+    ].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || "")).slice(0, 8);
+
+    const latestBox = document.getElementById("latestContent");
+    if (latestBox) {
+      if (!latest.length) {
+        latestBox.innerHTML = '<div class="card p-4 text-sm text-gray-400">No videos or reels yet. Upload from the main app.</div>';
+      } else {
+        latestBox.innerHTML = latest.map(item => {
+          const title = escapeHtml(item.title || "Untitled");
+          const views = fmtNum(item.views || 0);
+          const likes = fmtNum(item.likes || 0);
+          const comments = fmtNum(item.commentCount || 0);
+          const thumb = item.thumbnail ? `<img src="${escapeHtml(item.thumbnail)}" class="w-16 h-10 rounded object-cover flex-shrink-0" />` : `<div class="w-16 h-10 rounded bg-gray-700 flex-shrink-0"></div>`;
+          return `<div class="card p-3 flex gap-3 items-start video-row" onclick="openVideoDetail('${title.replace(/'/g, "\\'")}', '${views}', '+0')">
+            ${thumb}
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate">${title}</p>
+              <p class="text-xs text-gray-400 mt-0.5">${item._type === "reel" ? "Reel" : "Video"}</p>
+              <div class="flex gap-3 mt-1.5 text-xs text-gray-400">
+                <span><i class="fa-solid fa-play"></i> ${views}</span>
+                <span><i class="fa-regular fa-thumbs-up"></i> ${likes}</span>
+                <span><i class="fa-regular fa-comment"></i> ${comments}</span>
+              </div>
+            </div>
+            <i class="fa-solid fa-chevron-down text-gray-500 text-xs mt-1"></i>
+          </div>`;
+        }).join("");
+      }
+    }
+
+    // Content tab lists
+    const contentVideos = document.getElementById("contentVideos");
+    if (contentVideos) {
+      contentVideos.innerHTML = myVideos.slice(0, 12).map(v => {
+        const title = escapeHtml(v.title || "Untitled");
+        return `<div class="w-36 flex-shrink-0" onclick="openVideoDetail('${title.replace(/'/g, "\\'")}', '${fmtNum(v.views)}', '+0')">
+          <div class="aspect-video rounded-lg bg-gray-700 relative overflow-hidden">${v.thumbnail ? `<img src="${escapeHtml(v.thumbnail)}" class="w-full h-full object-cover"/>` : ""}${v.duration ? `<span class="absolute bottom-1 right-1 bg-black/80 text-[10px] px-1 rounded">${escapeHtml(String(v.duration))}</span>` : ""}</div>
+          <p class="text-xs mt-1.5 truncate">${title}</p>
+          <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> ${fmtNum(v.views)} <i class="fa-regular fa-thumbs-up ml-1"></i> ${fmtNum(v.likes)}</p>
+        </div>`;
+      }).join("") || '<p class="text-sm text-gray-500">No videos yet</p>';
+    }
+    const contentReels = document.getElementById("contentReels");
+    if (contentReels) {
+      contentReels.innerHTML = myReels.slice(0, 12).map(r => {
+        const title = escapeHtml(r.title || "Untitled");
+        return `<div class="w-28 flex-shrink-0 video-row" onclick="openVideoDetail('${title.replace(/'/g, "\\'")}', '${fmtNum(r.views)}', '+0')">
+          <div class="aspect-[9/16] rounded-lg bg-gray-700 overflow-hidden">${r.thumbnail ? `<img src="${escapeHtml(r.thumbnail)}" class="w-full h-full object-cover"/>` : ""}</div>
+          <p class="text-xs mt-1.5 truncate">${title}</p>
+          <p class="text-[11px] text-gray-400"><i class="fa-solid fa-play"></i> ${fmtNum(r.views)}</p>
+        </div>`;
+      }).join("") || '<p class="text-sm text-gray-500">No reels yet</p>';
+    }
+
+    // Top content in analytics
+    const topBox = document.getElementById("topContentList");
+    if (topBox) {
+      const top = latest.slice().sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 6);
+      topBox.innerHTML = top.map(item => {
+        const title = escapeHtml(item.title || "Untitled");
+        return `<div class="flex items-center gap-3 video-row" onclick="openVideoDetail('${title.replace(/'/g, "\\'")}', '${fmtNum(item.views)}', '+0')">
+          <div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0 overflow-hidden">${item.thumbnail ? `<img src="${escapeHtml(item.thumbnail)}" class="w-full h-full object-cover"/>` : ""}</div>
+          <p class="text-sm flex-1 truncate">${title}</p>
+          <span class="text-sm font-medium">${fmtNum(item.views)}</span>
+        </div>`;
+      }).join("") || '<p class="text-sm text-gray-500">No content yet</p>';
+    }
+
+    // Realtime list - use same top by views
+    const rtList = document.getElementById("rtTopList");
+    if (rtList) {
+      const top = latest.slice().sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 6);
+      rtList.innerHTML = top.map(item => {
+        const title = escapeHtml(item.title || "Untitled");
+        return `<div class="flex items-center gap-3 video-row py-1" onclick="openVideoDetail('${title.replace(/'/g, "\\'")}', '${fmtNum(item.views)}', '+0')">
+          <div class="w-12 h-16 rounded bg-gray-700 flex-shrink-0 overflow-hidden">${item.thumbnail ? `<img src="${escapeHtml(item.thumbnail)}" class="w-full h-full object-cover"/>` : ""}</div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm truncate">${title}</p>
+            <p class="text-[11px] text-gray-500 mt-0.5">${item._type === "reel" ? "Reel" : "Video"}</p>
+          </div>
+          <div class="text-right"><p class="text-sm font-medium">${fmtNum(item.views)}</p></div>
+        </div>`;
+      }).join("") || '<p class="text-sm text-gray-500">No content yet</p>';
+    }
+
+    // Big realtime number
+    const rtBig = document.getElementById("rtBigNum");
+    if (rtBig) rtBig.textContent = totalViews.toLocaleString();
+
+    // Earnings / Earn tab
+    if (earnRes && earnRes.enabled) {
+      const avail = document.getElementById("earnAvailable");
+      const life = document.getElementById("earnLifetime");
+      if (avail) avail.textContent = fmtUsd(earnRes.availableUsd);
+      if (life) life.textContent = fmtUsd((earnRes.paidUsd || 0) + (earnRes.totalUsd || 0));
+      const btn = document.getElementById("earnPayoutBtn");
+      if (btn) {
+        const minW = earnRes.minWithdrawUsd || 100;
+        const available = earnRes.availableUsd || 0;
+        btn.onclick = () => {
+          if (available < minW) {
+            alert("Minimum payout is " + fmtUsd(minW) + ".\\nCurrent available: " + fmtUsd(available));
+          } else {
+            alert("Open the main Noortube app → Studio / Earnings to submit a withdrawal request.");
+          }
+        };
+      }
+    } else {
+      const avail = document.getElementById("earnAvailable");
+      const life = document.getElementById("earnLifetime");
+      if (avail) avail.textContent = "$0.00";
+      if (life) life.textContent = "$0.00";
+    }
+
+  } catch (e) {
+    console.error("Studio load error", e);
+    const box = document.getElementById("latestContent");
+    if (box) box.innerHTML = '<div class="card p-4 text-sm text-red-400">Could not load data. Open Studio while signed in on the same browser.</div>';
+  }
+}
+
+document.addEventListener("DOMContentLoaded", loadStudioData);
+
+
 function switchTab(id) {
   document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
   document.getElementById('tab-' + id).classList.add('active');
