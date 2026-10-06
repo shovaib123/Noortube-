@@ -134,35 +134,46 @@
 
     <!-- OVERVIEW -->
     <div id="an-overview" class="an-panel active space-y-4">
-      <div class="flex gap-3 overflow-x-auto pb-1">
-        <div class="card p-4 min-w-[140px] flex-shrink-0">
+      <div class="flex gap-3 overflow-x-auto pb-1 snap-x">
+        <div class="card p-4 min-w-[200px] flex-shrink-0 snap-start">
           <p class="text-xs text-gray-400">Views</p>
-          <p id="anViews" class="text-2xl font-medium">—</p>
-          <div class="h-14 mt-2"><canvas id="chartOvViews"></canvas></div>
+          <p id="anViews" class="text-3xl font-medium mt-1">—</p>
+          <div class="h-16 mt-3"><canvas id="chartOvViews"></canvas></div>
+          <div class="flex justify-between text-[10px] text-gray-500 mt-1">
+            <span id="ovViewsDateStart">—</span>
+            <span id="ovViewsDateEnd">—</span>
+          </div>
         </div>
-        <div class="card p-4 min-w-[140px] flex-shrink-0">
-          <p class="text-xs text-gray-400">Likes</p>
-          <p id="anLikes" class="text-2xl font-medium">—</p>
-          <div class="h-14 mt-2"><canvas id="chartOvLikes"></canvas></div>
+        <div class="card p-4 min-w-[200px] flex-shrink-0 snap-start">
+          <p class="text-xs text-gray-400">Watch time (hours)</p>
+          <p id="anWatchHours" class="text-3xl font-medium mt-1">—</p>
+          <div class="h-16 mt-3"><canvas id="chartOvWatch"></canvas></div>
+          <div class="flex justify-between text-[10px] text-gray-500 mt-1">
+            <span id="ovWatchDateStart">—</span>
+            <span id="ovWatchDateEnd">—</span>
+          </div>
         </div>
-        <div class="card p-4 min-w-[140px] flex-shrink-0">
-          <p class="text-xs text-gray-400">Content</p>
-          <p id="anContentCount" class="text-2xl font-medium">—</p>
-          <p class="text-[11px] text-gray-400 mt-1" id="anContentSplit">—</p>
+        <div class="card p-4 min-w-[200px] flex-shrink-0 snap-start">
+          <p class="text-xs text-gray-400">Subscribers</p>
+          <p id="anSubs" class="text-3xl font-medium mt-1 text-emerald-400">—</p>
+          <div class="h-16 mt-3"><canvas id="chartOvSubs"></canvas></div>
+          <div class="flex justify-between text-[10px] text-gray-500 mt-1">
+            <span id="ovSubsDateStart">—</span>
+            <span id="ovSubsDateEnd">—</span>
+          </div>
         </div>
       </div>
+      <p class="text-[11px] text-gray-400" id="anContentSplit">—</p>
       <div class="card p-4">
         <div class="flex justify-between mb-3">
-          <h3 class="font-semibold">Top content</h3>
-          <span class="text-xs text-gray-400">By views</span>
+          <div>
+            <h3 class="font-semibold">Top content</h3>
+            <p class="text-xs text-gray-400">Views · Last 28 days</p>
+          </div>
         </div>
         <div id="topContentList" class="space-y-3">
           <p class="text-sm text-gray-500">Loading…</p>
         </div>
-      </div>
-      <div class="card p-4">
-        <h3 class="font-semibold mb-2">Views by content</h3>
-        <div class="h-40"><canvas id="chartTopBars"></canvas></div>
       </div>
     </div>
 
@@ -175,17 +186,20 @@
         <span class="chip" data-rt="videos" onclick="setRtFilter(this,'videos')">Videos</span>
         <span class="chip" data-rt="shorts" onclick="setRtFilter(this,'shorts')">Shorts</span>
       </div>
-      <p id="rtNote" class="text-xs text-gray-400">Showing your real content totals from the server</p>
-      <div class="text-center py-2">
+      <div class="text-center py-3">
         <p id="rtBigNum" class="text-5xl font-bold tracking-tight">—</p>
         <p id="rtBigLabel" class="text-gray-400 text-sm mt-1">Views</p>
       </div>
-      <div class="card p-4">
-        <div class="h-40"><canvas id="chartRealtime"></canvas></div>
+      <div class="card p-3">
+        <div class="h-44"><canvas id="chartRealtime"></canvas></div>
+        <div class="flex justify-between text-[11px] text-gray-500 px-1 mt-1">
+          <span id="rtAxisStart">—</span>
+          <span id="rtAxisEnd">Now</span>
+        </div>
       </div>
       <div>
-        <h3 class="font-semibold mb-3">Top content · tap for details</h3>
-        <div id="rtTopList" class="space-y-3">
+        <h3 class="font-semibold mb-3">Top videos</h3>
+        <div id="rtTopList" class="space-y-2">
           <p class="text-sm text-gray-500">Loading…</p>
         </div>
       </div>
@@ -457,36 +471,81 @@ function switchAn(btn, id) {
 }
 
 var _charts = {};
-function makeChart(canvasId, type, labels, data, color) {
+function makeChart(canvasId, type, labels, data, color, opts) {
+  opts = opts || {};
   var canvas = document.getElementById(canvasId);
   if (!canvas || typeof Chart === "undefined") return;
   if (_charts[canvasId]) { _charts[canvasId].destroy(); }
+  var showX = opts.showX != null ? opts.showX : (type === "bar");
+  var showY = opts.showY != null ? opts.showY : (type === "bar" || type === "line");
+  var spark = !!opts.spark;
   _charts[canvasId] = new Chart(canvas, {
     type: type,
     data: {
       labels: labels,
       datasets: [{
         data: data,
-        backgroundColor: color || "#3b82f6",
+        backgroundColor: type === "line" ? "transparent" : (color || "#3b82f6"),
         borderColor: color || "#3b82f6",
         borderWidth: type === "line" ? 2 : 0,
-        borderRadius: type === "bar" ? 3 : 0,
-        tension: 0.3,
+        borderRadius: type === "bar" ? 2 : 0,
+        tension: 0.35,
         pointRadius: 0,
-        fill: type === "line" ? false : true
+        fill: type === "line" ? false : true,
+        barPercentage: 0.9,
+        categoryPercentage: 0.95
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      animation: spark ? false : undefined,
+      plugins: { legend: { display: false }, tooltip: { enabled: !spark } },
       scales: type === "doughnut" ? {} : {
-        x: { display: type === "bar", ticks: { color: "#888", font: { size: 9 }, maxRotation: 45 }, grid: { display: false } },
-        y: { display: type === "bar" || type === "line", ticks: { color: "#888", font: { size: 9 } }, grid: { color: "rgba(128,128,128,0.15)" } }
+        x: {
+          display: showX && !spark,
+          ticks: {
+            color: "#888",
+            font: { size: 9 },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: opts.maxTicks || 6,
+            callback: function(val, i) {
+              var lab = this.getLabelForValue ? this.getLabelForValue(val) : labels[i];
+              if (opts.onlyEnds) {
+                if (i === 0 || i === labels.length - 1) return lab;
+                return "";
+              }
+              return lab;
+            }
+          },
+          grid: { display: false }
+        },
+        y: {
+          display: showY && !spark,
+          ticks: { color: "#888", font: { size: 9 }, maxTicksLimit: 4 },
+          grid: { color: "rgba(128,128,128,0.12)" },
+          beginAtZero: true
+        }
       }
     }
   });
 }
+
+function fmtShortDate(ts) {
+  var d = new Date(ts);
+  var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return d.getDate() + " " + months[d.getMonth()];
+}
+
+function axisLabelForRange(range, isStart) {
+  if (range === "60m") return isStart ? "60 minutes ago" : "Now";
+  if (range === "48h") return isStart ? "48 hours ago" : "Now";
+  if (range === "24h") return isStart ? "24 hours ago" : "Now";
+  if (range === "28d") return isStart ? "28 days ago" : "Now";
+  return isStart ? "—" : "Now";
+}
+
 
 
 
@@ -584,7 +643,11 @@ async function renderRealtime() {
     var topN0 = list.slice(0, 12);
     makeChart("chartRealtime", "bar",
       topN0.map(function(i) { return (i.title || "").slice(0, 10); }),
-      topN0.map(function(i) { return i.views || 0; }), "#3b82f6");
+      topN0.map(function(i) { return i.views || 0; }), "#3b82f6", { showX: false, showY: true });
+    var aStart = document.getElementById("rtAxisStart");
+    var aEnd = document.getElementById("rtAxisEnd");
+    if (aStart) aStart.textContent = key === "60min" ? "60 minutes ago" : key === "48hrs" ? "48 hours ago" : "Start";
+    if (aEnd) aEnd.textContent = "Now";
   }
 
   var topN = list.slice(0, 12);
@@ -596,16 +659,29 @@ async function renderRealtime() {
   }
   rtList.innerHTML = topN.map(function(item, idx) {
     var th = item.thumbnail
-      ? '<img src="' + esc(item.thumbnail) + '" class="w-12 h-14 rounded object-cover flex-shrink-0"/>'
-      : '<div class="w-12 h-14 rounded bg-gray-700 flex-shrink-0"></div>';
+      ? '<img src="' + esc(item.thumbnail) + '" class="w-10 h-10 rounded object-cover flex-shrink-0"/>'
+      : '<div class="w-10 h-10 rounded bg-gray-700 flex-shrink-0"></div>';
     var id = item.id || ("idx" + idx);
     var showV = (item._rangeViews != null && (key === "60min" || key === "48hrs" || key === "all"))
       ? item._rangeViews : (item.views || 0);
-    return '<div class="flex items-center gap-3 card p-2 video-row" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(id) + '\')">' + th +
-      '<div class="flex-1 min-w-0"><p class="text-sm truncate">' + esc(item.title || "Untitled") + '</p>' +
-      '<p class="text-[11px] text-gray-400">' + (item._type === "reel" ? "Reel" : "Video") + '</p></div>' +
-      '<span class="text-sm font-medium">' + fmtNum(showV) + '</span></div>';
+    var sparkId = "spark_" + idx + "_" + String(id).replace(/[^a-zA-Z0-9]/g, "");
+    return '<div class="flex items-center gap-3 py-2 video-row" style="cursor:pointer" onclick="openVideoDetailById(\'' + esc(String(id)) + '\')">' + th +
+      '<p class="text-sm flex-1 truncate min-w-0">' + esc(item.title || "Untitled") + '</p>' +
+      '<span class="text-sm font-medium w-10 text-right">' + fmtNum(showV) + '</span>' +
+      '<div class="w-16 h-6 flex-shrink-0"><canvas id="' + sparkId + '"></canvas></div></div>';
   }).join("");
+  // mini sparklines (synthetic from view count pattern for row visual, like YT)
+  topN.forEach(function(item, idx) {
+    var id = item.id || ("idx" + idx);
+    var sparkId = "spark_" + idx + "_" + String(id).replace(/[^a-zA-Z0-9]/g, "");
+    var v = (item._rangeViews != null ? item._rangeViews : item.views) || 0;
+    var pts = [];
+    for (var i = 0; i < 12; i++) {
+      pts.push(Math.max(0, Math.round(v * (0.3 + 0.7 * Math.abs(Math.sin(i * 0.9 + v))))));
+    }
+    makeChart(sparkId, "bar", pts.map(function(_, i) { return String(i); }), pts, "#3b82f6", { spark: true, showX: false, showY: false });
+  });
+
 }
 
 function openVideoDetailById(id) {
@@ -718,6 +794,73 @@ function switchVdTab(btn, id) {
 
 
 
+
+async function fillOverviewFromStats(latest, totalViews, totalLikes) {
+  var viewsEl = document.getElementById("anViews");
+  if (viewsEl) viewsEl.textContent = fmtNum(totalViews);
+
+  // default dates
+  var end = Date.now();
+  var start = end - 28 * 24 * 3600 * 1000;
+  function setDates(prefix, s, e) {
+    var a = document.getElementById(prefix + "DateStart");
+    var b = document.getElementById(prefix + "DateEnd");
+    if (a) a.textContent = fmtShortDate(s);
+    if (b) b.textContent = fmtShortDate(e);
+  }
+  setDates("ovViews", start, end);
+  setDates("ovWatch", start, end);
+  setDates("ovSubs", start, end);
+
+  var stats = await fetchStudioStats("28d");
+  var buckets = (stats && stats.buckets) ? stats.buckets : [];
+  if (buckets.length) {
+    start = buckets[0].t;
+    end = buckets[buckets.length - 1].t || end;
+    setDates("ovViews", start, end);
+    setDates("ovWatch", start, end);
+    setDates("ovSubs", start, end);
+  }
+
+  var vData = buckets.length ? buckets.map(function(b) { return b.views || 0; }) : [0];
+  var wData = buckets.length ? buckets.map(function(b) { return Math.round((b.watchSec || 0) / 3600 * 10) / 10; }) : [0];
+  var labels = buckets.length ? buckets.map(function(b) { return fmtShortDate(b.t); }) : ["—"];
+
+  if (stats && stats.totals) {
+    if (viewsEl) viewsEl.textContent = fmtNum(stats.totals.views || totalViews);
+    var wh = document.getElementById("anWatchHours");
+    if (wh) wh.textContent = ((stats.totals.watchSec || 0) / 3600).toFixed(1).replace(/\.0$/, "");
+    var sub = document.getElementById("anSubs");
+    if (sub) {
+      var f24 = stats.totals.followers24h || 0;
+      var ft = stats.totals.followersTotal || 0;
+      sub.textContent = (f24 > 0 ? "+" + f24 : String(ft));
+      sub.className = "text-3xl font-medium mt-1 " + (f24 > 0 ? "text-emerald-400" : "");
+    }
+  } else {
+    var wh2 = document.getElementById("anWatchHours");
+    // estimate hours from content if no analytics yet
+    var est = 0;
+    (latest || []).forEach(function(it) {
+      var d = parseDurSec(it.duration) || 30;
+      est += (it.views || 0) * d * 0.45;
+    });
+    if (wh2) wh2.textContent = (est / 3600).toFixed(1).replace(/\.0$/, "");
+    var sub2 = document.getElementById("anSubs");
+    if (sub2) sub2.textContent = "—";
+  }
+
+  makeChart("chartOvViews", "line", labels, vData.length ? vData : [0], "#3b82f6", { showX: false, showY: false });
+  makeChart("chartOvWatch", "line", labels, wData.length ? wData : [0], "#10b981", { showX: false, showY: false });
+  // subscribers: flat/step from total if no series
+  var sData = labels.map(function(_, i) { return i === labels.length - 1 ? 1 : 0; });
+  if (stats && stats.totals && stats.totals.followers24h) {
+    sData = labels.map(function(_, i) { return Math.max(0, Math.round((stats.totals.followers24h || 0) * (i + 1) / labels.length)); });
+  }
+  makeChart("chartOvSubs", "line", labels, sData, "#10b981", { showX: false, showY: false });
+}
+
+
 function fillAnalytics(myVideos, myReels, latest) {
   var totalViews = myVideos.reduce(function(a, v) { return a + (v.views || 0); }, 0)
     + myReels.reduce(function(a, r) { return a + (r.views || 0); }, 0);
@@ -726,19 +869,17 @@ function fillAnalytics(myVideos, myReels, latest) {
   var totalComments = myVideos.reduce(function(a, v) { return a + (v.commentCount || 0); }, 0)
     + myReels.reduce(function(a, r) { return a + (r.commentCount || 0); }, 0);
 
-  document.getElementById("anContentCount").textContent = String(myVideos.length + myReels.length);
-  document.getElementById("anContentSplit").textContent = myVideos.length + " videos · " + myReels.length + " reels";
+  var splitEl = document.getElementById("anContentSplit");
+  if (splitEl) splitEl.textContent = myVideos.length + " videos · " + myReels.length + " reels";
 
   var sorted = latest.slice().sort(function(a, b) { return (b.views || 0) - (a.views || 0); });
   var topN = sorted.slice(0, 8);
   var labels = topN.map(function(i) { return (i.title || "Item").slice(0, 12); });
   var viewsData = topN.map(function(i) { return i.views || 0; });
-  var likesData = topN.map(function(i) { return i.likes || 0; });
 
-  // sparkline-style: use cumulative-ish from sorted views
-  makeChart("chartOvViews", "line", labels.length ? labels : ["—"], viewsData.length ? viewsData : [0], "#3b82f6");
-  makeChart("chartOvLikes", "line", labels.length ? labels : ["—"], likesData.length ? likesData : [0], "#10b981");
-  makeChart("chartTopBars", "bar", labels.length ? labels : ["No data"], viewsData.length ? viewsData : [0], "#3b82f6");
+  // Overview cards — prefer 28d studio-analytics when available
+  fillOverviewFromStats(latest, totalViews, totalLikes);
+
 
   // Realtime — store for filters + detail
   window._studioAll = latest.slice();
@@ -838,7 +979,7 @@ async function loadStudioData() {
     document.getElementById("dashViews").textContent = fmtNum(totalViews);
     document.getElementById("dashCount").textContent = String(myVideos.length + myReels.length);
     document.getElementById("anViews").textContent = fmtNum(totalViews);
-    document.getElementById("anLikes").textContent = fmtNum(totalLikes);
+    var anLikesEl = document.getElementById("anLikes"); if (anLikesEl) anLikesEl.textContent = fmtNum(totalLikes);
     document.getElementById("videoCountLabel").textContent = myVideos.length + " videos";
     document.getElementById("reelCountLabel").textContent = myReels.length + " reels";
 
