@@ -1,10 +1,10 @@
 /* NoorTube Studio service worker.
    Scope is limited to /noortube-studio.html so it can NEVER touch the main NoorTube app,
    its API calls, uploads or video streaming. */
-const VERSION = 'studio-v2';
+const VERSION = 'studio-v4';
 const PAGE = '/noortube-studio.html';
-const CORE = [PAGE, '/studio-manifest.json', '/studio-icon-192.png', '/studio-icon-512.png'];
-const CDN_HOSTS = ['cdn.tailwindcss.com', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+const CORE = [PAGE, '/studio-manifest.json', '/studio-icon-192.png', '/studio-icon-512.png', '/studio-tailwind.css'];
+const CDN_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
