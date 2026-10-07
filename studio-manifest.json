@@ -1,0 +1,17 @@
+{
+  "id": "/noortube-studio.html",
+  "name": "NoorTube Studio",
+  "short_name": "NT Studio",
+  "description": "Creator analytics, content manager and Halal Ads for NoorTube creators.",
+  "start_url": "/noortube-studio.html?source=pwa",
+  "scope": "/noortube-studio.html",
+  "display": "standalone",
+  "background_color": "#0d0610",
+  "theme_color": "#121816",
+  "categories": ["productivity", "business"],
+  "icons": [
+    { "src": "/studio-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/studio-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/studio-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
