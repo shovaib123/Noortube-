@@ -177,7 +177,8 @@ function NtDeskNav({user:o}){
     i.jsx(Ba,{to:"/monetization",icon:i.jsx(pa,{size:20}),label:"Monetize",expanded:!0}),
     i.jsx(NtStudioLink,{icon:i.jsx(Zi,{size:20}),label:"Studio",expanded:!0}),
     i.jsx(Ba,{to:"/settings",icon:i.jsx(Kv,{size:20}),label:"Settings",expanded:!0}),
-    o?.role==="admin"&&i.jsx(Ba,{to:"/admin",icon:i.jsx(Ks,{size:20}),label:"Admin",expanded:!0})
+    o?.role==="admin"&&i.jsx(Ba,{to:"/admin",icon:i.jsx(Ks,{size:20}),label:"Admin",expanded:!0}),
+    o?.role==="admin"&&i.jsx(NtAdminLink,{icon:i.jsx(Ks,{size:20}),label:"Admin Panel",expanded:!0})
   ]})
 }
 function NtHomeDesk({list:p,cat:u,setCat:f,filtering:y,trending:T,onOpenReel:op}){
@@ -200,6 +201,7 @@ function NtHomeDesk({list:p,cat:u,setCat:f,filtering:y,trending:T,onOpenReel:op}
     rest.length>0&&i.jsx("div",{style:grid,children:rest.map(N=>i.jsx(Vl,{v:N},N.id))})
   ]})
 }
+function NtAdminLink({icon:s,label:r,expanded:o}){return i.jsxs("a",{href:"/noortube-admin.html",className:`flex items-center gap-4 mx-2 px-3 py-2 rounded-lg hover-elevate ${o?"":"flex-col gap-1 py-3 text-xs"}`,children:[s,i.jsx("span",{className:`${o?"text-sm":"text-[10px]"}`,children:r})]})}
 function NtStudioLink({icon:s,label:r,expanded:o}){return i.jsxs("a",{href:"/noortube-studio.html",className:`flex items-center gap-4 mx-2 px-3 py-2 rounded-lg hover-elevate ${o?"":"flex-col gap-1 py-3 text-xs"}`,children:[s,i.jsx("span",{className:`${o?"text-sm":"text-[10px]"}`,children:r})]})}
 function Ba({to:n,icon:s,label:r,expanded:o}){const[u]=ft(),f=u===n;return i.jsxs(Fs,{href:n,className:`flex items-center gap-4 mx-2 px-3 py-2 rounded-lg hover-elevate ${f?"bg-sidebar-accent text-sidebar-accent-foreground font-medium":""} ${o?"":"flex-col gap-1 py-3 text-xs"}`,children:[s,i.jsx("span",{className:`${o?"text-sm":"text-[10px]"}`,children:r})]})}function Li({to:n,icon:s,label:r,active:o}){return i.jsxs(Fs,{href:n,className:`flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${o?"text-primary":"text-muted-foreground"}`,children:[i.jsx("div",{className:`transition-transform ${o?"scale-110":""}`,children:s}),i.jsx("span",{children:r})]})}function _R(){const{statuses:n,currentUser:s,incrementStatusViews:r}=pt(),[o,u]=x.useState(null),[,f]=ft(),m=b=>{window.history.pushState({statusViewerOpen:!0},""),u(b),r(n[b].id)},h=()=>u(null),v=()=>{window.history.state?.statusViewerOpen?window.history.back():h()};x.useEffect(()=>{const b=()=>{o!==null&&u(null)};return window.addEventListener("popstate",b),()=>window.removeEventListener("popstate",b)},[o]);const p=()=>{if(o===null)return;const b=(o+1)%n.length;u(b),r(n[b].id)},y=()=>{if(o===null)return;const b=(o-1+n.length)%n.length;u(b),r(n[b].id)};return i.jsxs(i.Fragment,{children:[i.jsxs("div",{className:"flex gap-3 overflow-x-auto scrollbar-hide pb-2 -mx-1 px-1",children:[
   i.jsxs("button",{onClick:()=>f(s?"/upload?type=status":"/login"),className:"relative flex-shrink-0 w-28 aspect-[9/16] rounded-xl overflow-hidden flex flex-col hover-elevate",children:[

@@ -1,0 +1,17 @@
+{
+  "id": "/noortube-admin.html",
+  "name": "NoorTube Admin",
+  "short_name": "NT Admin",
+  "description": "NoorTube admin panel: moderation, payouts, ads and platform settings.",
+  "start_url": "/noortube-admin.html?source=pwa",
+  "scope": "/noortube-admin.html",
+  "display": "standalone",
+  "background_color": "#08130f",
+  "theme_color": "#0b6b50",
+  "categories": ["productivity", "business"],
+  "icons": [
+    { "src": "/admin-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/admin-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/admin-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
