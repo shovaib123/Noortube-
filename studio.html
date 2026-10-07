@@ -1,0 +1,2126 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NoorTube Studio • Creator Analytics</title>
+  <meta name="theme-color" content="#121816" />
+  <meta name="description" content="NoorTube Studio - analytics, content and Halal Ads for creators" />
+  <link rel="manifest" href="/studio-manifest.json" />
+  <link rel="icon" type="image/png" href="/studio-icon-192.png" />
+  <link rel="apple-touch-icon" href="/studio-apple-touch-icon.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="NT Studio" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            noor: {
+              50: '#f0fdf4', 100: '#dcfce7', 200: '#bbf7d0', 300: '#86efac',
+              400: '#4ade80', 500: '#22c55e', 600: '#16a34a', 700: '#15803d',
+              800: '#166534', 900: '#14532d',
+            },
+            gold: { 400: '#fbbf24', 500: '#f59e0b', 600: '#d97706' },
+            studio: {
+              bg: '#0b0f0e', card: '#121816', border: '#1e2a26',
+              hover: '#1a2420', muted: '#8b9e96',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            display: ['Outfit', 'Inter', 'sans-serif'],
+          },
+          boxShadow: {
+            'glow': '0 0 20px rgba(34, 197, 94, 0.15)',
+            'card': '0 4px 24px rgba(0,0,0,0.25)',
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    * { font-family: 'Inter', system-ui, sans-serif; }
+    .font-display { font-family: 'Outfit', Inter, sans-serif; }
+    
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a3a34; border-radius: 3px; }
+    
+    .live-dot { animation: pulse-live 1.6s ease-in-out infinite; }
+    @keyframes pulse-live {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.8); }
+    }
+    
+    .tab-active { border-bottom: 2px solid #22c55e; color: #22c55e; }
+    
+    .sidebar-link {
+      transition: all 0.2s ease;
+    }
+    .sidebar-link.active {
+      background: linear-gradient(90deg, rgba(34,197,94,0.14), transparent);
+      color: #4ade80;
+      border-left: 3px solid #22c55e;
+    }
+    .sidebar-link.active .icon-box {
+      background: rgba(34,197,94,0.2);
+      color: #4ade80;
+    }
+    
+    .icon-box {
+      width: 38px; height: 38px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(139,158,150,0.08);
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+    .sidebar-link:hover .icon-box {
+      background: rgba(34,197,94,0.12);
+      color: #4ade80;
+    }
+    
+    .chart-container { position: relative; height: 260px; }
+    
+    .glass {
+      background: linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02));
+      border: 1px solid rgba(34,197,94,0.15);
+    }
+    
+    .ads-gradient {
+      background: linear-gradient(135deg, #0f2918 0%, #1a3a28 50%, #0f2918 100%);
+    }
+    
+    .metric-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.3); }
+    
+    input[type="range"] {
+      -webkit-appearance: none; height: 6px; border-radius: 3px;
+      background: #1e2a26; outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 18px; height: 18px;
+      border-radius: 50%; background: #22c55e; cursor: pointer;
+      box-shadow: 0 0 8px rgba(34,197,94,0.4);
+    }
+    
+    .section-panel { display: none; }
+    .section-panel.active { display: block; }
+    
+    .content-card { transition: all 0.2s ease; }
+    .content-card:hover { border-color: rgba(34,197,94,0.4); }
+    @supports (height: 100dvh) { #sidebar { height: calc(100dvh - 3.5rem); } }
+    #sidebarOverlay { backdrop-filter: blur(1px); }
+    .toggle-btn { transition: background-color .2s ease; flex-shrink: 0; }
+  </style>
+</head>
+<body class="bg-gray-50 dark:bg-studio-bg text-gray-900 dark:text-gray-100 min-h-screen">
+
+  <!-- Top Navigation -->
+  <header class="sticky top-0 z-50 bg-white/90 dark:bg-studio-card/95 backdrop-blur-md border-b border-gray-200 dark:border-studio-border">
+    <div class="flex items-center justify-between px-4 lg:px-6 h-14">
+      <div class="flex items-center gap-3">
+        <button id="sidebarToggle" type="button" aria-label="Open menu" aria-expanded="false" class="lg:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-studio-hover">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-noor-400 via-noor-500 to-noor-700 flex items-center justify-center shadow-glow">
+            <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <span class="font-display font-semibold text-base tracking-tight">NoorTube <span class="text-noor-400">Studio</span></span>
+        </div>
+      </div>
+      
+      <div class="flex items-center gap-2.5">
+        <div class="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-500/10 border border-red-500/25">
+          <span class="w-1.5 h-1.5 rounded-full bg-red-500 live-dot"></span>
+          <span class="text-[11px] font-semibold text-red-400 tracking-wide">LIVE</span>
+        </div>
+        
+        <button id="themeToggle" class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-studio-hover transition">
+          <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+          <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+        </button>
+        
+        <div class="flex items-center gap-2 pl-2.5 border-l border-gray-200 dark:border-studio-border">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-noor-400 to-noor-600 flex items-center justify-center text-white text-xs font-bold shadow-md">NT</div>
+          <div class="hidden md:block leading-tight">
+            <p id="headerName" class="text-sm font-medium">Noor Creator</p>
+            <p class="text-[11px] text-studio-muted">Creator Pro</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Mobile sidebar overlay: tap outside to close -->
+  <div id="sidebarOverlay" class="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/50 hidden lg:hidden"></div>
+
+  <div class="flex">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="fixed lg:sticky top-14 left-0 z-40 w-60 h-[calc(100vh-3.5rem)] bg-white dark:bg-studio-card border-r border-gray-200 dark:border-studio-border transform -translate-x-full lg:translate-x-0 transition-transform duration-200 overflow-y-auto">
+      <nav class="p-3 space-y-1.5 mt-2">
+        
+        <a href="javascript:void(0)" data-section="analytics" class="sidebar-link active flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.5l3.5-3.5 3 3L16 7.5l5 5M3 13.5V19h18v-5.5"/></svg>
+          </div>
+          Analytics
+        </a>
+        
+        <a href="javascript:void(0)" data-section="content" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          </div>
+          Content
+        </a>
+        
+        <a href="javascript:void(0)" data-section="audience" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          </div>
+          Audience
+        </a>
+        
+        <a href="javascript:void(0)" data-section="ads" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/><path stroke-linecap="round" stroke-linejoin="round" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/></svg>
+          </div>
+          Halal Ads
+        </a>
+        
+        <a href="javascript:void(0)" data-section="revenue" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          Revenue
+        </a>
+        
+        <a href="javascript:void(0)" data-section="settings" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
+          <div class="icon-box">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          </div>
+          Settings
+        </a>
+      </nav>
+      
+      <div class="mx-3 mt-5 p-3.5 rounded-xl glass">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[11px] font-medium text-noor-400 uppercase tracking-wider">Channel Health</span>
+          <span class="text-xs font-bold text-noor-400">98%</span>
+        </div>
+        <div class="h-1.5 bg-studio-border rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-noor-500 to-noor-400 rounded-full" style="width:98%"></div>
+        </div>
+        <p class="text-[11px] text-studio-muted mt-2">Excellent · All systems normal</p>
+      </div>
+      
+      <div class="mx-3 mt-3 p-3.5 rounded-xl ads-gradient border border-noor-500/20">
+        <p class="text-[11px] font-semibold text-gold-400 uppercase tracking-wider mb-1">Boost Content</p>
+        <p class="text-xs text-gray-300 mb-2.5">Promote with Halal Ads</p>
+        <button onclick="switchSection('ads')" class="w-full py-1.5 rounded-lg bg-noor-500 hover:bg-noor-400 text-white text-xs font-semibold transition">
+          Create Campaign
+        </button>
+      </div>
+
+      <div class="mx-3 mt-3 mb-5 space-y-0.5">
+        <a href="index.html" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] text-gray-600 dark:text-studio-muted hover:bg-gray-100 dark:hover:bg-studio-hover transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Back to NoorTube
+        </a>
+        <a href="index.html#/monetization" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] text-gray-600 dark:text-studio-muted hover:bg-gray-100 dark:hover:bg-studio-hover transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Earnings &amp; payouts
+        </a>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 min-w-0 p-4 lg:p-6">
+      
+      <!-- ========== ANALYTICS SECTION ========== -->
+      <div id="section-analytics" class="section-panel active space-y-5">
+        
+        <!-- REALTIME HERO (YouTube Studio style) -->
+        <div class="bg-white dark:bg-studio-card rounded-2xl border border-gray-200 dark:border-studio-border p-5 lg:p-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-red-500 live-dot"></span>
+              <h2 class="font-display text-lg font-bold">Realtime</h2>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              <div class="flex rounded-full overflow-hidden border border-gray-200 dark:border-studio-border text-[11px] font-medium">
+                <button class="rt-time px-3 py-1.5 bg-noor-500 text-white" data-rt="60m">60 MIN</button>
+                <button class="rt-time px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-studio-hover" data-rt="48h">48 HRS</button>
+              </div>
+              <div class="flex rounded-full overflow-hidden border border-gray-200 dark:border-studio-border text-[11px] font-medium">
+                <button class="rt-type px-3 py-1.5 bg-noor-500 text-white" data-type="all">All</button>
+                <button class="rt-type px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-studio-hover" data-type="videos">Videos</button>
+                <button class="rt-type px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-studio-hover" data-type="reels">Reels</button>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Big View Counter -->
+          <div class="text-center mb-6">
+            <p id="rtViews" class="text-5xl lg:text-6xl font-bold tracking-tight">—</p>
+            <p id="rtLabel" class="text-sm text-studio-muted mt-1">Views · last 60 minutes</p>
+          </div>
+          
+          <!-- Bar Chart -->
+          <div class="h-48 mb-2">
+            <canvas id="realtimeBarChart"></canvas>
+          </div>
+          <div class="flex justify-between text-[10px] text-studio-muted px-1">
+            <span id="rtFrom">60 minutes ago</span>
+            <span>Now</span>
+          </div>
+        </div>
+
+        <!-- Quick Metrics Row -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="metric-card bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider">Live Views</span>
+              <span class="flex items-center gap-1 text-[10px] text-red-400 font-medium"><span class="w-1.5 h-1.5 rounded-full bg-red-500 live-dot"></span> LIVE</span>
+            </div>
+            <p id="liveViews" class="text-2xl font-bold tracking-tight">—</p>
+            <p class="text-[11px] text-noor-400 mt-1 font-medium">+342 last min</p>
+          </div>
+          <div class="metric-card bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider">Concurrent</span>
+              <svg class="w-3.5 h-3.5 text-noor-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            </div>
+            <p id="concurrentViewers" class="text-2xl font-bold tracking-tight">—</p>
+            <p class="text-[11px] text-noor-400 mt-1 font-medium">Peak 2,105 today</p>
+          </div>
+          <div class="metric-card bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider">Watch Time</span>
+              <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <p class="text-2xl font-bold tracking-tight">48.2<span class="text-base font-medium text-studio-muted">h</span></p>
+            <p class="text-[11px] text-noor-400 mt-1 font-medium">+12.4% vs yesterday</p>
+          </div>
+          <div class="metric-card bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider">Subscribers</span>
+              <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
+            </div>
+            <p id="subscribers" class="text-2xl font-bold tracking-tight">—</p>
+            <p class="text-[11px] text-noor-400 mt-1 font-medium">+127 today</p>
+          </div>
+        </div>
+
+        <!-- TOP VIDEOS (YouTube style with mini charts) -->
+        <div class="bg-white dark:bg-studio-card rounded-2xl border border-gray-200 dark:border-studio-border p-5">
+          <h3 id="rtTopTitle" class="text-sm font-semibold">Top content · last 60 minutes</h3>
+          <p class="text-[11px] text-studio-muted mt-0.5 mb-3">Tap any video to see its full details</p>
+          <div class="space-y-1" id="topRealtimeList">
+            <!-- Filled by JS -->
+          </div>
+        </div>
+
+        <!-- Sub tabs -->
+        <div class="flex items-center gap-0.5 border-b border-gray-200 dark:border-studio-border">
+          <button class="content-tab tab-active px-3.5 py-2 text-[13px] font-medium" data-tab="overview">Overview</button>
+          <button class="content-tab px-3.5 py-2 text-[13px] font-medium text-gray-500 dark:text-studio-muted" data-tab="videos">Long-Form</button>
+          <button class="content-tab px-3.5 py-2 text-[13px] font-medium text-gray-500 dark:text-studio-muted" data-tab="reels">Islamic Reels</button>
+        </div>
+
+        <!-- Charts -->
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div class="xl:col-span-2 bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <h3 class="text-sm font-semibold">Views Over Time</h3>
+                <p class="text-[11px] text-studio-muted">Minute-by-minute traffic</p>
+              </div>
+              <div class="flex gap-3 text-[11px]">
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-noor-500"></span> Views</span>
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span> Impressions</span>
+              </div>
+            </div>
+            <div class="chart-container"><canvas id="viewsChart"></canvas></div>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold">Audience Retention</h3>
+              <p class="text-[11px] text-studio-muted">Where viewers drop off</p>
+            </div>
+            <div class="chart-container"><canvas id="retentionChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold">Watch Time & CTR</h3>
+              <p class="text-[11px] text-studio-muted">Hourly performance</p>
+            </div>
+            <div class="chart-container"><canvas id="watchCtrChart"></canvas></div>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold">Traffic Sources</h3>
+              <p class="text-[11px] text-studio-muted">How viewers find you</p>
+            </div>
+            <div class="chart-container"><canvas id="trafficChart"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Top Content -->
+        <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Top Performing Content</h3>
+            <div class="flex gap-1 text-[11px]">
+              <button class="content-type-btn px-2 py-1 rounded-md bg-noor-500 text-white font-medium" data-type="all">All</button>
+              <button class="content-type-btn px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-studio-hover" data-type="videos">Videos</button>
+              <button class="content-type-btn px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-studio-hover" data-type="reels">Reels</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-[13px]">
+              <thead>
+                <tr class="text-left text-[11px] text-studio-muted border-b border-gray-100 dark:border-studio-border">
+                  <th class="pb-2.5 font-medium">Content</th>
+                  <th class="pb-2.5 font-medium text-right">Views</th>
+                  <th class="pb-2.5 font-medium text-right">Watch Time</th>
+                  <th class="pb-2.5 font-medium text-right">Engage</th>
+                  <th class="pb-2.5 font-medium text-right">CTR</th>
+                </tr>
+              </thead>
+              <tbody id="topContentBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== CONTENT SECTION ========== -->
+      <div id="section-content" class="section-panel space-y-5">
+        <div>
+          <h1 class="font-display text-xl lg:text-2xl font-bold tracking-tight">Your Content</h1>
+          <p class="text-xs text-studio-muted mt-0.5">Manage Videos & Islamic Reels</p>
+        </div>
+        
+        <div class="flex flex-wrap gap-2">
+          <button type="button" data-cfilter="all" class="cfilter-btn px-4 py-2 rounded-lg bg-noor-500 text-white text-sm font-medium">All Content</button>
+          <button type="button" data-cfilter="videos" class="cfilter-btn px-4 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover">Videos</button>
+          <button type="button" data-cfilter="reels" class="cfilter-btn px-4 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover">Reels</button>
+          <button type="button" data-cfilter="live" class="cfilter-btn px-4 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover">Live</button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="contentGrid">
+          <!-- Filled by JS -->
+        </div>
+      </div>
+
+      <!-- ========== AUDIENCE SECTION ========== -->
+      <div id="section-audience" class="section-panel space-y-5">
+        <div>
+          <h1 class="font-display text-xl lg:text-2xl font-bold tracking-tight">Audience Insights</h1>
+          <p class="text-xs text-studio-muted mt-0.5">Know who watches your content</p>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <h3 class="text-sm font-semibold mb-4">Top Geographies</h3>
+            <div id="geoList" class="space-y-2.5"></div>
+          </div>
+          
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <h3 class="text-sm font-semibold mb-4">Devices & Age</h3>
+            <div class="grid grid-cols-3 gap-3 mb-5">
+              <div class="text-center p-3 rounded-xl bg-gray-50 dark:bg-studio-hover">
+                <p class="text-xl font-bold">62%</p>
+                <p class="text-[11px] text-studio-muted">Mobile</p>
+              </div>
+              <div class="text-center p-3 rounded-xl bg-gray-50 dark:bg-studio-hover">
+                <p class="text-xl font-bold">28%</p>
+                <p class="text-[11px] text-studio-muted">Desktop</p>
+              </div>
+              <div class="text-center p-3 rounded-xl bg-gray-50 dark:bg-studio-hover">
+                <p class="text-xl font-bold">10%</p>
+                <p class="text-[11px] text-studio-muted">Tablet</p>
+              </div>
+            </div>
+            <h4 class="text-xs font-medium text-studio-muted mb-2">Age Groups</h4>
+            <div class="space-y-2">
+              <div class="flex items-center gap-3">
+                <span class="text-xs w-14">18-24</span>
+                <div class="flex-1 h-2 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden"><div class="h-full bg-noor-500 rounded-full" style="width:32%"></div></div>
+                <span class="text-xs text-studio-muted w-8">32%</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs w-14">25-34</span>
+                <div class="flex-1 h-2 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden"><div class="h-full bg-noor-500 rounded-full" style="width:41%"></div></div>
+                <span class="text-xs text-studio-muted w-8">41%</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs w-14">35-44</span>
+                <div class="flex-1 h-2 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden"><div class="h-full bg-noor-500 rounded-full" style="width:18%"></div></div>
+                <span class="text-xs text-studio-muted w-8">18%</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs w-14">45+</span>
+                <div class="flex-1 h-2 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden"><div class="h-full bg-noor-500 rounded-full" style="width:9%"></div></div>
+                <span class="text-xs text-studio-muted w-8">9%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== HALAL ADS SECTION ========== -->
+      <div id="section-ads" class="section-panel space-y-5">
+        <div class="flex items-center justify-between">
+          <div>
+            <h1 class="font-display text-xl lg:text-2xl font-bold tracking-tight flex items-center gap-2">
+              <span class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-400 to-gold-600 flex items-center justify-center">
+                <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+              </span>
+              Halal Ads Campaign
+            </h1>
+            <p class="text-xs text-studio-muted mt-0.5">Promote with 100% Shariah-compliant advertising</p>
+          </div>
+          <span class="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-noor-500/10 border border-noor-500/25 text-[11px] font-semibold text-noor-400">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+            Halal Certified
+          </span>
+        </div>
+
+        <!-- Ads Metrics -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-3.5">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Active Campaigns</p>
+            <p class="text-xl font-bold">3</p>
+            <p class="text-[11px] text-noor-400 mt-0.5">2 running · 1 paused</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-3.5">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Total Spend</p>
+            <p class="text-xl font-bold">₹4,280</p>
+            <p class="text-[11px] text-studio-muted mt-0.5">This month</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-3.5">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Ad Views</p>
+            <p class="text-xl font-bold">86.4K</p>
+            <p class="text-[11px] text-noor-400 mt-0.5">+18% vs last month</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-3.5">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Avg. CTR</p>
+            <p class="text-xl font-bold">7.2%</p>
+            <p class="text-[11px] text-noor-400 mt-0.5">Above platform avg</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
+          <!-- Create Campaign -->
+          <div class="xl:col-span-3 bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-5">
+            <h3 class="text-sm font-semibold mb-4 flex items-center gap-2">
+              <svg class="w-4 h-4 text-gold-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+              Create New Halal Campaign
+            </h3>
+            
+            <div class="space-y-4">
+              <div>
+                <label class="text-[12px] font-medium text-studio-muted mb-1.5 block">Campaign Goal</label>
+                <div class="grid grid-cols-3 gap-2">
+                  <button class="goal-btn active-goal px-3 py-2.5 rounded-lg border-2 border-noor-500 bg-noor-500/10 text-[12px] font-medium text-noor-400" data-goal="views">More Views</button>
+                  <button class="goal-btn px-3 py-2.5 rounded-lg border border-gray-200 dark:border-studio-border text-[12px] font-medium" data-goal="subs">Subscribers</button>
+                  <button class="goal-btn px-3 py-2.5 rounded-lg border border-gray-200 dark:border-studio-border text-[12px] font-medium" data-goal="engage">Engagement</button>
+                </div>
+              </div>
+              
+              <div>
+                <label class="text-[12px] font-medium text-studio-muted mb-1.5 block">Select Content to Promote</label>
+                <select id="adContent" class="w-full px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-200 dark:border-studio-border text-[13px] focus:outline-none focus:border-noor-500">
+                  <option>Surah Al-Mulk Full Recitation with Translation</option>
+                  <option>Powerful Dua for Rizq & Success | Short</option>
+                  <option>Tafsir of Surah Yasin - Part 3 (Bayan)</option>
+                  <option>Morning Adhkar - Start Your Day Right</option>
+                  <option>The Story of Prophet Yusuf (AS) - Full Lecture</option>
+                  <option>Beautiful Quran Recitation in Rain | ASMR</option>
+                </select>
+              </div>
+              
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <label class="text-[12px] font-medium text-studio-muted">Daily Budget</label>
+                  <span id="budgetValue" class="text-sm font-bold text-noor-400">₹500</span>
+                </div>
+                <input type="range" id="budgetSlider" min="100" max="10000" step="50" value="500" class="w-full">
+                <div class="flex justify-between text-[10px] text-studio-muted mt-1">
+                  <span>₹100</span><span>₹2,500</span><span>₹5,000</span><span>₹10,000</span>
+                </div>
+              </div>
+              
+              <div>
+                <label class="text-[12px] font-medium text-studio-muted mb-1.5 block">Campaign Duration</label>
+                <div class="grid grid-cols-4 gap-2">
+                  <button class="duration-btn active-duration px-2 py-2 rounded-lg border-2 border-noor-500 bg-noor-500/10 text-[11px] font-medium text-noor-400" data-days="3">3 Days</button>
+                  <button class="duration-btn px-2 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-[11px] font-medium" data-days="7">7 Days</button>
+                  <button class="duration-btn px-2 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-[11px] font-medium" data-days="14">14 Days</button>
+                  <button class="duration-btn px-2 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-[11px] font-medium" data-days="30">30 Days</button>
+                </div>
+              </div>
+              
+              <div>
+                <label class="text-[12px] font-medium text-studio-muted mb-1.5 block">Target Audience</label>
+                <div class="flex flex-wrap gap-1.5">
+                  <button class="target-chip active-chip px-2.5 py-1 rounded-full border border-noor-500 bg-noor-500/10 text-[11px] font-medium text-noor-400">All Viewers</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">Pakistan</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">India</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">GCC</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">UK / US</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">18-34 yrs</button>
+                  <button class="target-chip px-2.5 py-1 rounded-full border border-gray-200 dark:border-studio-border text-[11px] font-medium">Mobile Only</button>
+                </div>
+              </div>
+              
+              <div class="p-3.5 rounded-xl glass flex items-center justify-between">
+                <div>
+                  <p class="text-[11px] text-studio-muted">Estimated Daily Reach</p>
+                  <p id="estReach" class="text-lg font-bold text-noor-400">8,500 – 14,200</p>
+                </div>
+                <div class="text-right">
+                  <p class="text-[11px] text-studio-muted">Est. Total Cost</p>
+                  <p id="estCost" class="text-lg font-bold">₹1,500</p>
+                </div>
+              </div>
+              
+              <button id="launchCampaign" class="w-full py-3 rounded-xl bg-gradient-to-r from-noor-600 to-noor-500 hover:from-noor-500 hover:to-noor-400 text-white font-semibold text-sm shadow-glow transition flex items-center justify-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                Launch Halal Campaign
+              </button>
+              <p class="text-[10px] text-center text-studio-muted">All ads reviewed for Shariah compliance (2–6 hrs). No interest, music or haram content.</p>
+            </div>
+          </div>
+          
+          <!-- Active Campaigns -->
+          <div class="xl:col-span-2 space-y-4">
+            <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+              <h3 class="text-sm font-semibold mb-3">Active Campaigns</h3>
+              <div id="campaignList" class="space-y-3">
+                <div class="p-3 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-100 dark:border-studio-border">
+                  <div class="flex items-start justify-between mb-1.5">
+                    <div>
+                      <p class="text-[13px] font-medium">Surah Al-Mulk Boost</p>
+                      <p class="text-[11px] text-studio-muted mt-0.5">Views · ₹400/day · 5 days left</p>
+                    </div>
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-noor-500/15 text-noor-400">Running</span>
+                  </div>
+                  <div class="flex items-center gap-3 text-[11px] mt-2">
+                    <span class="text-studio-muted">Spent: <strong class="text-gray-200">₹1,600</strong></span>
+                    <span class="text-studio-muted">Views: <strong class="text-noor-400">24.8K</strong></span>
+                  </div>
+                  <div class="mt-2 h-1 bg-studio-border rounded-full overflow-hidden">
+                    <div class="h-full bg-noor-500 rounded-full" style="width:55%"></div>
+                  </div>
+                </div>
+                
+                <div class="p-3 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-100 dark:border-studio-border">
+                  <div class="flex items-start justify-between mb-1.5">
+                    <div>
+                      <p class="text-[13px] font-medium">Dua for Rizq Reel</p>
+                      <p class="text-[11px] text-studio-muted mt-0.5">Engagement · ₹250/day · 2 days left</p>
+                    </div>
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-noor-500/15 text-noor-400">Running</span>
+                  </div>
+                  <div class="flex items-center gap-3 text-[11px] mt-2">
+                    <span class="text-studio-muted">Spent: <strong class="text-gray-200">₹1,250</strong></span>
+                    <span class="text-studio-muted">Views: <strong class="text-noor-400">31.2K</strong></span>
+                  </div>
+                  <div class="mt-2 h-1 bg-studio-border rounded-full overflow-hidden">
+                    <div class="h-full bg-noor-500 rounded-full" style="width:78%"></div>
+                  </div>
+                </div>
+                
+                <div class="p-3 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-100 dark:border-studio-border opacity-70">
+                  <div class="flex items-start justify-between mb-1.5">
+                    <div>
+                      <p class="text-[13px] font-medium">Yasin Tafsir Series</p>
+                      <p class="text-[11px] text-studio-muted mt-0.5">Subscribers · ₹300/day · Paused</p>
+                    </div>
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/15 text-yellow-400">Paused</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+              <h3 class="text-sm font-semibold mb-2.5">Budget Tips</h3>
+              <ul class="space-y-2 text-[12px] text-studio-muted">
+                <li class="flex gap-2"><span class="text-noor-400">✦</span><span>Start with <strong class="text-gray-300">₹200–500/day</strong> to test.</span></li>
+                <li class="flex gap-2"><span class="text-noor-400">✦</span><span>Reels get higher CTR — good for low budgets.</span></li>
+                <li class="flex gap-2"><span class="text-noor-400">✦</span><span>Target top geography first for better ROI.</span></li>
+                <li class="flex gap-2"><span class="text-noor-400">✦</span><span>Halal review takes 2–6 hours.</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== REVENUE SECTION ========== -->
+      <div id="section-revenue" class="section-panel space-y-5">
+        <div>
+          <h1 class="font-display text-xl lg:text-2xl font-bold tracking-tight">Revenue</h1>
+          <p class="text-xs text-studio-muted mt-0.5">Earnings from ads, Super Thanks & more</p>
+        </div>
+        
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">This Month</p>
+            <p class="text-2xl font-bold">₹18,450</p>
+            <p class="text-[11px] text-noor-400 mt-1">+22% vs last month</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Ad Revenue</p>
+            <p class="text-2xl font-bold">₹12,200</p>
+            <p class="text-[11px] text-studio-muted mt-1">Halal Ads share</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Sadaqah Tips</p>
+            <p class="text-2xl font-bold">₹4,850</p>
+            <p class="text-[11px] text-studio-muted mt-1">From viewers</p>
+          </div>
+          <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4">
+            <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">Pending</p>
+            <p class="text-2xl font-bold">₹1,400</p>
+            <p class="text-[11px] text-studio-muted mt-1">Next payout</p>
+          </div>
+        </div>
+        
+        <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-6 text-center">
+          <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-noor-500/10 flex items-center justify-center">
+            <svg class="w-8 h-8 text-noor-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="font-semibold mb-1">Revenue Dashboard</h3>
+          <p class="text-sm text-studio-muted mb-4">Detailed revenue charts & payout history coming soon</p>
+          <button id="requestPayout" type="button" class="px-5 py-2 rounded-lg bg-noor-500 hover:bg-noor-400 text-white text-sm font-medium transition">Request Payout</button>
+          <a href="index.html#/monetization" class="block mt-3 text-xs text-noor-400 hover:underline">Manage payout details in NoorTube →</a>
+        </div>
+      </div>
+
+      <!-- ========== VIDEO DETAIL SECTION ========== -->
+      <div id="section-video" class="section-panel space-y-5">
+        <button id="videoBack" type="button" class="inline-flex items-center gap-1.5 text-sm font-medium text-studio-muted hover:text-noor-400 transition py-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Back
+        </button>
+        <div id="videoDetail" class="space-y-5"></div>
+      </div>
+
+      <!-- ========== SETTINGS SECTION ========== -->
+      <div id="section-settings" class="section-panel space-y-5">
+        <div>
+          <h1 class="font-display text-xl lg:text-2xl font-bold tracking-tight">Settings</h1>
+          <p class="text-xs text-studio-muted mt-0.5">Manage your channel preferences</p>
+        </div>
+        
+        <div class="bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border divide-y divide-gray-100 dark:divide-studio-border">
+          <div class="p-4 flex items-center justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <p class="font-medium text-sm">Channel Name</p>
+              <p id="channelNameText" class="text-xs text-studio-muted">Noor Creator</p>
+              <input id="channelNameInput" type="text" maxlength="40" class="hidden mt-1.5 w-full px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-200 dark:border-studio-border text-sm focus:outline-none focus:border-noor-500" />
+            </div>
+            <button id="channelNameBtn" type="button" class="text-sm text-noor-400 font-medium">Edit</button>
+          </div>
+          <div class="p-4 flex items-center justify-between gap-3">
+            <div>
+              <p class="font-medium text-sm">Email Notifications</p>
+              <p class="text-xs text-studio-muted">Weekly performance reports</p>
+            </div>
+            <button type="button" data-toggle="email" role="switch" aria-checked="true" class="toggle-btn w-11 h-6 rounded-full bg-noor-500 relative"><span class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white transition-transform translate-x-5"></span></button>
+          </div>
+          <div class="p-4 flex items-center justify-between gap-3">
+            <div>
+              <p class="font-medium text-sm">Dark Mode</p>
+              <p class="text-xs text-studio-muted">Switch between dark and light theme</p>
+            </div>
+            <button type="button" data-toggle="dark" role="switch" aria-checked="true" class="toggle-btn w-11 h-6 rounded-full bg-noor-500 relative"><span class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white transition-transform translate-x-5"></span></button>
+          </div>
+          <div class="p-4 flex items-center justify-between gap-3">
+            <div>
+              <p class="font-medium text-sm">Language</p>
+              <p id="langText" class="text-xs text-studio-muted">English / اردو / हिन्दी</p>
+            </div>
+            <button id="langBtn" type="button" class="text-sm text-noor-400 font-medium">Change</button>
+          </div>
+          <div class="p-4 flex items-center justify-between gap-3">
+            <div>
+              <p class="font-medium text-sm">Install NoorTube Studio</p>
+              <p id="installRowSub" class="text-xs text-studio-muted">Add to your home screen like an app</p>
+            </div>
+            <button id="installRowBtn" type="button" class="text-sm text-noor-400 font-medium">Install</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-center text-[11px] text-studio-muted pt-6 pb-2">
+        NoorTube Studio · Demo with simulated data · Halal Ads are Shariah-reviewed
+      </p>
+    </main>
+  </div>
+
+  <!-- Install popup -->
+  <div id="installSheet" class="fixed inset-x-0 bottom-0 z-[60] hidden p-3 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:max-w-sm" style="padding-bottom:calc(env(safe-area-inset-bottom,0px) + 0.75rem)" role="dialog" aria-labelledby="installTitle">
+    <div class="rounded-2xl bg-white dark:bg-studio-card border border-gray-200 dark:border-studio-border shadow-2xl p-4">
+      <div class="flex items-start gap-3">
+        <img src="/studio-icon-192.png" alt="NoorTube Studio" class="w-14 h-14 rounded-2xl flex-shrink-0 shadow-lg" />
+        <div class="flex-1 min-w-0">
+          <h3 id="installTitle" class="font-display font-semibold text-[15px]">Install NoorTube Studio</h3>
+          <p id="installDesc" class="text-xs text-studio-muted mt-0.5">Open your analytics in one tap from the home screen. Fast, full-screen, like a real app.</p>
+        </div>
+        <button id="installClose" type="button" aria-label="Close" class="p-1 -mr-1 -mt-1 text-studio-muted hover:text-noor-400">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="installIosSteps" class="hidden mt-3 p-3 rounded-xl bg-gray-50 dark:bg-studio-hover text-xs leading-relaxed">
+        1. Tap the <strong>Share</strong> button <span class="inline-block px-1 rounded bg-gray-200 dark:bg-studio-border">⎙</span> in your browser<br>
+        2. Choose <strong>Add to Home Screen</strong><br>
+        3. Tap <strong>Add</strong>
+      </div>
+      <div class="flex gap-2 mt-3.5">
+        <button id="installLater" type="button" class="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover transition">Not now</button>
+        <button id="installNow" type="button" class="flex-1 py-2.5 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition">Install</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-6 right-4 left-4 sm:left-auto sm:right-6 z-50 hidden">
+    <div class="flex items-center gap-3 px-4 py-3 rounded-xl bg-studio-card border border-noor-500/30 shadow-card">
+      <div class="w-8 h-8 rounded-full bg-noor-500/20 flex items-center justify-center">
+        <svg class="w-4 h-4 text-noor-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <div>
+        <p id="toastTitle" class="text-sm font-medium">Campaign Submitted</p>
+        <p id="toastSub" class="text-[11px] text-studio-muted">Under Halal review (2–6 hrs)</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ========== SECTION SWITCHING ==========
+    function switchSection(sectionId) {
+      currentSection = sectionId;
+      const navTarget = sectionId === 'video' ? videoReturn : sectionId;
+      if (sectionId !== 'video') videoPushed = false;
+      // Hide all panels
+      document.querySelectorAll('.section-panel').forEach(p => p.classList.remove('active'));
+      // Show target
+      const panel = document.getElementById('section-' + sectionId);
+      if (panel) panel.classList.add('active');
+      
+      // Update sidebar active state
+      document.querySelectorAll('.sidebar-link').forEach(link => {
+        link.classList.remove('active');
+        link.classList.add('text-gray-500', 'dark:text-studio-muted');
+        if (link.dataset.section === navTarget) {
+          link.classList.add('active');
+          link.classList.remove('text-gray-500', 'dark:text-studio-muted');
+        }
+      });
+      
+      // Close mobile sidebar
+      closeSidebar();
+      
+      // Scroll to top
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      // Charts hidden in another tab need a resize when shown again
+      if (sectionId === 'analytics') {
+        setTimeout(() => [viewsChart, retentionChart, watchCtrChart, trafficChart, realtimeBarChart].forEach(c => c && c.resize()), 50);
+      }
+    }
+    
+    // Sidebar clicks
+    document.querySelectorAll('.sidebar-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const section = link.dataset.section;
+        if (section) switchSection(section);
+      });
+    });
+
+    // ========== SAFE STORAGE (never crashes if storage is blocked) ==========
+    const store = {
+      get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+      set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    };
+
+    // ========== HELPERS ==========
+    function setActive(btns, active, onClasses, offClasses) {
+      btns.forEach(b => {
+        const isOn = b === active;
+        onClasses.forEach(c => b.classList.toggle(c, isOn));
+        offClasses.forEach(c => b.classList.toggle(c, !isOn));
+      });
+    }
+    function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+    function esc(str) { return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+    let toastTimer;
+    function showToast(title, sub) {
+      const toast = document.getElementById('toast');
+      setText('toastTitle', title);
+      setText('toastSub', sub);
+      toast.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.add('hidden'), 3500);
+    }
+
+    // ========== THEME ==========
+    const html = document.documentElement;
+    function applyTheme(dark) {
+      html.classList.toggle('dark', dark);
+      store.set('theme', dark ? 'dark' : 'light');
+      syncToggles();
+      setThemeMeta();
+      updateChartsTheme();
+    }
+    document.getElementById('themeToggle').addEventListener('click', () => applyTheme(!html.classList.contains('dark')));
+    if (store.get('theme') === 'light') html.classList.remove('dark');
+
+    // ========== SIDEBAR (mobile drawer) ==========
+    const sidebar = document.getElementById('sidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+    const sidebarBtn = document.getElementById('sidebarToggle');
+    function isSidebarOpen() { return !sidebar.classList.contains('-translate-x-full'); }
+    function openSidebar() {
+      sidebar.classList.remove('-translate-x-full');
+      sidebarOverlay.classList.remove('hidden');
+      sidebarBtn.setAttribute('aria-expanded', 'true');
+    }
+    function closeSidebar() {
+      sidebar.classList.add('-translate-x-full');
+      sidebarOverlay.classList.add('hidden');
+      sidebarBtn.setAttribute('aria-expanded', 'false');
+    }
+    sidebarBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      isSidebarOpen() ? closeSidebar() : openSidebar();
+    });
+    // Tap anywhere outside the drawer (content, overlay, header) closes it
+    document.addEventListener('click', (e) => {
+      if (!isSidebarOpen() || window.innerWidth >= 1024) return;
+      if (sidebar.contains(e.target) || sidebarBtn.contains(e.target)) return;
+      closeSidebar();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSidebar(); });
+    window.addEventListener('resize', () => { if (window.innerWidth >= 1024) closeSidebar(); });
+
+    // ========== ANALYTICS FILTER (Overview / Long-Form / Reels  +  All / Videos / Reels) ==========
+    const TAB_FILTER = { overview: 'all', videos: 'videos', reels: 'reels' };
+    const FILTER_SCALE = { all: 1, videos: 0.6, reels: 0.4 };
+    let analyticsFilter = 'all';
+
+    function matchesFilter(item, f) {
+      return f === 'all' || (f === 'videos' && item.type === 'Video') || (f === 'reels' && item.type === 'Reel');
+    }
+
+    function setAnalyticsFilter(f) {
+      analyticsFilter = f;
+      document.querySelectorAll('.content-tab').forEach(t => {
+        const on = (TAB_FILTER[t.dataset.tab] || 'all') === f;
+        t.classList.toggle('tab-active', on);
+        t.classList.toggle('text-gray-500', !on);
+        t.classList.toggle('dark:text-studio-muted', !on);
+      });
+      const typeBtns = document.querySelectorAll('.content-type-btn');
+      setActive(typeBtns, [...typeBtns].find(b => b.dataset.type === f),
+        ['bg-noor-500', 'text-white', 'font-medium'], ['hover:bg-gray-100', 'dark:hover:bg-studio-hover']);
+      renderTopContent();
+      if (viewsChart) {
+        const d = generateMinuteData(60, FILTER_SCALE[f]);
+        viewsChart.data.labels = d.labels;
+        viewsChart.data.datasets[0].data = d.views;
+        viewsChart.data.datasets[1].data = d.impressions;
+        viewsChart.update();
+      }
+    }
+    document.querySelectorAll('.content-tab').forEach(tab => {
+      tab.addEventListener('click', () => setAnalyticsFilter(TAB_FILTER[tab.dataset.tab] || 'all'));
+    });
+    document.querySelectorAll('.content-type-btn').forEach(btn => {
+      btn.addEventListener('click', () => setAnalyticsFilter(btn.dataset.type));
+    });
+
+    // ========== CONTENT PAGE FILTER (All / Videos / Reels / Live) ==========
+    let contentFilter = 'all';
+    document.querySelectorAll('.cfilter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        contentFilter = btn.dataset.cfilter;
+        setActive(document.querySelectorAll('.cfilter-btn'), btn,
+          ['bg-noor-500', 'text-white'],
+          ['border', 'border-gray-200', 'dark:border-studio-border', 'hover:bg-gray-50', 'dark:hover:bg-studio-hover']);
+        renderContentGrid();
+      });
+    });
+
+    // Goal / Duration / Target
+    document.querySelectorAll('.goal-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.goal-btn').forEach(b => {
+          b.classList.remove('active-goal', 'border-2', 'border-noor-500', 'bg-noor-500/10', 'text-noor-400');
+          b.classList.add('border', 'border-gray-200', 'dark:border-studio-border');
+        });
+        btn.classList.add('active-goal', 'border-2', 'border-noor-500', 'bg-noor-500/10', 'text-noor-400');
+        btn.classList.remove('border', 'border-gray-200', 'dark:border-studio-border');
+      });
+    });
+
+    document.querySelectorAll('.duration-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.duration-btn').forEach(b => {
+          b.classList.remove('active-duration', 'border-2', 'border-noor-500', 'bg-noor-500/10', 'text-noor-400');
+          b.classList.add('border', 'border-gray-200', 'dark:border-studio-border');
+        });
+        btn.classList.add('active-duration', 'border-2', 'border-noor-500', 'bg-noor-500/10', 'text-noor-400');
+        btn.classList.remove('border', 'border-gray-200', 'dark:border-studio-border');
+        updateEstimate();
+      });
+    });
+
+    document.querySelectorAll('.target-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        chip.classList.toggle('active-chip');
+        chip.classList.toggle('border-noor-500');
+        chip.classList.toggle('bg-noor-500/10');
+        chip.classList.toggle('text-noor-400');
+      });
+    });
+
+    // Budget
+    const budgetSlider = document.getElementById('budgetSlider');
+    function updateEstimate() {
+      const daily = parseInt(budgetSlider.value);
+      const days = parseInt(document.querySelector('.active-duration')?.dataset.days || 3);
+      document.getElementById('budgetValue').textContent = '₹' + daily.toLocaleString();
+      document.getElementById('estReach').textContent = Math.round(daily * 14).toLocaleString() + ' – ' + Math.round(daily * 28).toLocaleString();
+      document.getElementById('estCost').textContent = '₹' + (daily * days).toLocaleString();
+    }
+    budgetSlider.addEventListener('input', updateEstimate);
+
+    document.getElementById('launchCampaign').addEventListener('click', () => {
+      const goalNames = { views: 'Views', subs: 'Subscribers', engage: 'Engagement' };
+      const goal = goalNames[document.querySelector('.goal-btn.active-goal')?.dataset.goal] || 'Views';
+      const days = document.querySelector('.active-duration')?.dataset.days || 3;
+      const daily = parseInt(budgetSlider.value).toLocaleString();
+      let name = document.getElementById('adContent').value;
+      if (name.length > 38) name = name.slice(0, 36) + '…';
+      document.getElementById('campaignList').insertAdjacentHTML('afterbegin', `
+        <div class="p-3 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-100 dark:border-studio-border">
+          <div class="flex items-start justify-between mb-1.5">
+            <div class="min-w-0">
+              <p class="text-[13px] font-medium truncate">${esc(name)}</p>
+              <p class="text-[11px] text-studio-muted mt-0.5">${goal} · ₹${daily}/day · ${days} days</p>
+            </div>
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/15 text-yellow-400 flex-shrink-0">In Review</span>
+          </div>
+          <p class="text-[11px] text-studio-muted mt-1">Halal review in progress (2–6 hrs)</p>
+        </div>`);
+      showToast('Campaign Submitted', 'Under Halal review (2–6 hrs)');
+    });
+
+    // Charts
+    function getChartColors() {
+      const isDark = html.classList.contains('dark');
+      return { text: isDark ? '#8b9e96' : '#6b7280', grid: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' };
+    }
+
+    function generateMinuteData(points = 60, scale = 1) {
+      const labels = [], views = [], impressions = [];
+      let base = 180;
+      for (let i = points; i >= 0; i--) {
+        const d = new Date();
+        d.setMinutes(d.getMinutes() - i);
+        labels.push(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        base += Math.floor(Math.random() * 40) - 12;
+        if (base < 80) base = 80 + Math.random() * 20;
+        if (i === 45 || i === 20) base += 120;
+        views.push(Math.max(50, Math.floor(base + Math.random() * 30)));
+        impressions.push(Math.floor(views[views.length - 1] * (3.5 + Math.random())));
+      }
+      if (scale !== 1) {
+        for (let k = 0; k < views.length; k++) {
+          views[k] = Math.max(1, Math.round(views[k] * scale));
+          impressions[k] = Math.max(1, Math.round(impressions[k] * scale));
+        }
+      }
+      return { labels, views, impressions };
+    }
+
+    let viewsChart, retentionChart, watchCtrChart, trafficChart, realtimeBarChart;
+
+    // Realtime bar data
+    function generateBarData(points = 60, scale = 1) {
+      const data = [];
+      for (let i = 0; i < points; i++) {
+        let v = Math.floor(Math.random() * 25) + 8;
+        if (i > points * 0.75) v += Math.floor(Math.random() * 40); // spike near end
+        if (i > points * 0.83) v += Math.floor(Math.random() * 30);
+        data.push(Math.max(1, Math.round(v * scale)));
+      }
+      return data;
+    }
+
+    function initCharts() {
+      if (typeof Chart === 'undefined') { console.warn('Chart.js not loaded'); return; }
+      const colors = getChartColors();
+      const data = generateMinuteData(60, FILTER_SCALE[analyticsFilter]);
+
+      // Realtime Bar Chart (YouTube style)
+      const barCtx = document.getElementById('realtimeBarChart');
+      if (barCtx) {
+        const barData = generateBarData(rtPoints(), barScale());
+        realtimeBarChart = new Chart(barCtx.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: Array(rtPoints()).fill(''),
+            datasets: [{
+              data: barData,
+              backgroundColor: '#3b82f6',
+              borderRadius: 2,
+              barPercentage: 0.85,
+              categoryPercentage: 0.9,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            scales: {
+              x: { display: false },
+              y: {
+                display: true,
+                grid: { color: colors.grid, drawBorder: false },
+                ticks: { color: colors.text, font: { size: 10 }, maxTicksLimit: 5 },
+                beginAtZero: true
+              }
+            }
+          }
+        });
+      }
+
+      viewsChart = new Chart(document.getElementById('viewsChart').getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: data.labels,
+          datasets: [
+            { label: 'Views', data: data.views, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.07)', fill: true, tension: 0.35, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 },
+            { label: 'Impressions', data: data.impressions, borderColor: '#3b82f6', backgroundColor: 'transparent', tension: 0.35, pointRadius: 0, pointHoverRadius: 4, borderWidth: 1.5, borderDash: [4, 4] }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { display: false }, tooltip: { backgroundColor: '#121816', titleColor: '#fff', bodyColor: '#d1d5db', borderColor: '#1e2a26', borderWidth: 1, padding: 10 } },
+          scales: {
+            x: { grid: { display: false }, ticks: { color: colors.text, maxTicksLimit: 8, font: { size: 10 } } },
+            y: { grid: { color: colors.grid }, ticks: { color: colors.text, font: { size: 10 } }, beginAtZero: true }
+          }
+        }
+      });
+
+      retentionChart = new Chart(document.getElementById('retentionChart').getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: ['0%', '10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%'],
+          datasets: [{ label: 'Retention', data: [100, 92, 85, 78, 71, 64, 58, 49, 41, 32, 24], borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.08)', fill: true, tension: 0.3, pointRadius: 2.5, pointBackgroundColor: '#a855f7', borderWidth: 2 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { backgroundColor: '#121816', callbacks: { label: ctx => ctx.parsed.y + '% still watching' } } },
+          scales: {
+            x: { title: { display: true, text: 'Video Progress', color: colors.text, font: { size: 10 } }, grid: { display: false }, ticks: { color: colors.text, font: { size: 9 } } },
+            y: { title: { display: true, text: 'Viewers %', color: colors.text, font: { size: 10 } }, grid: { color: colors.grid }, ticks: { color: colors.text, font: { size: 10 }, callback: v => v + '%' }, min: 0, max: 100 }
+          }
+        }
+      });
+
+      const hours = Array.from({ length: 24 }, (_, i) => i + ':00');
+      watchCtrChart = new Chart(document.getElementById('watchCtrChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: hours,
+          datasets: [
+            { label: 'Watch Time (hrs)', data: hours.map(() => Math.floor(Math.random() * 8) + 1), backgroundColor: 'rgba(34,197,94,0.65)', borderRadius: 3, yAxisID: 'y' },
+            { label: 'CTR %', data: hours.map(() => +(Math.random() * 4 + 3).toFixed(1)), type: 'line', borderColor: '#f59e0b', tension: 0.3, pointRadius: 1.5, borderWidth: 2, yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'top', labels: { color: colors.text, boxWidth: 10, font: { size: 10 } } } },
+          scales: {
+            x: { grid: { display: false }, ticks: { color: colors.text, maxTicksLimit: 12, font: { size: 9 } } },
+            y: { position: 'left', grid: { color: colors.grid }, ticks: { color: colors.text, font: { size: 10 } } },
+            y1: { position: 'right', grid: { display: false }, ticks: { color: colors.text, font: { size: 10 }, callback: v => v + '%' } }
+          }
+        }
+      });
+
+      trafficChart = new Chart(document.getElementById('trafficChart').getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Browse Features', 'Channel Pages', 'Search', 'WhatsApp / Telegram', 'Direct / Other'],
+          datasets: [{ data: [34, 22, 18, 16, 10], backgroundColor: ['#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#6b7280'], borderWidth: 0, hoverOffset: 5 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '62%',
+          plugins: { legend: { position: 'right', labels: { color: colors.text, boxWidth: 10, padding: 10, font: { size: 10 } } } }
+        }
+      });
+    }
+
+    function updateChartsTheme() {
+      if (typeof Chart === 'undefined') return;
+      [viewsChart, retentionChart, watchCtrChart, trafficChart, realtimeBarChart].forEach(c => c && c.destroy());
+      viewsChart = retentionChart = watchCtrChart = trafficChart = realtimeBarChart = null;
+      initCharts();
+    }
+
+    // Top content table
+    const topContent = [
+      { id: 'v1', title: 'Surah Al-Mulk Full Recitation with Translation', type: 'Video', views: '248K', watch: '18.4k hrs', engage: '12.8%', ctr: '6.2%', thumb: '📖' },
+      { id: 'v2', title: 'Powerful Dua for Rizq & Success | Short', type: 'Reel', views: '189K', watch: '4.2k hrs', engage: '18.4%', ctr: '8.1%', thumb: '🤲' },
+      { id: 'v3', title: 'Tafsir of Surah Yasin - Part 3 (Bayan)', type: 'Video', views: '156K', watch: '22.1k hrs', engage: '9.7%', ctr: '5.4%', thumb: '🕌' },
+      { id: 'v4', title: 'Morning Adhkar - Start Your Day Right', type: 'Reel', views: '142K', watch: '3.8k hrs', engage: '21.2%', ctr: '9.3%', thumb: '🌅' },
+      { id: 'v5', title: 'The Story of Prophet Yusuf (AS) - Full Lecture', type: 'Video', views: '98K', watch: '15.6k hrs', engage: '11.3%', ctr: '4.9%', thumb: '📜' },
+      { id: 'v6', title: 'Beautiful Quran Recitation in Rain | ASMR', type: 'Reel', views: '87K', watch: '2.9k hrs', engage: '24.1%', ctr: '7.8%', thumb: '🌧️' },
+    ];
+
+    function renderTopContent() {
+      const el = document.getElementById('topContentBody');
+      if (!el) return;
+      el.innerHTML = topContent.filter(item => matchesFilter(item, analyticsFilter)).map(item => `
+        <tr data-vid="${item.id}" tabindex="0" class="border-b border-gray-50 dark:border-studio-border/40 hover:bg-gray-50 dark:hover:bg-studio-hover/40 transition cursor-pointer">
+          <td class="py-2.5 pr-3">
+            <div class="flex items-center gap-2.5">
+              <div class="w-9 h-9 rounded-lg bg-gray-100 dark:bg-studio-hover flex items-center justify-center text-base flex-shrink-0">${item.thumb}</div>
+              <div class="min-w-0">
+                <p class="font-medium truncate max-w-[200px] text-[13px]">${item.title}</p>
+                <p class="text-[10px] text-studio-muted">${item.type}</p>
+              </div>
+            </div>
+          </td>
+          <td class="py-2.5 text-right font-medium">${item.views}</td>
+          <td class="py-2.5 text-right text-studio-muted">${item.watch}</td>
+          <td class="py-2.5 text-right text-noor-400">${item.engage}</td>
+          <td class="py-2.5 text-right">${item.ctr}</td>
+        </tr>
+      `).join('');
+    }
+
+    // Top Realtime Videos (YouTube style)
+    const realtimeVideos = [
+      { id: 'v1', title: 'Surah Al-Mulk Full Recitation', type: 'videos', views: 564, thumb: '📖', spark: [12,18,15,22,28,35,42,38,45,52,48,55] },
+      { id: 'v2', title: 'Powerful Dua for Rizq & Success', type: 'reels', views: 457, thumb: '🤲', spark: [8,14,20,18,25,30,28,35,40,38,42,45] },
+      { id: 'v3', title: 'Tafsir of Surah Yasin - Part 3', type: 'videos', views: 316, thumb: '🕌', spark: [5,8,12,10,15,18,22,20,25,28,30,32] },
+      { id: 'v4', title: 'Morning Adhkar - Start Your Day', type: 'reels', views: 189, thumb: '🌅', spark: [3,5,8,7,10,12,15,14,18,16,20,18] },
+      { id: 'v5', title: 'Prophet Yusuf (AS) Full Lecture', type: 'videos', views: 98, thumb: '📜', spark: [2,3,4,5,4,6,7,5,8,6,9,7] },
+      { id: 'v6', title: 'Quran Recitation in Rain ASMR', type: 'reels', views: 67, thumb: '🌧️', spark: [1,2,3,2,4,3,5,4,6,5,4,3] },
+    ];
+
+    function renderRealtimeTop() {
+      const el = document.getElementById('topRealtimeList');
+      if (!el) return;
+      const factor = rt.range === '48h' ? RT_48H_FACTOR : 1;
+      const list = realtimeVideos.filter(v => rt.type === 'all' || v.type === rt.type);
+      el.innerHTML = list.map((v, i) => {
+        // Mini sparkline as SVG
+        const max = Math.max(...v.spark);
+        const points = v.spark.map((val, idx) => {
+          const x = (idx / (v.spark.length - 1)) * 60;
+          const y = 20 - (val / max) * 18;
+          return `${x},${y}`;
+        }).join(' ');
+        return `
+          <div data-vid="${v.id}" role="button" tabindex="0" class="flex items-center gap-3 py-2.5 px-2 rounded-xl hover:bg-gray-50 dark:hover:bg-studio-hover/50 active:bg-gray-100 dark:active:bg-studio-hover transition cursor-pointer">
+            <div class="w-10 h-10 rounded-lg bg-gray-100 dark:bg-studio-hover flex items-center justify-center text-lg flex-shrink-0">${v.thumb}</div>
+            <div class="flex-1 min-w-0">
+              <p class="text-[13px] font-medium truncate">${v.title}</p>
+            </div>
+            <span class="text-sm font-semibold tabular-nums w-16 text-right">${(v.views * factor).toLocaleString()}</span>
+            <svg width="64" height="24" class="flex-shrink-0 opacity-80">
+              <polyline fill="none" stroke="#3b82f6" stroke-width="1.5" points="${points}"/>
+            </svg>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Content Grid
+    function renderContentGrid() {
+      const grid = document.getElementById('contentGrid');
+      if (!grid) return;
+      const items = topContent.filter(item => matchesFilter(item, contentFilter));
+      if (!items.length) {
+        grid.innerHTML = `<div class="col-span-full text-center py-12 text-sm text-studio-muted"><p class="text-3xl mb-2">📡</p><p class="font-medium text-gray-400">No live streams yet</p><p class="text-[12px] mt-1">Your live streams will show up here.</p></div>`;
+        return;
+      }
+      grid.innerHTML = items.map(item => `
+        <div data-vid="${item.id}" tabindex="0" class="content-card bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border p-4 cursor-pointer">
+          <div class="flex items-start gap-3">
+            <div class="w-14 h-14 rounded-xl bg-gray-100 dark:bg-studio-hover flex items-center justify-center text-2xl flex-shrink-0">${item.thumb}</div>
+            <div class="min-w-0 flex-1">
+              <p class="font-medium text-sm leading-snug line-clamp-2">${item.title}</p>
+              <p class="text-[11px] text-studio-muted mt-1">${item.type} · ${item.views} views</p>
+              <div class="flex gap-3 mt-2 text-[11px]">
+                <span class="text-noor-400">${item.engage} engage</span>
+                <span class="text-studio-muted">${item.ctr} CTR</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Geography
+    const geoData = [
+      { country: 'Pakistan', flag: '🇵🇰', percent: 38, views: '4.9M' },
+      { country: 'India', flag: '🇮🇳', percent: 22, views: '2.8M' },
+      { country: 'Saudi Arabia', flag: '🇸🇦', percent: 12, views: '1.5M' },
+      { country: 'Bangladesh', flag: '🇧🇩', percent: 9, views: '1.1M' },
+      { country: 'United Kingdom', flag: '🇬🇧', percent: 7, views: '890K' },
+      { country: 'United States', flag: '🇺🇸', percent: 6, views: '760K' },
+      { country: 'UAE', flag: '🇦🇪', percent: 4, views: '510K' },
+    ];
+
+    function renderGeo() {
+      const el = document.getElementById('geoList');
+      if (!el) return;
+      el.innerHTML = geoData.map(g => `
+        <div>
+          <div class="flex items-center justify-between text-[12px] mb-0.5">
+            <span class="flex items-center gap-1.5"><span>${g.flag}</span><span class="font-medium">${g.country}</span></span>
+            <span class="text-studio-muted text-[11px]">${g.percent}% · ${g.views}</span>
+          </div>
+          <div class="h-1.5 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden">
+            <div class="h-full bg-noor-500 rounded-full" style="width:${g.percent}%"></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Live counters
+    function animateCounter(el, target, duration = 700) {
+      const start = parseInt(el.textContent.replace(/,/g, '')) || 0;
+      const diff = target - start;
+      const startTime = performance.now();
+      const token = (el._anim = (el._anim || 0) + 1);
+      function update(now) {
+        if (el._anim !== token) return;
+        const progress = Math.min((now - startTime) / duration, 1);
+        el.textContent = Math.floor(start + diff * (1 - Math.pow(1 - progress, 3))).toLocaleString();
+        if (progress < 1) requestAnimationFrame(update);
+      }
+      requestAnimationFrame(update);
+    }
+
+    function updateLiveStats() {
+      /* live totals come from API — no fake increments */
+    }
+
+    // ========== REALTIME FILTERS (60 MIN / 48 HRS  +  All / Videos / Reels) ==========
+    const rt = { range: '60m', type: 'all' };
+    const RT_48H_FACTOR = 43;
+    const RT_TYPE_SCALE = { all: 1, videos: 0.58, reels: 0.42 };
+    function rtPoints() { return rt.range === '48h' ? 48 : 60; }
+    function barScale() { return (rt.range === '48h' ? 35 : 1) * RT_TYPE_SCALE[rt.type]; }
+    function rtTotal() {
+      const sum = realtimeVideos.filter(v => rt.type === 'all' || v.type === rt.type).reduce((t, v) => t + v.views, 0);
+      return sum * (rt.range === '48h' ? RT_48H_FACTOR : 1);
+    }
+
+    function applyRealtimeView(animate = true) {
+      const is48 = rt.range === '48h';
+      const rangeText = is48 ? 'last 48 hours' : 'last 60 minutes';
+      const typeTitle = { all: 'Top content', videos: 'Top videos', reels: 'Top reels' }[rt.type];
+      setText('rtLabel', 'Views · ' + rangeText);
+      setText('rtTopTitle', typeTitle + ' · ' + rangeText);
+      setText('rtFrom', is48 ? '48 hours ago' : '60 minutes ago');
+      const rtEl = document.getElementById('rtViews');
+      if (rtEl) {
+        if (animate) animateCounter(rtEl, rtTotal());
+        else rtEl.textContent = rtTotal().toLocaleString();
+      }
+      if (realtimeBarChart) {
+        realtimeBarChart.data.labels = Array(rtPoints()).fill('');
+        realtimeBarChart.data.datasets[0].data = generateBarData(rtPoints(), barScale());
+        realtimeBarChart.update();
+      }
+      renderRealtimeTop();
+    }
+
+    document.querySelectorAll('.rt-time').forEach(btn => {
+      btn.addEventListener('click', () => {
+        rt.range = btn.dataset.rt;
+        setActive(document.querySelectorAll('.rt-time'), btn,
+          ['bg-noor-500', 'text-white'], ['hover:bg-gray-100', 'dark:hover:bg-studio-hover']);
+        applyRealtimeView();
+      });
+    });
+    document.querySelectorAll('.rt-type').forEach(btn => {
+      btn.addEventListener('click', () => {
+        rt.type = btn.dataset.type;
+        setActive(document.querySelectorAll('.rt-type'), btn,
+          ['bg-noor-500', 'text-white'],
+          ['hover:bg-gray-100', 'dark:hover:bg-studio-hover']);
+        applyRealtimeView();
+      });
+    });
+
+    // ========== SETTINGS ==========
+    function setToggle(btn, on) {
+      btn.setAttribute('aria-checked', on ? 'true' : 'false');
+      btn.classList.toggle('bg-noor-500', on);
+      btn.classList.toggle('bg-gray-300', !on);
+      btn.classList.toggle('dark:bg-gray-600', !on);
+      const knob = btn.querySelector('span');
+      if (knob) knob.classList.toggle('translate-x-5', on);
+    }
+    function syncToggles() {
+      document.querySelectorAll('[data-toggle="dark"]').forEach(b => setToggle(b, html.classList.contains('dark')));
+    }
+
+    document.querySelectorAll('[data-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.toggle === 'dark') {
+          applyTheme(!html.classList.contains('dark'));
+        } else if (btn.dataset.toggle === 'email') {
+          const on = btn.getAttribute('aria-checked') !== 'true';
+          setToggle(btn, on);
+          store.set('emailNotif', on ? 'on' : 'off');
+          showToast(on ? 'Email notifications on' : 'Email notifications off', 'Weekly performance reports');
+        }
+      });
+    });
+
+    // Channel name edit
+    const cnBtn = document.getElementById('channelNameBtn');
+    const cnText = document.getElementById('channelNameText');
+    const cnInput = document.getElementById('channelNameInput');
+    let cnEditing = false;
+    function closeNameEditor() {
+      cnInput.classList.add('hidden');
+      cnText.classList.remove('hidden');
+      cnBtn.textContent = 'Edit';
+      cnEditing = false;
+    }
+    function saveChannelName() {
+      const v = cnInput.value.trim();
+      if (v) {
+        cnText.textContent = v;
+        setText('headerName', v);
+        store.set('channelName', v);
+        showToast('Channel name updated', v);
+      }
+      closeNameEditor();
+    }
+    cnBtn.addEventListener('click', () => {
+      if (!cnEditing) {
+        cnEditing = true;
+        cnInput.value = cnText.textContent;
+        cnText.classList.add('hidden');
+        cnInput.classList.remove('hidden');
+        cnBtn.textContent = 'Save';
+        cnInput.focus();
+        cnInput.select();
+      } else {
+        saveChannelName();
+      }
+    });
+    cnInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveChannelName();
+      if (e.key === 'Escape') closeNameEditor();
+    });
+
+    // Language
+    const LANGS = ['English', 'اردو', 'हिन्दी'];
+    document.getElementById('langBtn').addEventListener('click', () => {
+      const cur = Math.max(0, LANGS.indexOf(store.get('lang') || 'English'));
+      const next = LANGS[(cur + 1) % LANGS.length];
+      store.set('lang', next);
+      setText('langText', 'Selected: ' + next);
+      showToast('Language preference saved', next + ' · full interface translation coming soon');
+    });
+
+    // Revenue
+    document.getElementById('requestPayout').addEventListener('click', () => {
+      showToast('Payout requested', '₹1,400 · you will be notified once it is processed');
+    });
+
+    // ========== VIDEO DETAIL PAGE ==========
+    let currentSection = 'analytics', videoReturn = 'analytics', videoPushed = false;
+    const REF_DATE = new Date(2026, 9, 6);
+    const SOURCE_LABELS = ['Browse Features', 'Channel Pages', 'Search', 'WhatsApp / Telegram', 'Direct / Other'];
+    const VIDEO_RAW = {
+      v1: { views: 248000, watchHrs: 18400, subs: 1420, pub: '2026-09-02', dur: '42:10', durSec: 2530, ret: 38, src: [30, 20, 24, 18, 8],
+            geo: [['Pakistan', '🇵🇰', 36], ['India', '🇮🇳', 21], ['Saudi Arabia', '🇸🇦', 14], ['Bangladesh', '🇧🇩', 8], ['United Kingdom', '🇬🇧', 6]] },
+      v2: { views: 189000, watchHrs: 4200, subs: 2310, pub: '2026-09-14', dur: '1:45', durSec: 105, ret: 31, src: [46, 12, 10, 26, 6],
+            geo: [['Pakistan', '🇵🇰', 41], ['India', '🇮🇳', 26], ['Bangladesh', '🇧🇩', 10], ['Saudi Arabia', '🇸🇦', 9], ['UAE', '🇦🇪', 5]] },
+      v3: { views: 156000, watchHrs: 22100, subs: 1180, pub: '2026-09-21', dur: '1:08:30', durSec: 4110, ret: 44, src: [28, 26, 22, 15, 9],
+            geo: [['Pakistan', '🇵🇰', 34], ['India', '🇮🇳', 20], ['Saudi Arabia', '🇸🇦', 13], ['United Kingdom', '🇬🇧', 8], ['United States', '🇺🇸', 7]] },
+      v4: { views: 142000, watchHrs: 3800, subs: 1960, pub: '2026-09-28', dur: '2:10', durSec: 130, ret: 29, src: [44, 14, 8, 28, 6],
+            geo: [['Pakistan', '🇵🇰', 39], ['India', '🇮🇳', 24], ['Saudi Arabia', '🇸🇦', 11], ['Bangladesh', '🇧🇩', 9], ['UAE', '🇦🇪', 6]] },
+      v5: { views: 98000, watchHrs: 15600, subs: 760, pub: '2026-08-25', dur: '55:20', durSec: 3320, ret: 41, src: [26, 24, 28, 14, 8],
+            geo: [['Pakistan', '🇵🇰', 33], ['India', '🇮🇳', 19], ['Saudi Arabia', '🇸🇦', 12], ['United Kingdom', '🇬🇧', 9], ['United States', '🇺🇸', 8]] },
+      v6: { views: 87000, watchHrs: 2900, subs: 1240, pub: '2026-10-01', dur: '2:30', durSec: 150, ret: 26, src: [50, 10, 12, 22, 6],
+            geo: [['Pakistan', '🇵🇰', 40], ['India', '🇮🇳', 23], ['Saudi Arabia', '🇸🇦', 10], ['Bangladesh', '🇧🇩', 8], ['United Kingdom', '🇬🇧', 7]] },
+    };
+    const DEVICE_SPLIT = { Video: [58, 32, 10], Reel: [78, 15, 7] };
+    const CARD = 'bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border';
+
+    function fmtNum(n) {
+      if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1e4) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+      return Math.round(n).toLocaleString();
+    }
+    function fmtDur(sec) {
+      sec = Math.round(sec);
+      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+      const pad = n => String(n).padStart(2, '0');
+      return h ? `${h}:${pad(m)}:${pad(x)}` : `${m}:${pad(x)}`;
+    }
+    const fmtDate = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    function niceMax(max) {
+      const p = Math.pow(10, Math.floor(Math.log10(Math.max(max, 1))));
+      const step = p / 2;
+      return Math.ceil(max / step) * step;
+    }
+    function mulberry32(a) {
+      return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+
+    // Daily views since upload (same numbers every time for the same video)
+    function buildDaily(raw, isReel, seed) {
+      const rnd = mulberry32(seed * 9973);
+      const pub = new Date(raw.pub + 'T00:00:00');
+      const n = Math.max(2, Math.round((REF_DATE - pub) / 86400000) + 1);
+      const tau = isReel ? 6 : 10;
+      const spikeAt = Math.floor(n * (0.35 + rnd() * 0.3));
+      const w = [];
+      for (let k = 0; k < n; k++) {
+        let v = Math.exp(-k / tau) * (0.75 + rnd() * 0.5) + 0.05 * (0.8 + rnd() * 0.4);
+        if (k === spikeAt || k === spikeAt + 1) v *= 1.5;
+        w.push(v);
+      }
+      const total = w.reduce((a, b) => a + b, 0);
+      return w.map((v, k) => ({ date: new Date(pub.getTime() + k * 86400000), v: Math.max(1, Math.round(v / total * raw.views)) }));
+    }
+
+    function getVideoDetail(id) {
+      const base = topContent.find(t => t.id === id);
+      if (!base) return null;
+      // Live API items (no VIDEO_RAW demo entry)
+      if (base.live || !VIDEO_RAW[id]) {
+        const r = base.raw || {};
+        return {
+          base, raw: {
+            views: base.viewsN || 0, watchHrs: 0, subs: 0, avgSec: 0,
+            dur: r.duration || '—',
+            pub: String(r.uploadedAt || '').slice(0, 10) || new Date().toISOString().slice(0, 10),
+            src: [100, 0, 0, 0, 0], geo: [['Your audience', '', 100]], ret: 0
+          },
+          ctr: 0, avgPct: 0, avgSec: 0, engage: base.engage || '—',
+          inter: (base.likes || 0) + (base.comments || 0),
+          likes: base.likes || 0, comments: base.comments || 0, shares: 0, saves: 0,
+          impressions: base.viewsN || 0, unique: base.viewsN || 0,
+          isReel: base.type === 'Reel', rt: null
+        };
+      }
+      const raw = VIDEO_RAW[id];
+      if (!raw) return null;
+      const ctr = parseFloat(base.ctr), engage = parseFloat(base.engage);
+      const isReel = base.type === 'Reel';
+      const inter = Math.round(raw.views * engage / 100);
+      const likes = Math.round(inter * 0.76), comments = Math.round(inter * 0.07), shares = Math.round(inter * 0.10);
+      const avgSec = raw.watchHrs * 3600 / raw.views;
+      return {
+        id, base, raw, isReel, ctr, engage,
+        impressions: Math.round(raw.views / (ctr / 100)),
+        unique: Math.round(raw.views * (0.70 + raw.ret / 1000)),
+        inter, likes, comments, shares, saves: inter - likes - comments - shares,
+        avgSec, avgPct: Math.min(100, avgSec / raw.durSec * 100),
+        daily: buildDaily(raw, isReel, parseInt(id.slice(1)) || 1),
+        rt: realtimeVideos.find(v => v.id === id),
+      };
+    }
+
+    function drawVideoChart(d, range) {
+      const box = document.getElementById('vdChartWrap');
+      const data = d.daily.slice(-Math.min(range, d.daily.length));
+      const n = data.length;
+      const total = data.reduce((t, x) => t + x.v, 0);
+      const axisMax = niceMax(Math.max(...data.map(x => x.v)));
+      const pts = data.map((x, i) => [i / (n - 1) * 100, 100 - x.v / axisMax * 100]);
+      const line = pts.map(q => q[0].toFixed(2) + ',' + q[1].toFixed(2)).join(' ');
+      const rangeText = n < range ? 'since upload (' + n + ' days)' : 'last ' + n + ' days';
+      const defaultText = fmtNum(total) + ' views · ' + rangeText;
+      box.innerHTML = `
+        <p id="vdReadout" class="text-[12px] font-medium mb-2.5 text-noor-400">${defaultText}</p>
+        <div class="relative pl-11">
+          <div class="absolute left-0 top-0 h-44 w-10 flex flex-col justify-between text-[10px] text-studio-muted text-right pr-1.5 -my-1.5">
+            <span>${fmtNum(axisMax)}</span><span>${fmtNum(axisMax / 2)}</span><span>0</span>
+          </div>
+          <div id="vdChartBox" class="relative h-44 cursor-crosshair select-none" style="touch-action:pan-y">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="absolute inset-0 w-full h-full overflow-visible text-gray-400">
+              <line x1="0" y1="0" x2="100" y2="0" stroke="currentColor" stroke-opacity=".25" vector-effect="non-scaling-stroke"/>
+              <line x1="0" y1="50" x2="100" y2="50" stroke="currentColor" stroke-opacity=".25" vector-effect="non-scaling-stroke"/>
+              <line x1="0" y1="100" x2="100" y2="100" stroke="currentColor" stroke-opacity=".35" vector-effect="non-scaling-stroke"/>
+              <polygon points="0,100 ${line} 100,100" fill="rgba(34,197,94,0.13)"/>
+              <polyline points="${line}" fill="none" stroke="#22c55e" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+            </svg>
+            <div id="vdMarker" class="absolute top-0 bottom-0 w-px bg-noor-400/60 hidden pointer-events-none"></div>
+            <div id="vdDot" class="absolute w-2.5 h-2.5 -ml-[5px] -mt-[5px] rounded-full bg-noor-400 ring-2 ring-white dark:ring-studio-card hidden pointer-events-none"></div>
+          </div>
+          <div class="flex justify-between text-[10px] text-studio-muted mt-1.5">
+            <span>${fmtDate(data[0].date)}</span><span>${fmtDate(data[Math.floor((n - 1) / 2)].date)}</span><span>${fmtDate(data[n - 1].date)}</span>
+          </div>
+        </div>`;
+      const cbox = document.getElementById('vdChartBox'), marker = document.getElementById('vdMarker'),
+            dot = document.getElementById('vdDot'), readout = document.getElementById('vdReadout');
+      function show(e) {
+        const r = cbox.getBoundingClientRect();
+        const i = Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))));
+        marker.classList.remove('hidden'); dot.classList.remove('hidden');
+        marker.style.left = pts[i][0] + '%';
+        dot.style.left = pts[i][0] + '%'; dot.style.top = pts[i][1] + '%';
+        readout.textContent = fmtDate(data[i].date) + ' · ' + data[i].v.toLocaleString() + ' views';
+      }
+      function hide() { marker.classList.add('hidden'); dot.classList.add('hidden'); readout.textContent = defaultText; }
+      cbox.addEventListener('pointerdown', show);
+      cbox.addEventListener('pointermove', show);
+      cbox.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hide(); });
+    }
+
+    function renderVideoDetail(d) {
+      const { base, raw } = d;
+      const statCard = (label, value, sub, subCls) => `
+        <div class="${CARD} p-3.5">
+          <p class="text-[10px] font-semibold text-studio-muted uppercase tracking-wider mb-1">${label}</p>
+          <p class="text-xl lg:text-2xl font-bold tracking-tight">${value}</p>
+          <p class="text-[11px] ${subCls || 'text-studio-muted'} mt-1">${sub}</p>
+        </div>`;
+      const barRow = (l, p, r) => `
+        <div>
+          <div class="flex items-center justify-between text-[12px] mb-0.5"><span class="font-medium">${l}</span><span class="text-studio-muted text-[11px]">${r}</span></div>
+          <div class="h-1.5 bg-gray-100 dark:bg-studio-hover rounded-full overflow-hidden"><div class="h-full bg-noor-500 rounded-full" style="width:${p}%"></div></div>
+        </div>`;
+      const pubDate = new Date(raw.pub + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const dev = DEVICE_SPLIT[base.type];
+
+      // Auto insights
+      const avgCtr = topContent.reduce((t, x) => t + parseFloat(x.ctr), 0) / topContent.length;
+      const topSrcIdx = raw.src.indexOf(Math.max(...raw.src));
+      const insights = [
+        d.ctr >= avgCtr
+          ? `CTR ${d.ctr}% is above your content average (${avgCtr.toFixed(1)}%) — the thumbnail and title are working.`
+          : `CTR ${d.ctr}% is below your content average (${avgCtr.toFixed(1)}%) — try a stronger thumbnail or title.`,
+        `Most viewers find this through <strong>${SOURCE_LABELS[topSrcIdx]}</strong> (${raw.src[topSrcIdx]}%).`,
+        `${raw.geo[0][2]}% of viewers are from ${raw.geo[0][0]}${raw.geo[1] ? ', then ' + raw.geo[1][0] + ' (' + raw.geo[1][2] + '%)' : ''}.`,
+        d.isReel
+          ? `${(raw.subs / raw.views * 1000).toFixed(1)} subscribers per 1K views — reels are bringing in new subscribers.`
+          : `Viewers watch about ${d.avgPct.toFixed(0)}% of this video on average (${fmtDur(d.avgSec)} of ${raw.dur}).`,
+      ];
+
+      document.getElementById('videoDetail').innerHTML = `
+        <div class="${CARD} p-4 lg:p-5">
+          <div class="flex items-start gap-3.5">
+            <div class="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-studio-hover flex items-center justify-center text-3xl flex-shrink-0">${base.thumb}</div>
+            <div class="min-w-0 flex-1">
+              <h1 class="font-display text-lg lg:text-xl font-bold leading-snug">${esc(base.title)}</h1>
+              <div class="flex flex-wrap items-center gap-1.5 mt-2 text-[11px]">
+                <span class="px-2 py-0.5 rounded-full bg-noor-500/15 text-noor-400 font-semibold">${base.type === 'Reel' ? 'Islamic Reel' : 'Long-Form Video'}</span>
+                <span class="text-studio-muted">Published ${pubDate}</span>
+                <span class="text-studio-muted">· ${raw.dur}</span>
+              </div>
+              ${d.rt ? `<span class="inline-flex items-center gap-1.5 mt-2 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-[11px] font-medium text-red-400"><span class="w-1.5 h-1.5 rounded-full bg-red-500 live-dot"></span>${d.rt.views.toLocaleString()} views · last 60 min</span>` : ''}
+            </div>
+          </div>
+          <button id="vdPromote" type="button" class="mt-4 w-full py-2.5 rounded-xl bg-gradient-to-r from-noor-600 to-noor-500 hover:from-noor-500 hover:to-noor-400 text-white font-semibold text-sm shadow-glow transition">Promote with Halal Ads</button>
+        </div>
+
+        <div class="grid grid-cols-3 gap-3">
+          ${statCard('Views', fmtNum(raw.views), 'Since ' + fmtDate(new Date(raw.pub + 'T00:00:00')))}
+          ${statCard('Watch time', fmtNum(raw.watchHrs) + '<span class="text-sm font-medium text-studio-muted"> hrs</span>', '≈ ' + Math.round(raw.watchHrs / 24).toLocaleString() + ' days')}
+          ${statCard('Subscribers', '+' + raw.subs.toLocaleString(), (raw.subs / raw.views * 1000).toFixed(1) + ' per 1K views', 'text-noor-400')}
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          ${statCard('Avg. view', fmtDur(d.avgSec), 'per view')}
+          ${statCard('Avg. viewed', d.avgPct.toFixed(0) + '%', 'of ' + raw.dur)}
+          ${statCard('Engagement', d.engage + '%', fmtNum(d.inter) + ' actions')}
+        </div>
+
+        <div class="${CARD} p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="text-sm font-semibold">Views over time</h3>
+              <p class="text-[11px] text-studio-muted">Daily views · touch the chart for each day</p>
+            </div>
+            <div class="flex gap-1 text-[11px]">
+              <button type="button" class="vd-range px-2.5 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-studio-hover" data-days="7">7 days</button>
+              <button type="button" class="vd-range px-2.5 py-1 rounded-md bg-noor-500 text-white font-medium" data-days="28">28 days</button>
+            </div>
+          </div>
+          <div id="vdChartWrap"></div>
+        </div>
+
+        <div class="${CARD} p-4">
+          <h3 class="text-sm font-semibold mb-3">Engagement</h3>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            ${[['👍', 'Likes', d.likes], ['💬', 'Comments', d.comments], ['↗️', 'Shares', d.shares], ['🔖', 'Saves', d.saves]].map(x => `
+              <div class="text-center p-3 rounded-xl bg-gray-50 dark:bg-studio-hover">
+                <p class="text-lg">${x[0]}</p>
+                <p class="text-lg font-bold">${fmtNum(x[2])}</p>
+                <p class="text-[11px] text-studio-muted">${x[1]}</p>
+              </div>`).join('')}
+          </div>
+        </div>
+
+        <div class="pt-1">
+          <h2 class="font-display text-lg font-bold">Reach</h2>
+          <p class="text-xs text-studio-muted mt-0.5">How many people discovered this ${base.type === 'Reel' ? 'reel' : 'video'}</p>
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          ${statCard('Impressions', fmtNum(d.impressions), 'Times shown')}
+          ${statCard('Impressions CTR', d.ctr + '%', d.ctr >= avgCtr ? 'Above your average' : 'Below your average', d.ctr >= avgCtr ? 'text-noor-400' : 'text-yellow-400')}
+          ${statCard('Unique viewers', fmtNum(d.unique), 'Different people')}
+          ${statCard('Views / viewer', (raw.views / d.unique).toFixed(2), 'Repeat watching')}
+        </div>
+
+        <div class="${CARD} p-4">
+          <h3 class="text-sm font-semibold mb-3">New vs returning viewers</h3>
+          <div class="flex h-2.5 rounded-full overflow-hidden">
+            <div class="bg-noor-500" style="width:${100 - raw.ret}%"></div><div class="bg-blue-500" style="width:${raw.ret}%"></div>
+          </div>
+          <div class="flex justify-between text-[11px] mt-2">
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-noor-500"></span>New <strong>${100 - raw.ret}%</strong></span>
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-500"></span>Returning <strong>${raw.ret}%</strong></span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="${CARD} p-4">
+            <h3 class="text-sm font-semibold mb-3">Traffic sources</h3>
+            <div class="space-y-2.5">${SOURCE_LABELS.map((l, i) => barRow(l, raw.src[i], raw.src[i] + '% · ' + fmtNum(Math.round(raw.views * raw.src[i] / 100)))).join('')}</div>
+          </div>
+          <div class="${CARD} p-4">
+            <h3 class="text-sm font-semibold mb-3">Top countries</h3>
+            <div class="space-y-2.5">${raw.geo.map(g => barRow(g[1] + ' ' + g[0], g[2], g[2] + '% · ' + fmtNum(Math.round(raw.views * g[2] / 100)))).join('')}</div>
+          </div>
+        </div>
+
+        <div class="${CARD} p-4">
+          <h3 class="text-sm font-semibold mb-3">Devices</h3>
+          <div class="grid grid-cols-3 gap-3">
+            ${['Mobile', 'Desktop', 'Tablet'].map((l, i) => `
+              <div class="text-center p-3 rounded-xl bg-gray-50 dark:bg-studio-hover">
+                <p class="text-xl font-bold">${dev[i]}%</p><p class="text-[11px] text-studio-muted">${l}</p>
+              </div>`).join('')}
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl glass">
+          <h3 class="text-sm font-semibold mb-2.5 text-noor-400">Insights</h3>
+          <ul class="space-y-2 text-[12px] text-gray-600 dark:text-gray-300">
+            ${insights.map(t => `<li class="flex gap-2"><span class="text-noor-400">✦</span><span>${t}</span></li>`).join('')}
+          </ul>
+        </div>
+        <p class="text-center text-[10px] text-studio-muted">Live data from your NoorTube channel</p>`;
+
+      drawVideoChart(d, 28);
+      document.querySelectorAll('.vd-range').forEach(btn => {
+        btn.addEventListener('click', () => {
+          setActive(document.querySelectorAll('.vd-range'), btn,
+            ['bg-noor-500', 'text-white', 'font-medium'], ['hover:bg-gray-100', 'dark:hover:bg-studio-hover']);
+          drawVideoChart(d, parseInt(btn.dataset.days));
+        });
+      });
+      document.getElementById('vdPromote').addEventListener('click', () => {
+        switchSection('ads');
+        const sel = document.getElementById('adContent');
+        if (sel) sel.value = base.title;
+        showToast('Ready to promote', 'Content selected in Halal Ads');
+      });
+    }
+
+    function openVideo(id) {
+      const d = getVideoDetail(id);
+      if (!d) return;
+      if (currentSection !== 'video') videoReturn = currentSection;
+      renderVideoDetail(d);
+      switchSection('video');
+      try { history.pushState({ video: id }, ''); videoPushed = true; } catch (e) { videoPushed = false; }
+    }
+    function closeVideo() { switchSection(videoReturn); }
+
+    document.getElementById('videoBack').addEventListener('click', () => {
+      if (videoPushed) {
+        videoPushed = false;
+        try { history.back(); } catch (e) {}
+        setTimeout(() => { if (currentSection === 'video') closeVideo(); }, 200);
+      } else {
+        closeVideo();
+      }
+    });
+    // Phone's back button / gesture returns to the previous page
+    window.addEventListener('popstate', () => { if (currentSection === 'video') { videoPushed = false; closeVideo(); } });
+
+    // Any element with data-vid opens its details (list rows, table rows, content cards)
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-vid]');
+      if (t) openVideo(t.dataset.vid);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const t = e.target.closest && e.target.closest('[data-vid]');
+      if (t) openVideo(t.dataset.vid);
+    });
+
+    // ========== INSTALL AS APP (PWA) ==========
+    let deferredInstall = null;
+    const UA = navigator.userAgent || '';
+    const isIOS = /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+    const DISMISS_MS = 7 * 24 * 3600 * 1000;
+
+    function setThemeMeta() {
+      const m = document.querySelector('meta[name="theme-color"]');
+      if (m) m.setAttribute('content', html.classList.contains('dark') ? '#121816' : '#ffffff');
+    }
+    function installDismissedRecently() {
+      const t = parseInt(store.get('studioInstallDismissed') || '0', 10);
+      return t && Date.now() - t < DISMISS_MS;
+    }
+    function showInstallSheet(mode) {
+      if (isStandalone()) return;
+      const ios = mode === 'ios';
+      document.getElementById('installIosSteps').classList.toggle('hidden', !ios);
+      document.getElementById('installNow').textContent = ios ? 'Got it' : 'Install';
+      document.getElementById('installLater').classList.toggle('hidden', ios);
+      document.getElementById('installSheet').classList.remove('hidden');
+    }
+    function hideInstallSheet() { document.getElementById('installSheet').classList.add('hidden'); }
+    function dismissInstall() { store.set('studioInstallDismissed', String(Date.now())); hideInstallSheet(); }
+
+    async function runInstall() {
+      if (deferredInstall) {
+        const ev = deferredInstall;
+        deferredInstall = null;
+        hideInstallSheet();
+        try {
+          ev.prompt();
+          const choice = await ev.userChoice;
+          if (choice && choice.outcome === 'dismissed') store.set('studioInstallDismissed', String(Date.now()));
+        } catch (e) {}
+        refreshInstallRow();
+      } else if (isIOS) {
+        showInstallSheet('ios');
+      } else {
+        showToast('Install from your browser menu', 'Tap ⋮ then "Install app" or "Add to Home screen"');
+      }
+    }
+
+    function refreshInstallRow() {
+      const btn = document.getElementById('installRowBtn'), sub = document.getElementById('installRowSub');
+      if (!btn) return;
+      if (isStandalone()) { sub.textContent = 'Installed on this device ✓'; btn.classList.add('hidden'); }
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();               // keep the event so we can show our own popup
+      deferredInstall = e;
+      if (!isStandalone() && !installDismissedRecently()) setTimeout(() => { if (deferredInstall) showInstallSheet('native'); }, 2500);
+    });
+    window.addEventListener('appinstalled', () => {
+      deferredInstall = null;
+      hideInstallSheet();
+      store.set('studioInstallDismissed', String(Date.now() * 2)); // never nag again
+      showToast('NoorTube Studio installed', 'Open it from your home screen');
+      refreshInstallRow();
+    });
+
+    document.getElementById('installNow').addEventListener('click', () => {
+      if (document.getElementById('installNow').textContent === 'Got it') { dismissInstall(); } else { runInstall(); }
+    });
+    document.getElementById('installLater').addEventListener('click', dismissInstall);
+    document.getElementById('installClose').addEventListener('click', dismissInstall);
+    document.getElementById('installRowBtn').addEventListener('click', () => {
+      if (isStandalone()) { showToast('Already installed', 'You are using the app'); return; }
+      runInstall();
+    });
+    // iOS has no install event: show the "Add to Home Screen" steps once in a while
+    window.addEventListener('load', () => {
+      refreshInstallRow();
+      if (isIOS && !isStandalone() && !installDismissedRecently()) setTimeout(() => showInstallSheet('ios'), 3500);
+    });
+
+    // Service worker (scope is limited to /noortube-studio.html so it cannot affect the main app)
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/studio-sw.js', { scope: '/noortube-studio.html' }).catch(() => {});
+      });
+    }
+
+    
+    // ========== LIVE API (NoorTube backend) ==========
+    const NT_API_BASE = "https://noortube-storage.mk7233624.workers.dev";
+    const NT_TOKEN_KEY = "nt_token";
+    function ntToken(){ try { return localStorage.getItem(NT_TOKEN_KEY); } catch(_){ return null; } }
+    async function ntFetch(path, opts={}){
+      const headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
+      const t = ntToken(); if (t) headers.Authorization = "Bearer " + t;
+      const res = await fetch(NT_API_BASE + path, Object.assign({ cache: "no-store" }, opts, { headers }));
+      let data = null; try { data = await res.json(); } catch(_){}
+      if (!res.ok) { const e = new Error((data && data.error) || ("Request failed " + res.status)); e.status = res.status; throw e; }
+      return data || {};
+    }
+    function fmtViews(n){
+      n = Number(n)||0;
+      if (n >= 1e6) return (n/1e6).toFixed(n>=1e7?0:1).replace(/\.0$/,'') + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(n>=1e5?0:1).replace(/\.0$/,'') + 'K';
+      return String(n);
+    }
+    function authGateHtml(title, msg){
+      return `<div style="min-height:70vh;display:grid;place-items:center;padding:24px">
+        <div style="max-width:420px;text-align:center" class="bg-white dark:bg-studio-card rounded-2xl border border-gray-200 dark:border-studio-border p-8">
+          <h1 class="font-display text-xl font-bold mb-2">${title}</h1>
+          <p class="text-sm text-studio-muted mb-5">${msg}</p>
+          <a href="index.html" class="inline-block px-5 py-2.5 rounded-xl bg-noor-500 text-white text-sm font-semibold">Go to NoorTube</a>
+        </div></div>`;
+    }
+    async function loadLiveStudio(){
+      const t = ntToken();
+      if (!t) {
+        document.querySelector('main').innerHTML = authGateHtml('Sign in required', 'Open NoorTube, sign in to your creator account, then open Studio again.');
+        return;
+      }
+      let me;
+      try { me = await ntFetch('/api/me'); } catch(err) {
+        document.querySelector('main').innerHTML = authGateHtml('Session expired', (err && err.message) || 'Please sign in again on NoorTube.');
+        return;
+      }
+      if (!me.user) {
+        document.querySelector('main').innerHTML = authGateHtml('Sign in required', 'Could not load your account.');
+        return;
+      }
+      __liveUser = me.user;
+      const name = me.user.name || 'Creator';
+      const hn = document.getElementById('headerName'); if (hn) hn.textContent = name;
+      const cn = document.getElementById('cnText'); if (cn) cn.textContent = name;
+      // avatar initials
+      document.querySelectorAll('header .rounded-full.bg-gradient-to-br').forEach(el => {
+        el.textContent = name.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase() || 'NT';
+      });
+
+      const [earn, vids, reels] = await Promise.all([
+        ntFetch('/api/me/earnings').catch(() => ({ enabled: false })),
+        ntFetch('/api/videos').catch(() => ({ videos: [] })),
+        ntFetch('/api/reels').catch(() => ({ reels: [] })),
+      ]);
+      __liveEarnings = earn;
+      const uid = me.user.id;
+      const myVideos = (vids.videos || []).filter(v => v.ownerId === uid && !v.removed);
+      const myReels = (reels.reels || []).filter(r => r.ownerId === uid && !r.hidden);
+
+      // Build topContent from real data
+      topContent.length = 0;
+      myVideos.forEach(v => {
+        topContent.push({
+          id: v.id,
+          title: v.title || 'Untitled',
+          type: 'Video',
+          views: fmtViews(v.views || 0),
+          viewsN: v.views || 0,
+          watch: '—',
+          engage: ((v.likes||0) + (v.commentCount||0)) > 0 ? (((v.likes||0)/(Math.max(1,v.views)))*100).toFixed(1)+'%' : '—',
+          ctr: '—',
+          thumb: '🎬',
+          likes: v.likes || 0,
+          comments: v.commentCount || 0,
+          live: true,
+          raw: v
+        });
+      });
+      myReels.forEach(r => {
+        topContent.push({
+          id: r.id,
+          title: r.title || 'Untitled',
+          type: 'Reel',
+          views: fmtViews(r.views || 0),
+          viewsN: r.views || 0,
+          watch: '—',
+          engage: (r.likes||0) > 0 ? (((r.likes||0)/Math.max(1,r.views))*100).toFixed(1)+'%' : '—',
+          ctr: '—',
+          thumb: '📱',
+          likes: r.likes || 0,
+          comments: r.commentCount || 0,
+          live: true,
+          raw: r
+        });
+      });
+      topContent.sort((a,b) => (b.viewsN||0) - (a.viewsN||0));
+
+      const totalViews = topContent.reduce((s,x) => s + (x.viewsN||0), 0);
+      const totalLikes = topContent.reduce((s,x) => s + (x.likes||0), 0);
+
+      // Metrics
+      const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+      setTxt('rtViews', totalViews ? totalViews.toLocaleString() : '0');
+      setTxt('rtLabel', 'Total views · your content');
+      setTxt('liveViews', totalViews ? totalViews.toLocaleString() : '0');
+      const liveSub = document.querySelector('#liveViews')?.parentElement?.querySelector('.text-noor-400, .text-\\[11px\\]');
+      // update subtitle under liveViews
+      document.querySelectorAll('#section-analytics .metric-card').forEach((card, idx) => {
+        const label = card.querySelector('.uppercase');
+        if (!label) return;
+        const t = label.textContent || '';
+        const val = card.querySelector('.text-2xl');
+        const sub = card.querySelector('.text-\\[11px\\], .text-noor-400');
+        if (/Live Views|Views/i.test(t) && val) { val.textContent = totalViews.toLocaleString(); }
+        if (/Concurrent|Watching/i.test(t) && val) { val.textContent = String(myVideos.length + myReels.length); if (sub) sub.textContent = 'Published items'; }
+        if (/Subscriber/i.test(t) && val) { val.textContent = '—'; if (sub) sub.textContent = 'Not available yet'; }
+      });
+
+      // Channel health based on having content
+      const health = topContent.length ? Math.min(99, 70 + Math.min(25, topContent.length)) : 40;
+      document.querySelectorAll('.glass .text-xs.font-bold, .glass .font-bold').forEach(el => {
+        if (/%/.test(el.textContent)) el.textContent = health + '%';
+      });
+      document.querySelectorAll('.glass .h-full.bg-gradient-to-r').forEach(el => { el.style.width = health + '%'; });
+
+      // Revenue section live numbers
+      fillRevenueSection(earn, totalViews, myVideos.length, myReels.length);
+
+      // Re-render lists
+      try { renderTopContent(); } catch(_){}
+      try { renderRealtimeTop(); } catch(_){}
+      try { renderContentGrid(); } catch(_){}
+      // Audience / Ads still UI shell — no backend metrics yet
+      ['section-audience','section-ads'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el || el.querySelector('.live-soon-note')) return;
+        const n = document.createElement('div');
+        n.className = 'live-soon-note mb-4 p-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 text-sm text-yellow-200';
+        n.textContent = id==='section-ads'
+          ? 'Halal Ads campaigns are not connected to the live API yet. UI is a preview.'
+          : 'Detailed audience demographics are not available from the API yet. Content & Revenue use your real data.';
+        el.insertBefore(n, el.firstChild);
+      });
+
+      // Soften charts: zero datasets if empty
+      if (!topContent.length) {
+        setTxt('rtViews', '0');
+      }
+    }
+
+    function fillRevenueSection(earn, totalViews, vCount, rCount) {
+      const root = document.getElementById('section-revenue');
+      if (!root) return;
+      const enabled = earn && earn.enabled;
+      const total = enabled ? (Number(earn.totalUsd)||0) : 0;
+      const paid = enabled ? (Number(earn.paidUsd)||0) : 0;
+      const videoUsd = enabled ? (Number(earn.videoUsd)||0) : 0;
+      const reelsUsd = enabled ? (Number(earn.reelsUsd)||0) : 0;
+      const vViews = enabled ? (Number(earn.videoViews)||0) : 0;
+      const rViews = enabled ? (Number(earn.reelViews)||0) : 0;
+      const avail = enabled && earn.availableUsd != null ? Number(earn.availableUsd) : total;
+      const minW = (earn && earn.minWithdrawUsd) || 100;
+      const pending = earn && earn.pendingRequest;
+
+      // Inject a clean live summary at top of revenue section
+      let box = document.getElementById('liveRevenueBox');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'liveRevenueBox';
+        root.insertBefore(box, root.firstChild.nextSibling);
+      }
+      if (!enabled) {
+        box.innerHTML = `<div class="bg-white dark:bg-studio-card rounded-2xl border border-gray-200 dark:border-studio-border p-5 mb-4">
+          <h2 class="font-display font-bold text-lg mb-1">Monetization</h2>
+          <p class="text-sm text-studio-muted mb-3">Your channel is not monetized yet. Keep uploading and growing — then apply from the main app when eligible.</p>
+          <a href="index.html" class="inline-block px-4 py-2 rounded-xl bg-noor-500 text-white text-sm font-semibold">Back to NoorTube</a>
+        </div>`;
+        return;
+      }
+      box.innerHTML = `<div class="bg-white dark:bg-studio-card rounded-2xl border border-gray-200 dark:border-studio-border p-5 mb-4">
+        <h2 class="font-display font-bold text-lg mb-3">Your earnings</h2>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-studio-hover"><p class="text-[10px] uppercase text-studio-muted font-semibold">Available</p><p class="text-2xl font-bold text-noor-400">$${avail.toFixed(2)}</p></div>
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-studio-hover"><p class="text-[10px] uppercase text-studio-muted font-semibold">Videos</p><p class="text-2xl font-bold">$${videoUsd.toFixed(2)}</p><p class="text-[11px] text-studio-muted">${vViews.toLocaleString()} views</p></div>
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-studio-hover"><p class="text-[10px] uppercase text-studio-muted font-semibold">Reels</p><p class="text-2xl font-bold">$${reelsUsd.toFixed(2)}</p><p class="text-[11px] text-studio-muted">${rViews.toLocaleString()} views</p></div>
+          <div class="p-3 rounded-xl bg-gray-50 dark:bg-studio-hover"><p class="text-[10px] uppercase text-studio-muted font-semibold">Paid so far</p><p class="text-2xl font-bold">$${paid.toFixed(2)}</p></div>
+        </div>
+        ${pending ? `<p class="text-sm text-yellow-500 mb-2">⏳ Withdrawal pending: $${(pending.amountUsd!=null?pending.amountUsd:(pending.amount_cents||0)/100).toFixed(2)}</p>` : ''}
+        <p class="text-xs text-studio-muted mb-3">Minimum withdrawal $${Number(minW).toFixed(2)}. Manage payout details and request withdrawal from the main app Monetization page.</p>
+        <a href="index.html" class="inline-block px-4 py-2 rounded-xl border border-studio-border text-sm font-semibold hover:bg-studio-hover">Open Monetization</a>
+      </div>`;
+    }
+
+    
+
+
+    // ========== INIT ==========
+    function initDashboard() {
+      // Render everything that does NOT depend on Chart.js first
+      renderTopContent();
+      renderRealtimeTop();
+      renderContentGrid();
+      renderGeo();
+      updateEstimate();
+      applyRealtimeView(false);
+
+      // Restore saved settings
+      const savedName = store.get('channelName');
+      if (savedName) { cnText.textContent = savedName; setText('headerName', savedName); }
+      const savedLang = store.get('lang');
+      if (savedLang) setText('langText', 'Selected: ' + savedLang);
+      document.querySelectorAll('[data-toggle="email"]').forEach(b => setToggle(b, store.get('emailNotif') !== 'off'));
+      syncToggles();
+      setThemeMeta();
+
+      try { initCharts(); } catch (err) { console.error('Charts failed to load:', err); }
+
+      /* Fake live tickers disabled — data comes from API */
+      setInterval(() => { try { loadLiveStudio(); } catch(_){} }, 120000); // soft refresh every 2 min
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDashboard);
+    else initDashboard();
+    // Load real creator data after shell is ready
+    (async () => {
+      try { await loadLiveStudio(); }
+      catch (e) { console.warn(e); try { showToast('Could not load live data', (e && e.message) || ''); } catch(_){} }
+    })();
+  </script>
+
+  <!-- Shown only if the Tailwind styles could not be downloaded -->
+  <div id="styleFail" style="display:none;position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;background:#1a2420;color:#fff;border:1px solid #22c55e;border-radius:14px;padding:14px;font:14px/1.4 system-ui,sans-serif">
+    Studio ke styles load nahi hue (internet slow ya blocked). Internet check karke dobara try karein.
+    <button onclick="location.reload()" style="display:block;margin-top:10px;background:#22c55e;color:#fff;border:0;border-radius:10px;padding:9px 16px;font-weight:600">Reload</button>
+  </div>
+  <script>
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        if (typeof tailwind === 'undefined') document.getElementById('styleFail').style.display = 'block';
+      }, 2500);
+    });
+  </script>
+</body>
+</html>
