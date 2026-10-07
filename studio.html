@@ -122,7 +122,7 @@
     .toggle-btn { transition: background-color .2s ease; flex-shrink: 0; }
   </style>
 </head>
-<body class="bg-gray-50 dark:bg-studio-bg text-gray-900 dark:text-gray-100 min-h-screen">
+<body class="bg-gray-50 dark:bg-studio-bg text-gray-900 dark:text-gray-100 min-h-screen" style="overscroll-behavior-y:contain">
 
   <!-- Top Navigation -->
   <header class="sticky top-0 z-50 bg-white/90 dark:bg-studio-card/95 backdrop-blur-md border-b border-gray-200 dark:border-studio-border">
@@ -1040,23 +1040,13 @@
     }
 
     function generateMinuteData(points = 60, scale = 1) {
+      // No simulated traffic — empty series until real timeseries API exists
       const labels = [], views = [], impressions = [];
-      let base = 180;
       for (let i = points; i >= 0; i--) {
-        const d = new Date();
-        d.setMinutes(d.getMinutes() - i);
-        labels.push(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-        base += Math.floor(Math.random() * 40) - 12;
-        if (base < 80) base = 80 + Math.random() * 20;
-        if (i === 45 || i === 20) base += 120;
-        views.push(Math.max(50, Math.floor(base + Math.random() * 30)));
-        impressions.push(Math.floor(views[views.length - 1] * (3.5 + Math.random())));
-      }
-      if (scale !== 1) {
-        for (let k = 0; k < views.length; k++) {
-          views[k] = Math.max(1, Math.round(views[k] * scale));
-          impressions[k] = Math.max(1, Math.round(impressions[k] * scale));
-        }
+        const d = new Date(Date.now() - i * 60000);
+        labels.push(d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'));
+        views.push(0);
+        impressions.push(0);
       }
       return { labels, views, impressions };
     }
@@ -1065,14 +1055,8 @@
 
     // Realtime bar data
     function generateBarData(points = 60, scale = 1) {
-      const data = [];
-      for (let i = 0; i < points; i++) {
-        let v = Math.floor(Math.random() * 25) + 8;
-        if (i > points * 0.75) v += Math.floor(Math.random() * 40); // spike near end
-        if (i > points * 0.83) v += Math.floor(Math.random() * 30);
-        data.push(Math.max(1, Math.round(v * scale)));
-      }
-      return data;
+      // Real per-minute data not available — show empty bars (not random)
+      return Array(points).fill(0);
     }
 
     function initCharts() {
@@ -1287,19 +1271,16 @@
     }
 
     // Geography
-    const geoData = [
-      { country: 'Pakistan', flag: '🇵🇰', percent: 38, views: '4.9M' },
-      { country: 'India', flag: '🇮🇳', percent: 22, views: '2.8M' },
-      { country: 'Saudi Arabia', flag: '🇸🇦', percent: 12, views: '1.5M' },
-      { country: 'Bangladesh', flag: '🇧🇩', percent: 9, views: '1.1M' },
-      { country: 'United Kingdom', flag: '🇬🇧', percent: 7, views: '890K' },
-      { country: 'United States', flag: '🇺🇸', percent: 6, views: '760K' },
-      { country: 'UAE', flag: '🇦🇪', percent: 4, views: '510K' },
-    ];
+    const geoData = []; // no geo API yet
+
 
     function renderGeo() {
       const el = document.getElementById('geoList');
       if (!el) return;
+      if (!geoData.length) {
+        el.innerHTML = '<p class="text-sm text-studio-muted py-4">Country breakdown is not available from the API yet.</p>';
+        return;
+      }
       el.innerHTML = geoData.map(g => `
         <div>
           <div class="flex items-center justify-between text-[12px] mb-0.5">
@@ -1465,20 +1446,7 @@
     let currentSection = 'analytics', videoReturn = 'analytics', videoPushed = false;
     const REF_DATE = new Date(2026, 9, 6);
     const SOURCE_LABELS = ['Browse Features', 'Channel Pages', 'Search', 'WhatsApp / Telegram', 'Direct / Other'];
-    const VIDEO_RAW = {
-      v1: { views: 248000, watchHrs: 18400, subs: 1420, pub: '2026-09-02', dur: '42:10', durSec: 2530, ret: 38, src: [30, 20, 24, 18, 8],
-            geo: [['Pakistan', '🇵🇰', 36], ['India', '🇮🇳', 21], ['Saudi Arabia', '🇸🇦', 14], ['Bangladesh', '🇧🇩', 8], ['United Kingdom', '🇬🇧', 6]] },
-      v2: { views: 189000, watchHrs: 4200, subs: 2310, pub: '2026-09-14', dur: '1:45', durSec: 105, ret: 31, src: [46, 12, 10, 26, 6],
-            geo: [['Pakistan', '🇵🇰', 41], ['India', '🇮🇳', 26], ['Bangladesh', '🇧🇩', 10], ['Saudi Arabia', '🇸🇦', 9], ['UAE', '🇦🇪', 5]] },
-      v3: { views: 156000, watchHrs: 22100, subs: 1180, pub: '2026-09-21', dur: '1:08:30', durSec: 4110, ret: 44, src: [28, 26, 22, 15, 9],
-            geo: [['Pakistan', '🇵🇰', 34], ['India', '🇮🇳', 20], ['Saudi Arabia', '🇸🇦', 13], ['United Kingdom', '🇬🇧', 8], ['United States', '🇺🇸', 7]] },
-      v4: { views: 142000, watchHrs: 3800, subs: 1960, pub: '2026-09-28', dur: '2:10', durSec: 130, ret: 29, src: [44, 14, 8, 28, 6],
-            geo: [['Pakistan', '🇵🇰', 39], ['India', '🇮🇳', 24], ['Saudi Arabia', '🇸🇦', 11], ['Bangladesh', '🇧🇩', 9], ['UAE', '🇦🇪', 6]] },
-      v5: { views: 98000, watchHrs: 15600, subs: 760, pub: '2026-08-25', dur: '55:20', durSec: 3320, ret: 41, src: [26, 24, 28, 14, 8],
-            geo: [['Pakistan', '🇵🇰', 33], ['India', '🇮🇳', 19], ['Saudi Arabia', '🇸🇦', 12], ['United Kingdom', '🇬🇧', 9], ['United States', '🇺🇸', 8]] },
-      v6: { views: 87000, watchHrs: 2900, subs: 1240, pub: '2026-10-01', dur: '2:30', durSec: 150, ret: 26, src: [50, 10, 12, 22, 6],
-            geo: [['Pakistan', '🇵🇰', 40], ['India', '🇮🇳', 23], ['Saudi Arabia', '🇸🇦', 10], ['Bangladesh', '🇧🇩', 8], ['United Kingdom', '🇬🇧', 7]] },
-    };
+    const VIDEO_RAW = {}; // demo raw metrics removed — live items use API fields
     const DEVICE_SPLIT = { Video: [58, 32, 10], Reel: [78, 15, 7] };
     const CARD = 'bg-white dark:bg-studio-card rounded-xl border border-gray-200 dark:border-studio-border';
 
@@ -1762,6 +1730,7 @@
     }
 
     function openVideo(id) {
+      window.__studioScrollY = window.scrollY || 0;
       const d = getVideoDetail(id);
       if (!d) return;
       if (currentSection !== 'video') videoReturn = currentSection;
@@ -1769,7 +1738,11 @@
       switchSection('video');
       try { history.pushState({ video: id }, ''); videoPushed = true; } catch (e) { videoPushed = false; }
     }
-    function closeVideo() { switchSection(videoReturn); }
+    function closeVideo() {
+      const y = window.__studioScrollY || 0;
+      switchSection(videoReturn);
+      requestAnimationFrame(() => window.scrollTo(0, y));
+    }
 
     document.getElementById('videoBack').addEventListener('click', () => {
       if (videoPushed) {
@@ -1906,15 +1879,16 @@
           <a href="index.html" class="inline-block px-5 py-2.5 rounded-xl bg-noor-500 text-white text-sm font-semibold">Go to NoorTube</a>
         </div></div>`;
     }
-    async function loadLiveStudio(){
+    async function loadLiveStudio(opts){
+      opts = opts || {};
       const t = ntToken();
       if (!t) {
-        document.querySelector('main').innerHTML = authGateHtml('Sign in required', 'Open NoorTube, sign in to your creator account, then open Studio again.');
+        if(!opts.quiet) document.querySelector('main').innerHTML = authGateHtml('Sign in required', 'Open NoorTube, sign in to your creator account, then open Studio again.');
         return;
       }
       let me;
       try { me = await ntFetch('/api/me'); } catch(err) {
-        document.querySelector('main').innerHTML = authGateHtml('Session expired', (err && err.message) || 'Please sign in again on NoorTube.');
+        if(!opts.quiet) document.querySelector('main').innerHTML = authGateHtml('Session expired', (err && err.message) || 'Please sign in again on NoorTube.');
         return;
       }
       if (!me.user) {
@@ -2010,9 +1984,14 @@
       fillRevenueSection(earn, totalViews, myVideos.length, myReels.length);
 
       // Re-render lists
+      const _sy = window.scrollY || 0;
       try { renderTopContent(); } catch(_){}
       try { renderRealtimeTop(); } catch(_){}
       try { renderContentGrid(); } catch(_){}
+      // keep scroll position after DOM updates
+      const _restore = () => window.scrollTo(0, _sy);
+      _restore();
+      requestAnimationFrame(_restore);
       // Audience / Ads still UI shell — no backend metrics yet
       ['section-audience','section-ads'].forEach(id => {
         const el = document.getElementById(id);
@@ -2031,7 +2010,55 @@
       }
     }
 
-    function fillRevenueSection(earn, totalViews, vCount, rCount) {
+    
+    /* ===== Real-time API polling for Studio ===== */
+    window.__NT_STUDIO_RT__ = { timer: null, busy: false, every: 20000, lastFp: '' };
+    function studioFingerprint(){
+      try{
+        const e = __liveEarnings || {};
+        return [
+          topContent.length,
+          topContent.map(x => x.id + ':' + (x.viewsN||0)).join(','),
+          e.totalUsd, e.paidUsd, e.videoViews, e.reelViews,
+          e.pendingRequest && (e.pendingRequest.id || e.pendingRequest.amountUsd)
+        ].join('|');
+      }catch(_){ return String(Date.now()); }
+    }
+    async function studioRealtimeTick(){
+      if(window.__NT_STUDIO_RT__.busy || document.hidden) return;
+      window.__NT_STUDIO_RT__.busy = true;
+      try{
+        const prev = window.__NT_STUDIO_RT__.lastFp;
+        await loadLiveStudio({ quiet: true });
+        const fp = studioFingerprint();
+        window.__NT_STUDIO_RT__.lastFp = fp;
+        let el = document.getElementById('studio-rt-status');
+        if(!el){
+          const header = document.querySelector('header .flex.items-center.gap-2\\.5') || document.querySelector('header');
+          el = document.createElement('div');
+          el.id = 'studio-rt-status';
+          el.className = 'hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-noor-500/10 border border-noor-500/25 text-[11px] font-medium text-noor-400';
+          el.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-noor-500 live-dot"></span><span class="studio-rt-text">Live</span>';
+          // place near LIVE badge
+          const liveBadge = document.querySelector('header .bg-red-500\\\\/10, header [class*="bg-red-500"]');
+          if(liveBadge && liveBadge.parentNode) liveBadge.parentNode.insertBefore(el, liveBadge.nextSibling);
+          else if(header) header.appendChild(el);
+        }
+        if(el){
+          const hh = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+          const t = el.querySelector('.studio-rt-text');
+          if(t) t.textContent = 'API '+hh+(prev && prev !== fp ? ' · new' : '');
+        }
+      }catch(e){ console.warn('studio rt', e); }
+      finally{ window.__NT_STUDIO_RT__.busy = false; }
+    }
+    function startStudioRealtime(){
+      if(window.__NT_STUDIO_RT__.timer) clearInterval(window.__NT_STUDIO_RT__.timer);
+      window.__NT_STUDIO_RT__.timer = setInterval(studioRealtimeTick, window.__NT_STUDIO_RT__.every);
+      document.addEventListener('visibilitychange', () => { if(!document.hidden) studioRealtimeTick(); });
+    }
+
+function fillRevenueSection(earn, totalViews, vCount, rCount) {
       const root = document.getElementById('section-revenue');
       if (!root) return;
       const enabled = earn && earn.enabled;
@@ -2099,14 +2126,16 @@
       try { initCharts(); } catch (err) { console.error('Charts failed to load:', err); }
 
       /* Fake live tickers disabled — data comes from API */
-      setInterval(() => { try { loadLiveStudio(); } catch(_){} }, 120000); // soft refresh every 2 min
+      /* no auto full refresh — avoids scroll jump; user can reload page */
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDashboard);
     else initDashboard();
     // Load real creator data after shell is ready
     (async () => {
-      try { await loadLiveStudio(); }
-      catch (e) { console.warn(e); try { showToast('Could not load live data', (e && e.message) || ''); } catch(_){} }
+      try {
+        await loadLiveStudio();
+        startStudioRealtime();
+      } catch (e) { console.warn(e); try { showToast('Could not load live data', (e && e.message) || ''); } catch(_){} }
     })();
   </script>
 

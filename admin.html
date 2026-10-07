@@ -24,7 +24,7 @@
   --shadow:0 1px 0 rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.7);
 }
 *{box-sizing:border-box;margin:0}
-html,body{height:100%}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
 body{font-family:var(--font-body);background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
 h1,h2,h3,h4{font-family:var(--font-head);font-weight:600;letter-spacing:-.01em}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -68,7 +68,7 @@ a{color:inherit;text-decoration:none}
 .icon-btn{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;color:var(--muted);position:relative}
 .icon-btn:hover{background:var(--surface-2);color:var(--ink)}
 .dot{position:absolute;top:8px;right:9px;width:8px;height:8px;border-radius:50%;background:var(--rose);border:2px solid var(--surface)}
-.view{flex:1;overflow-y:auto;padding:24px;scroll-behavior:smooth}
+.view{flex:1;overflow-y:auto;padding:24px;scroll-behavior:smooth;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .view>.in{max-width:1280px;margin:0 auto}
 .menu-btn{display:none}
 .scrim{position:fixed;inset:0;background:rgba(5,15,10,.5);z-index:40}
@@ -309,7 +309,7 @@ const tg=c=>`style="background:${tgc(c)}"`;
 const chip=(t,tone='gray',i='')=>`<span class="chip c-${tone}">${i?ic(i,'sm'):''}${esc(t)}</span>`;
 const sw=(on,act,id,label)=>`<button type="button" class="switch" role="switch" aria-checked="${!!on}" aria-label="${esc(label||'Toggle')}" data-act="${act}" data-id="${esc(id)}"></button>`;
 const seeded=s=>()=>(s=s*16807%2147483647)/2147483647;
-const series=(n,seed,base,amp)=>{const r=seeded(seed);return Array.from({length:n},(_,i)=>Math.round(base*(1+i*.01)+(r()-.45)*amp))};
+const series=(n,seed,base,amp)=>Array.from({length:n},()=>0);
 const dayLabels=n=>Array.from({length:n},(_,i)=>{const d=new Date(Date.now()-(n-1-i)*DAY);return n<=7?d.toLocaleDateString('en',{weekday:'short'}):d.getDate()+'/'+(d.getMonth()+1)});
 const sum=a=>a.reduce((x,y)=>x+y,0);
 
@@ -401,6 +401,8 @@ const KEY='noortube-admin-v3';
 let S;
 try{const raw=localStorage.getItem(KEY);S=raw?JSON.parse(raw):null}catch(e){S=null}
 if(!S||S.v!==5)S=seed();
+// Live admin: never keep demo streams/donations/ads from localStorage seed
+S.lives=[];S.donations=[];S.ads=[];S.plans=S.plans||[];S.queue=S.queue||[];
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
 const log=(action,tone,entity)=>{S.audit.unshift({id:nid('g'),action,tone,admin:'Super Admin',entity,at:Date.now()});S.audit.length=Math.min(S.audit.length,300)};
 const catName=id=>(S.cats.find(c=>c.id===id)||{name:'Uncategorised'}).name;
@@ -935,10 +937,14 @@ V.audit=()=>{const list=S.audit.filter(x=>(UI.tab==='all'||x.tone===UI.tab)&&mat
   tabs('tab',[['all','All'],['green','Approvals'],['rose','Rejections & bans'],['blue','Edits'],['amber','Payments']])+
   `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Admin</th><th>Item</th><th>When</th></tr></thead><tbody>${list.map(x=>`<tr><td>${chip(x.action,x.tone)}</td><td>${esc(x.admin)}</td><td class="muted">${esc(x.entity)}</td><td class="muted" title="${new Date(x.at).toLocaleString()}">${ago(x.at)}</td></tr>`).join('')}</tbody></table></div>${list.length?'':empty('Nothing logged yet','Actions you take will show up here.')}</div>`};
 /* ============ render ============ */
-const render=(top)=>{const id=V[route()]?route():'dashboard',view=$('#view'),pos=view.scrollTop,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
-  view.innerHTML=`<div class="in">${V[id]()}</div>`;renderNav();view.scrollTop=top?0:pos;
-  if(fk){const el=$(`[data-keep="${fk}"]`);if(el){el.focus();const L=el.value.length;try{el.setSelectionRange(L,L)}catch(e){}}}
-  document.title=`${TITLES[id]||'Dashboard'} · ${S.settings.appName}`;$('#bell-dot').classList.toggle('hide',!alerts().length)};
+const render=(top)=>{const id=V[route()]?route():'dashboard',view=$('#view'),pos=view?view.scrollTop:0,wpos=window.scrollY||0,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
+  if(view) view.innerHTML=`<div class="in">${V[id]()}</div>`;
+  renderNav();
+  const restore=()=>{if(top){if(view)view.scrollTop=0;window.scrollTo(0,0)}else{if(view)view.scrollTop=pos;window.scrollTo(0,wpos)}};
+  restore();
+  requestAnimationFrame(restore);
+  if(fk){const el=$(`[data-keep="${fk}"]`);if(el){el.focus();const L=el.value&&el.value.length||0;try{el.setSelectionRange(L,L)}catch(e){}}}
+  document.title=`${TITLES[id]||'Dashboard'} · ${S.settings.appName}`;const bd=$('#bell-dot');if(bd)bd.classList.toggle('hide',!alerts().length)};
 const alerts=()=>{const a=[],low=S.queue.filter(x=>x.ai<70).length,pp=S.payouts.filter(p=>p.status==='pending').length,np=S.creators.filter(c=>c.status==='pending').length,lv=S.lives.filter(l=>l.state==='live').length;
   if(low)a.push([`${low} upload${low>1?'s':''} flagged by AI`,'Review before they go public','moderation','shield']);if(S.queue.length-low)a.push([`${S.queue.length-low} items waiting for review`,'Oldest: '+ago(Math.min(...S.queue.map(x=>x.at))),'moderation','shield']);
   if(pp)a.push([`${pp} payout request${pp>1?'s':''}`,'Waiting for approval','payouts','wallet']);if(np)a.push([`${np} creator${np>1?'s':''} awaiting verification`,'Check credentials','creators','usercheck']);if(lv)a.push([`${lv} live stream running`,'Monitor from Live streams','live','live']);return a};
@@ -1213,8 +1219,8 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 window.addEventListener('hashchange',()=>{UI=freshUI();UI.q=pendingQ;pendingQ='';ACT['close-side']();render(true)});
 
 /* ============ live tickers ============ */
-setInterval(()=>{S.lives.filter(l=>l.state==='live').forEach(l=>{l.viewers=Math.max(0,l.viewers+Math.round((Math.random()-.45)*40));l.peak=Math.max(l.peak,l.viewers);const el=$(`[data-viewers="${l.id}"]`);if(el)el.textContent=l.viewers.toLocaleString()})},4000);
-setInterval(()=>{const r=route();if((r==='dashboard'||r==='ads')&&!layer().children.length&&!$('#pop')&&(document.activeElement===document.body||!document.activeElement))render()},30000);
+/* fake live viewer ticker removed */
+/* auto re-render disabled — preserves scroll */
 
 /* ============ boot ============ */
 
@@ -1271,7 +1277,27 @@ async function ensureAdmin(){
     return false;
   }
 }
-async function syncLiveData(){
+window.__NT_RT__ = window.__NT_RT__ || { timer: null, lastFp: '', busy: false, every: 15000 };
+function ntDataFingerprint(L){
+  if(!L) return '';
+  try{
+    return [
+      (L.users||[]).length,
+      (L.videos||[]).length,
+      (L.reels||[]).length,
+      (L.withdraws||[]).length,
+      (L.reports||[]).filter(r=>r.status==='open').length,
+      (L.feedback||[]).filter(f=>!f.reply).length,
+      (L.monetized||[]).length,
+      L.totalViews||0,
+      (L.withdraws||[]).map(w=>w.id+':'+(w.amountUsd||w.amount||0)).join(','),
+      (L.reports||[]).map(r=>r.id+':'+r.status).join(',')
+    ].join('|');
+  }catch(_){ return String(Date.now()); }
+}
+
+async function syncLiveData(opts){
+  opts = opts || {};
   try{
     const [usersRes, vidsRes, reelsRes, paysRes, wrRes, reportsRes, fbRes] = await Promise.all([
       ntFetch("/api/admin/users").catch(()=>({users:[]})),
@@ -1406,13 +1432,69 @@ async function syncLiveData(){
       }));
     }
 
-    render(true);
-    toast('Live data loaded · '+users.length+' users · '+withdraws.length+' pending payouts');
+    // Drop demo-only collections so UI never mixes fake + live
+    S.lives = [];
+    S.donations = [];
+    S.ads = [];
+    S.notifs = S.notifs && S.notifs.length && S.notifs[0].live ? S.notifs : [];
+    S.audit = [];
+    if (!(window.__NT_LIVE__ && window.__NT_LIVE__.reports && window.__NT_LIVE__.reports.length)) {
+      /* queue already set from reports when present */
+    }
+    const fp = (typeof ntDataFingerprint === 'function') ? ntDataFingerprint(window.__NT_LIVE__) : String(Date.now());
+    const changed = fp !== (window.__NT_RT__ && window.__NT_RT__.lastFp);
+    const first = !window.__NT_ADMIN_BOOTED__;
+    window.__NT_ADMIN_BOOTED__ = true;
+    if(window.__NT_RT__) window.__NT_RT__.lastFp = fp;
+    if(first || changed || (opts && opts.force)){
+      render(!!first);
+    }
+    if(!opts || !opts.quiet){
+      toast('Live data · '+users.length+' users · '+withdraws.length+' pending payouts');
+    }
+    return { changed: first || changed, first, users: users.length, withdraws: withdraws.length };
   }catch(e){
     console.warn('Live sync failed', e);
-    toast('Could not load live data — showing demo data');
+    if(!window.__NT_ADMIN_BOOTED__ && !(opts && opts.quiet)) toast('Could not load live data');
+    return { error: true };
   }
 }
+
+/* ===== Real-time polling (API) — updates without breaking scroll ===== */
+async function ntRealtimeTick(){
+  if(window.__NT_RT__.busy) return;
+  if(document.hidden) return;
+  window.__NT_RT__.busy = true;
+  try{
+    const prev = window.__NT_RT__.lastFp;
+    const res = await syncLiveData({ quiet: true });
+    let el = document.getElementById('nt-rt-status');
+    if(!el){
+      const side = document.querySelector('.side') || document.getElementById('side');
+      if(side){
+        el = document.createElement('div');
+        el.id = 'nt-rt-status';
+        el.style.cssText = 'padding:8px 14px 12px;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;border-top:1px solid var(--line)';
+        el.innerHTML = '<span class="pulse" style="background:var(--accent)"></span><span class="nt-rt-text">Live · connecting…</span>';
+        side.appendChild(el);
+      }
+    }
+    if(el){
+      const hh = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const bit = (res && res.changed) ? ' · updated' : '';
+      el.querySelector('.nt-rt-text').textContent = 'Live API · '+hh+bit;
+    }
+  }catch(e){ console.warn('rt tick', e); }
+  finally{ window.__NT_RT__.busy = false; }
+}
+function ntStartRealtime(){
+  if(window.__NT_RT__.timer) clearInterval(window.__NT_RT__.timer);
+  window.__NT_RT__.timer = setInterval(ntRealtimeTick, window.__NT_RT__.every);
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden) ntRealtimeTick();
+  });
+}
+
 
 /* ============ original boot (wrapped) ============ */
 
@@ -1433,8 +1515,11 @@ async function syncLiveData(){
     brand.style.position='relative';
     brand.appendChild(a);
   }
-  // load real data after first paint
-  setTimeout(syncLiveData, 400);
+  // load real data after first paint, then poll API
+  setTimeout(async ()=>{
+    await syncLiveData();
+    ntStartRealtime();
+  }, 300);
 })();
 
 })();
