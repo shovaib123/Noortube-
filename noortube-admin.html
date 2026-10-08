@@ -308,9 +308,9 @@ button.check{width:100%;text-align:left;background:var(--surface)}
     <nav class="nav" id="nav"></nav>
     <a href="/" style="display:flex;align-items:center;gap:8px;margin:0 12px 10px;padding:9px 12px;border-radius:9px;font-size:13px;color:var(--muted);border:1px solid var(--line)">&larr; Back to NoorTube</a>
     <div class="me row">
-      <div class="avatar">SA</div>
-      <div class="grow"><div class="b trunc">Super Admin</div><div class="sm muted trunc">admin@noortube.com</div></div>
-      <button class="icon-btn" data-act="reset-demo" title="Reset demo data" aria-label="Reset demo data"><svg class="i"><use href="#i-history"/></svg></button>
+      <div class="avatar">A</div>
+      <div class="grow"><div class="b trunc">Admin</div><div class="sm muted trunc"></div></div>
+      <button class="icon-btn" data-act="l-refresh-all" title="Refresh all data" aria-label="Refresh all data"><svg class="i"><use href="#i-history"/></svg></button>
     </div>
   </aside>
   <div class="scrim hide" id="scrim" data-act="close-side"></div>
@@ -322,7 +322,6 @@ button.check{width:100%;text-align:left;background:var(--surface)}
       <div class="date hide-sm"><div class="ar" id="hijri-ar"></div><div class="sm muted" id="hijri-en"></div></div>
       <button class="icon-btn" data-act="theme" aria-label="Toggle theme" id="theme-btn"><svg class="i"><use href="#i-moon"/></svg></button>
       <button class="icon-btn" data-act="bell" aria-label="Notifications"><svg class="i"><use href="#i-bell"/></svg><span class="dot" id="bell-dot"></span></button>
-      <button class="btn pri hide-sm" data-act="new-content"><svg class="i sm"><use href="#i-plus"/></svg>New</button>
     </header>
     <main class="view" id="view" tabindex="-1"></main>
   </div>
@@ -488,7 +487,7 @@ const ring=(pct,sub)=>{const r=54,c=2*Math.PI*r,p=Math.min(pct,100);
 let UI={},pendingQ='';
 const freshUI=()=>({q:'',tab:'all',cat:'all',status:'all',sel:new Set(),range:7});
 UI=freshUI();
-const route=()=>location.hash.replace(/^#\/?/,'')||'l-users';
+const route=()=>location.hash.replace(/^#\/?/,'')||'dashboard';
 const go=(id,q)=>{pendingQ=q||'';if(route()===id){UI=freshUI();UI.q=pendingQ;pendingQ='';render(true)}else location.hash='#/'+id};
 const layer=()=>$('#layer');
 const closeModal=()=>{layer().innerHTML=''};
@@ -517,10 +516,8 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=['NoorTube app (live data)',['l-users','User stats','users'],['l-monet','Monetized channels','crown'],['l-pay','Payouts','wallet'],['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],['l-tools','Tools','sliders'],'Preview (sample data)',['dashboard','Dashboard','dash'],'Content',['moderation','Moderation queue','shield'],['videos','Videos','video'],['reels','Islamic reels','reel'],['live','Live streams','live'],['categories','Categories','folder'],
- 'People',['creators','Creators & scholars','usercheck'],['users','All users','users'],'Money',['donations','Sadaqah & donations','heart'],['memberships','Memberships','crown'],['payouts','Creator payouts','wallet'],['ads','Halal ads','mega'],
- 'System',['analytics','Analytics','chart'],['notifications','Push notifications','bell'],['settings','Settings & branding','sliders'],['audit','Audit log','history']];
-const badge=id=>id==='l-pay'?reqBadge():id==='moderation'?S.queue.length:id==='payouts'?S.payouts.filter(p=>p.status==='pending').length:0;
+const NAV=[['dashboard','Dashboard','dash'],'Manage (live data)',['l-users','User stats','users'],['l-monet','Monetized channels','crown'],['l-pay','Payouts','wallet'],['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],['l-tools','Tools','sliders']];
+const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
 const V={};
@@ -794,13 +791,11 @@ V.audit=()=>{const list=S.audit.filter(x=>(UI.tab==='all'||x.tone===UI.tab)&&mat
   tabs('tab',[['all','All'],['green','Approvals'],['rose','Rejections & bans'],['blue','Edits'],['amber','Payments']])+
   `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Admin</th><th>Item</th><th>When</th></tr></thead><tbody>${list.map(x=>`<tr><td>${chip(x.action,x.tone)}</td><td>${esc(x.admin)}</td><td class="muted">${esc(x.entity)}</td><td class="muted" title="${new Date(x.at).toLocaleString()}">${ago(x.at)}</td></tr>`).join('')}</tbody></table></div>${list.length?'':empty('Nothing logged yet','Actions you take will show up here.')}</div>`};
 /* ============ render ============ */
-const render=(top)=>{const id=V[route()]?route():'l-users',view=$('#view'),pos=view.scrollTop,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
+const render=(top)=>{const id=V[route()]?route():'dashboard',view=$('#view'),pos=view.scrollTop,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
   view.innerHTML=`<div class="in">${V[id]()}</div>`;renderNav();view.scrollTop=top?0:pos;
   if(fk){const el=$(`[data-keep="${fk}"]`);if(el){el.focus();const L=el.value.length;try{el.setSelectionRange(L,L)}catch(e){}}}
   document.title=`${TITLES[id]||'Dashboard'} · ${S.settings.appName}`;$('#bell-dot').classList.toggle('hide',!alerts().length)};
-const alerts=()=>{const a=[],low=S.queue.filter(x=>x.ai<70).length,pp=S.payouts.filter(p=>p.status==='pending').length,np=S.creators.filter(c=>c.status==='pending').length,lv=S.lives.filter(l=>l.state==='live').length;
-  if(low)a.push([`${low} upload${low>1?'s':''} flagged by AI`,'Review before they go public','moderation','shield']);if(S.queue.length-low)a.push([`${S.queue.length-low} items waiting for review`,'Oldest: '+ago(Math.min(...S.queue.map(x=>x.at))),'moderation','shield']);
-  if(pp)a.push([`${pp} payout request${pp>1?'s':''}`,'Waiting for approval','payouts','wallet']);if(np)a.push([`${np} creator${np>1?'s':''} awaiting verification`,'Check credentials','creators','usercheck']);if(lv)a.push([`${lv} live stream running`,'Monitor from Live streams','live','live']);return a};
+
 
 /* ============ queue helpers ============ */
 const approveQ=id=>{const it=S.queue.find(x=>x.id===id);if(!it)return;S.queue=S.queue.filter(x=>x.id!==id);S.stats.published++;
@@ -850,14 +845,12 @@ const payModal=c=>modal({title:'Payout account',ok:'Save',body:`<p style="margin
 
 /* ============ search palette ============ */
 const openPalette=()=>{modal({title:'Search',hideFooter:true,body:'',onOpen:()=>{}});
-  layer().innerHTML=`<div class="modal-back" data-act="modal-back"><div class="modal pal" role="dialog" aria-modal="true" aria-label="Search everything"><input id="pq" placeholder="Search sections, videos, creators, users, ads…" autocomplete="off" aria-label="Search"><ul id="pl" role="listbox"></ul></div></div>`;
-  let items=[],cur=0;const draw=()=>{const q=$('#pq').value.trim();items=[];
+  layer().innerHTML=`<div class="modal-back" data-act="modal-back"><div class="modal pal" role="dialog" aria-modal="true" aria-label="Search everything"><input id="pq" placeholder="Search pages, users, videos, reels…" autocomplete="off" aria-label="Search"><ul id="pl" role="listbox"></ul></div></div>`;
+  let items=[],cur=0;const D=k=>LIVE.d[k]&&LIVE.d[k].st==='ok'?LIVE.d[k].data:[];const draw=()=>{const q=$('#pq').value.trim();items=[];
     NAV.filter(n=>typeof n!=='string'&&match(q,n[1])).forEach(n=>items.push({t:n[1],s:'Go to section',i:n[2],id:n[0]}));
-    if(q){S.videos.filter(v=>match(q,v.title,v.creator)).slice(0,4).forEach(v=>items.push({t:v.title,s:'Video · '+v.creator,i:'video',id:'videos',q}));
-      S.creators.filter(c=>match(q,c.name)).slice(0,3).forEach(c=>items.push({t:c.name,s:'Creator',i:'usercheck',id:'creators',q}));
-      S.users.filter(u=>match(q,u.name,u.email)).slice(0,3).forEach(u=>items.push({t:u.name,s:'User · '+u.email,i:'users',id:'users',q}));
-      S.ads.filter(a=>match(q,a.name)).slice(0,2).forEach(a=>items.push({t:a.name,s:'Ad',i:'mega',id:'ads',q}));
-      S.queue.filter(x=>match(q,x.title,x.creator)).slice(0,3).forEach(x=>items.push({t:x.title,s:'In moderation queue',i:'shield',id:'moderation',q}))}
+    if(q){D('users').filter(u=>match(q,u.name,u.email)).slice(0,4).forEach(u=>items.push({t:u.name,s:'User · '+u.email,i:'users',id:'l-users',q}));
+      (D('avideos').length?D('avideos'):D('pvideos')).filter(v=>match(q,v.title,v.channel)).slice(0,4).forEach(v=>items.push({t:v.title,s:'Video · '+v.channel,i:'video',id:'l-videos',q}));
+      (D('areels').length?D('areels'):D('preels')).filter(v=>match(q,v.title,v.channel)).slice(0,3).forEach(v=>items.push({t:v.title,s:'Reel · '+v.channel,i:'reel',id:'l-reels',q}))}
     cur=Math.min(cur,Math.max(items.length-1,0));$('#pl').innerHTML=items.length?items.map((x,k)=>`<li role="option" class="${k===cur?'on':''}" data-k="${k}">${ic(x.i)}<div class="grow"><div class="b trunc">${esc(x.t)}</div><div class="sm muted">${esc(x.s)}</div></div></li>`).join(''):'<li class="muted">No results. Try a different word.</li>'};
   const pick=k=>{const x=items[k];if(!x)return;closeModal();go(x.id,x.q)};
   $('#pq').addEventListener('input',()=>{cur=0;draw()});
@@ -958,7 +951,7 @@ const SRC={
 const PAGE_KEYS={'l-users':['users','pvideos','preels','pstatus'],'l-monet':['users','pvideos','preels','pstatus'],
   'l-pay':['payouts','reqs','users','pvideos','pstatus'],'l-videos':['avideos','users','pvideos','pstatus'],'l-reels':['areels','users','pvideos','pstatus'],
   'l-reports':['reports','users','pvideos','pstatus'],'l-feedback':['feedback','users','pvideos','pstatus'],'l-tools':['users','pvideos','pstatus']};
-const isLive=()=>route().startsWith('l-');
+const isLive=()=>route().startsWith('l-')||route()==='dashboard';
 const load=(key,silent)=>{
   const prev=LIVE.d[key],keep=silent&&prev&&prev.st==='ok',n=keep?prev:(LIVE.d[key]={st:'loading',data:null,err:''});
   SRC[key]().then(d=>{n.st='ok';n.data=d;n.err=''})
@@ -978,9 +971,10 @@ const gate=(keys,fn)=>{const st=keys.map(get),bad=st.find(s=>s.st==='err');
   if(st.some(s=>s.st!=='ok'))return '<div class="card pad empty"><b>Loading&hellip;</b>Fetching live data from NoorTube.</div>';
   return fn(...st.map(s=>s.data))};
 const kpi=(l,v)=>`<div class="card kpi"><span class="l">${l}</span><div class="v">${v}</div></div>`;
-const liveKpis=()=>{const u=get('users'),v=get('pvideos'),s=get('pstatus'),ok=x=>x.st==='ok';
-  const views=ok(v)&&ok(s)?kfmt(sum(v.data.map(x=>x.views||0))+sum(s.data.map(x=>x.views||0))):'…';
-  return `<div class="kpis">${kpi('Total users',ok(u)?u.data.length:'…')}${kpi('Total videos',ok(v)?v.data.length:'…')}${kpi('Total views',views)}${kpi('Platform revenue',ok(v)?f2(sum(v.data.map(x=>x.earnings||0))*.45):'…')}</div>`};
+const liveKpis=()=>{const u=get('users'),v=get('pvideos'),r=get('preels'),s=get('pstatus'),p=get('payouts'),ok=x=>x.st==='ok';
+  const views=ok(v)&&ok(r)&&ok(s)?kfmt(sum(v.data.map(x=>x.views||0))+sum(r.data.map(x=>x.views||0))+sum(s.data.map(x=>x.views||0))):'…';
+  const owed=ok(p)?f2(sum(p.data.rows.map(x=>x.creatorCents))/100):(p.st==='err'?'–':'…');
+  return `<div class="kpis">${kpi('Total users',ok(u)?u.data.length:'…')}${kpi('Total videos',ok(v)?v.data.length:'…')}${kpi('Total views',views)}${kpi('Owed to creators',owed)}</div>`};
 const liveHead=(t,sub,extra='')=>pageH(t,sub,`${extra}<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+liveKpis();
 const avatarOf=(name,color,sz)=>`<span class="avatar" style="width:${sz||30}px;height:${sz||30}px;background:${esc(color||'#0b6b50')};color:#fff">${esc(initials(name||'?'))}</span>`;
 const reqBadge=()=>{const r=LIVE.d.reqs;return r&&r.st==='ok'?r.data.length:0};
@@ -1074,7 +1068,8 @@ V['l-pay']=()=>{
         <div class="row wrap" style="margin-top:12px">${pi?cpBtn('p'+r.id,'Copy details',lines.concat(['Amount: ₹'+inr.toFixed(0)+' ('+f2(r.creatorUsd)+')']).join('\n')):''}${payActions(pi,inr,r.name,'p'+r.id)}
         ${r.hasPendingRequest?'<span class="sm muted">Has a withdrawal request — handle it above</span>':''}
         <button type="button" class="btn pri sm" data-act="l-markpaid" data-id="${esc(r.id)}" ${r.creatorCents<=0||LIVE.busy===r.id||r.hasPendingRequest?'disabled':''}>${LIVE.busy===r.id?'Please wait…':'Mark as Paid'}</button></div></div>`}).join('');
-    return `<div class="card pad"><h3>Withdrawal requests${reqs.length?' ('+reqs.length+')':''}</h3>
+    return `<div class="card pad" style="margin-bottom:14px"><h3>How to pay a creator</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>Open the creator card below (or a withdrawal request) and tap <b>Pay via UPI</b> or <b>Copy details</b>.</li><li>Send the amount from your own UPI / bank app.</li><li>Come back and tap <b>Mark as Paid</b>. Only then is the creator’s balance reset to $0.00.</li></ol></div>
+    <div class="card pad"><h3>Withdrawal requests${reqs.length?' ('+reqs.length+')':''}</h3>
       <p class="sm muted" style="margin:4px 0 8px">Creators tap “Request Withdrawal” (minimum $${esc(data.minWithdrawUsd||100)}). Pay them with the details below, then tap “Mark as Paid”. Nothing is deducted until you do.</p>
       ${LIVE.rmsg?`<div class="sm muted" style="margin-bottom:6px">${esc(LIVE.rmsg)}</div>`:''}${reqs.length?reqCards:'<div class="muted">No pending requests.</div>'}</div>
     <div class="card pad" style="margin-top:14px"><h3>Creator payouts</h3>
@@ -1142,6 +1137,7 @@ V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.dem
 /* ---- actions ---- */
 const lerr=e=>toast((e&&e.message)||'Action failed');
 Object.assign(ACT,{
+ 'l-refresh-all':()=>{LIVE.folStarted=false;refreshAll();toast('Refreshing…')},
  'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
  'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
  'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
@@ -1197,8 +1193,63 @@ Object.assign(ACT,{
 document.addEventListener('input',e=>{const el=e.target;
   if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
   else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}});
-window.addEventListener('nt-me',()=>render());
-load('reqs');
+window.addEventListener('nt-me',()=>{paintMe();render()});
+/* ---- Dashboard (real data) ---- */
+const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback'];
+PAGE_KEYS.dashboard=DKEYS;
+const dOk=k=>LIVE.d[k]&&LIVE.d[k].st==='ok',dData=k=>dOk(k)?LIVE.d[k].data:null;
+const openReports=()=>{const r=dData('reports');return r?r.filter(x=>x.status==='open').length:0};
+const newFeedback=()=>{const f=dData('feedback');return f?f.filter(x=>!x.reply).length:0};
+const dkp=(l,v,sub,tone,href)=>`<a href="#/${href}" class="card kpi"><div class="row between"><span class="l">${l}</span></div><div class="v">${v}</div><div class="d ${tone||'muted'}">${sub||''}</div></a>`;
+const dRow=(left,sub,btn)=>`<div class="row pad-sm" style="border-bottom:1px solid var(--line)"><div class="grow" style="min-width:0"><div class="trunc b">${left}</div><div class="sm muted trunc">${sub}</div></div>${btn}</div>`;
+V.dashboard=()=>{
+  DKEYS.forEach(get);
+  const U=dData('users'),vs=dData('pvideos'),rs=dData('preels'),ss=dData('pstatus'),pay=dData('payouts'),reqs=dData('reqs'),reps=dData('reports'),fbs=dData('feedback');
+  const failed=DKEYS.filter(k=>LIVE.d[k]&&LIVE.d[k].st==='err'),loading=DKEYS.some(k=>LIVE.d[k]&&LIVE.d[k].st==='loading');
+  const dash='–',me=window.NT_ME||{},inr=pay?pay.settings.inr:0;
+  const owed=pay?sum(pay.rows.map(r=>r.creatorCents))/100:null,plat=pay?sum(pay.rows.map(r=>r.platformUsd)):null;
+  const reqSum=reqs?sum(reqs.map(q=>q.amountUsd)):null,open=reps?reps.filter(r=>r.status==='open'):null,unrep=fbs?fbs.filter(f=>!f.reply):null;
+  const due=pay?pay.rows.filter(r=>r.creatorCents>0&&!r.hasPendingRequest).sort((a,b)=>b.creatorCents-a.creatorCents):null;
+  const vViews=vs?sum(vs.map(x=>x.views||0)):null,rViews=rs?sum(rs.map(x=>x.views||0)):null;
+  const summary=[reqs&&reqs.length?`${reqs.length} withdrawal request${reqs.length>1?'s':''} to pay`:'',open&&open.length?`${open.length} open report${open.length>1?'s':''}`:'',unrep&&unrep.length?`${unrep.length} feedback to reply`:''].filter(Boolean);
+  const top=(list,label,href)=>`<div class="card"><div class="card-h"><h3>${label}</h3><a class="btn sm" href="#/${href}">View all</a></div>${list?(list.length?[...list].sort((a,b)=>(b.views||0)-(a.views||0)).slice(0,5).map((x,i)=>dRow(`${i+1}. ${esc(x.title)}`,`${esc(x.channel)} · ${kfmt(x.views)} views`,'')).join(''):empty('Nothing yet','')):'<div class="pad muted">Loading…</div>'}</div>`;
+  const recent=vs&&rs?[...vs.map(x=>({...x,k:'Video'})),...rs.map(x=>({...x,k:'Reel'}))].sort((a,b)=>new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,6):null;
+  return `<section class="hero lattice" aria-label="Today"><div><div class="ar">السلام عليكم ورحمة الله</div><h2>Assalamu alaikum, ${esc(me.name||'Admin')}</h2>
+    <p style="margin-top:6px">${loading&&!summary.length?'Loading live data…':summary.length?esc(summary.join(' · '))+'.':'Everything is up to date. Nothing needs your attention.'}</p>
+    <p class="sm" style="margin-top:10px;opacity:.8">${esc(hijri().en)}</p></div></section>
+  <div class="row between wrap" style="margin-bottom:12px"><span class="sm muted">${failed.length?`<span class="dn">Could not load: ${esc(failed.join(', '))}. Press Refresh.</span>`:'Live numbers from NoorTube'}</span><button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button></div>
+  <div class="kpis k3">
+    ${dkp('Total users',U?U.length:dash,U?`${U.filter(u=>u.suspended).length} deactivated`:'','muted','l-users')}
+    ${dkp('Videos & reels',vs&&rs?(vs.length+rs.length):dash,vs&&rs?`${vs.length} videos · ${rs.length} reels`:'','muted','l-videos')}
+    ${dkp('Total views',vViews!=null&&rViews!=null?kfmt(vViews+rViews+(ss?sum(ss.map(x=>x.views||0)):0)):dash,vViews!=null&&rViews!=null?`${kfmt(vViews)} videos · ${kfmt(rViews)} reels`:'','muted','l-users')}
+    ${dkp('Monetized channels',U?U.filter(u=>u.monetizationEnabled).length:dash,'Monetization on','up','l-monet')}
+    ${dkp('Owed to creators',owed!=null?f2(owed):dash,owed!=null?`₹${(owed*inr).toFixed(0)} at ₹${inr}/$1`:'',owed>0?'dn':'muted','l-pay')}
+    ${dkp('NoorTube share',plat!=null?f2(plat):dash,'From unpaid earnings','up','l-pay')}
+    ${dkp('Withdrawal requests',reqs?reqs.length:dash,reqs?(reqs.length?f2(reqSum)+' waiting':'No pending requests'):'',reqs&&reqs.length?'dn':'muted','l-pay')}
+    ${dkp('Open reports',open?open.length:dash,open?(open.length?'Needs review':'All clear'):'',open&&open.length?'dn':'muted','l-reports')}
+    ${dkp('Feedback to reply',unrep?unrep.length:dash,unrep?(unrep.length?'Users waiting':'All replied'):'',unrep&&unrep.length?'dn':'muted','l-feedback')}
+  </div>
+  <div class="grid g2" style="margin-bottom:16px">
+    <div class="card"><div class="card-h"><h3>Needs your attention</h3></div>
+      ${(reqs||[]).map(q=>dRow(`${esc(q.name)} · ${f2(q.amountUsd)} (₹${(q.amountUsd*inr).toFixed(0)})`,'Withdrawal request — pay and mark as paid',`<a class="btn pri sm" href="#/l-pay">Pay now</a>`)).join('')}
+      ${(open||[]).slice(0,5).map(r=>dRow(`${r.targetType==='video'?'Video':'Reel'}: ${esc(r.targetTitle)}`,esc(r.reason),`<a class="btn sm" href="#/l-reports">Review</a>`)).join('')}
+      ${(unrep||[]).slice(0,5).map(f=>dRow(esc(f.name||'Anonymous'),esc(f.message),`<a class="btn sm" href="#/l-feedback">Reply</a>`)).join('')}
+      ${(reqs&&open&&unrep&&!reqs.length&&!open.length&&!unrep.length)?empty('All caught up','No withdrawals, reports or feedback waiting.'):''}</div>
+    <div class="card"><div class="card-h"><h3>Creators with money due</h3><a class="btn sm" href="#/l-pay">Open payouts</a></div>
+      ${due?(due.length?due.slice(0,6).map(r=>dRow(esc(r.name),`${f2(r.creatorUsd)} (₹${(r.creatorUsd*inr).toFixed(0)})`+(r.payoutInfo?'':' · no payout details yet'),`<a class="btn pri sm" href="#/l-pay">Pay</a>`)).join(''):empty('Nothing else due','Creators with a pending withdrawal request are listed under “Needs your attention”.')):'<div class="pad muted">Loading…</div>'}</div>
+  </div>
+  <div class="grid g2">${top(vs,'Top videos','l-videos')}${top(rs,'Top reels','l-reels')}</div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h3>Latest uploads</h3></div>${recent?(recent.length?recent.map(x=>dRow(esc(x.title),`${x.k} · ${esc(x.channel)} · ${esc(agoS(x.uploadedAt))}`,'')).join(''):empty('No uploads yet','')):'<div class="pad muted">Loading…</div>'}</div>`};
+
+/* ---- Alerts (bell), search palette, footer: all real now ---- */
+const alerts=()=>{const a=[],q=reqBadge(),o=openReports(),f=newFeedback();
+  if(q)a.push([`${q} withdrawal request${q>1?'s':''}`,'Creators waiting to be paid','l-pay','wallet']);
+  if(o)a.push([`${o} open report${o>1?'s':''}`,'Review reported content','l-reports','flag']);
+  if(f)a.push([`${f} feedback message${f>1?'s':''} to reply`,'Users are waiting for a reply','l-feedback','send']);return a};
+const paintMe=()=>{const u=window.NT_ME,m=$('.me');if(!u||!m)return;m.querySelector('.avatar').textContent=initials(u.name||'A');m.querySelector('.b').textContent=u.name||'Admin';m.querySelector('.sm').textContent=u.email||''};
+['moderation','videos','reels','live','categories','creators','users','donations','memberships','payouts','ads','analytics','notifications','settings','audit'].forEach(k=>delete V[k]);
+
+load('reqs');load('reports');load('feedback');paintMe();
 
 document.addEventListener('click',e=>{const pop=$('#pop');if(pop&&!e.target.closest('#pop')&&!e.target.closest('[data-act="bell"]'))pop.remove();
   const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(!fn)return;if(el.tagName==='INPUT')return;fn(el,e)});
@@ -1226,8 +1277,7 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 window.addEventListener('hashchange',()=>{UI=freshUI();UI.q=pendingQ;pendingQ='';ACT['close-side']();render(true)});
 
 /* ============ live tickers ============ */
-setInterval(()=>{S.lives.filter(l=>l.state==='live').forEach(l=>{l.viewers=Math.max(0,l.viewers+Math.round((Math.random()-.45)*40));l.peak=Math.max(l.peak,l.viewers);const el=$(`[data-viewers="${l.id}"]`);if(el)el.textContent=l.viewers.toLocaleString()})},4000);
-setInterval(()=>{const r=route();if((r==='dashboard'||r==='ads')&&!layer().children.length&&!$('#pop')&&(document.activeElement===document.body||!document.activeElement))render()},30000);
+setInterval(()=>{if(document.hidden||layer().children.length||$('#pop'))return;const ae=document.activeElement;if(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))return;refreshAll()},60000);
 
 /* ============ boot ============ */
 const h=hijri();$('#hijri-ar').textContent=h.ar;$('#hijri-en').textContent=h.en;
