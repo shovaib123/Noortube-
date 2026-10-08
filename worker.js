@@ -281,6 +281,7 @@ function videoOut(v) {
     views: v.views, likes: v.likes, dislikes: v.dislikes, monetized: !!v.monetized,
     copyrightStatus: v.copyright_status, removed: !!v.removed, hidden: !!v.hidden, uploadedAt: v.uploaded_at, earnings: v.earnings,
     channel: v.owner_name, channelAvatar: v.owner_avatar_color, commentCount: v.comment_count || 0,
+    channelMonetized: !!v.owner_monetized,
   };
 }
 function reelOut(r) {
@@ -288,7 +289,7 @@ function reelOut(r) {
     id: r.id, ownerId: r.owner_id, title: r.title, tags: JSON.parse(r.tags || "[]"), fileUrl: r.file_url,
     thumbnail: r.thumbnail, trimStart: r.trim_start, trimEnd: r.trim_end, views: r.views, likes: r.likes,
     uploadedAt: r.uploaded_at, channel: r.owner_name, channelAvatar: r.owner_avatar_color, commentCount: r.comment_count || 0,
-    mixCategory: r.mix_category || null, hidden: !!r.hidden,
+    mixCategory: r.mix_category || null, hidden: !!r.hidden, channelMonetized: !!r.owner_monetized,
   };
 }
 function statusOut(s) {
@@ -311,6 +312,241 @@ export default {
   },
 };
 
+// ================= SECURITY LAYER =================
+// 1) Server-side secrets: use the Cloudflare secret if you set one (UPLOAD_SECRET / VIEW_SECRET); otherwise a random
+//    secret is created once and kept in the database, so protection is ON even if nothing was configured.
+const _secretCache = {};
+async function getAppSecret(env, name) {
+  const direct = name === "upload" ? env.UPLOAD_SECRET : name === "view" ? env.VIEW_SECRET : null;
+  if (direct) return String(direct);
+  if (_secretCache[name]) return _secretCache[name];
+  const db = env.NOOR_DB;
+  await db.prepare("CREATE TABLE IF NOT EXISTS app_secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL)").run();
+  let row = await db.prepare("SELECT value FROM app_secrets WHERE name = ?").bind(name).first();
+  if (!row) {
+    await db.prepare("INSERT OR IGNORE INTO app_secrets (name, value) VALUES (?, ?)").bind(name, toB64Url(crypto.getRandomValues(new Uint8Array(32)))).run();
+    row = await db.prepare("SELECT value FROM app_secrets WHERE name = ?").bind(name).first();
+  }
+  return (_secretCache[name] = row.value);
+}
+async function hmacB64Url(secret, msg) {
+  const enc = new TextEncoder();
+  const k = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return toB64Url(await crypto.subtle.sign("HMAC", k, enc.encode(msg)));
+}
+function safeEq(a, b) { // constant-time string compare
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+function b64uEnc(str) { return toB64Url(new TextEncoder().encode(str)); }
+function b64uDec(str) {
+  let t = String(str).replace(/-/g, "+").replace(/_/g, "/");
+  while (t.length % 4) t += "=";
+  return new TextDecoder().decode(Uint8Array.from(atob(t), (c) => c.charCodeAt(0)));
+}
+// IPs are never stored in plain text: only a keyed hash is kept.
+async function ipKey(request, env) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  return (await hmacB64Url(await getAppSecret(env, "view"), "ip:" + ip)).slice(0, 22);
+}
+
+// 2) Sign-up limit: stops people from mass-creating fake accounts from one network.
+const SIGNUP_MAX_PER_IP_HOUR = 10;
+let signupTableReady = false;
+async function ensureSignupTable(db) {
+  if (signupTableReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS signup_log (ip TEXT NOT NULL, ts INTEGER NOT NULL)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_signup_log ON signup_log (ip, ts)").run();
+  signupTableReady = true;
+}
+async function signupBlocked(db, env, request) { // fails open: if anything errors, sign-up keeps working
+  try {
+    await ensureSignupTable(db);
+    const r = await db.prepare("SELECT COUNT(*) AS n FROM signup_log WHERE ip = ? AND ts > ?").bind(await ipKey(request, env), Date.now() - 3600 * 1000).first();
+    return !!r && r.n >= SIGNUP_MAX_PER_IP_HOUR;
+  } catch (_) { return false; }
+}
+async function recordSignup(db, env, request) {
+  try {
+    await ensureSignupTable(db);
+    await db.prepare("INSERT INTO signup_log (ip, ts) VALUES (?, ?)").bind(await ipKey(request, env), Date.now()).run();
+    if (Math.random() < 0.02) await db.prepare("DELETE FROM signup_log WHERE ts < ?").bind(Date.now() - 24 * 3600 * 1000).run();
+  } catch (_) {}
+}
+
+// 3) VERIFIED VIEWS. A view only counts when ALL of these are true:
+//    - the player first asked the server for a signed "view ticket" when playback started,
+//    - enough real time passed since that ticket was issued (the same watch rule as the app: videos 40s/60s, reels 5s/10s),
+//    - this viewer has not already got a counted view on this content in the last 24 hours,
+//    - this viewer / this network is not over the hourly limit,
+//    - the content is visible. The creator's own view of their own content counts exactly ONCE, ever (never again, however long they keep watching).
+//    The ticket is signed, so it cannot be forged, edited, or reused for another video, reel or person.
+const VIEW_RULE = { v: { base: 40, longBase: 60, longFrom: 300 }, r: { base: 5, longBase: 10, longFrom: 30 } };
+const VIEW_TOKEN_TTL_MS = 12 * 3600 * 1000;
+const VIEW_COOLDOWN_MS = 24 * 3600 * 1000;       // one counted view per viewer per content per 24h
+const VIEW_CAP_VIEWER_HOUR = { v: 60, r: 300 };  // counted views one viewer can make per hour
+const VIEW_CAP_IP_HOUR = { v: 240, r: 1200 };    // counted views one network (IP) can make per hour
+const VIEW_MAX_SPEED = 2;                        // fastest normal playback speed (2x)
+const COUNT_OWNER_VIEWS = true;                  // a creator watching their own content gets ONE view in total (see OWNER marker below)
+let viewTablesReady = false;
+async function ensureViewTables(db) {
+  if (viewTablesReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS view_log (id TEXT PRIMARY KEY, kind TEXT NOT NULL, content_id TEXT NOT NULL, viewer TEXT NOT NULL, ip TEXT NOT NULL, ts INTEGER NOT NULL)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_content ON view_log (kind, content_id, viewer, ts)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_viewer ON view_log (viewer, kind, ts)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_ip ON view_log (ip, kind, ts)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_ts ON view_log (ts)").run();
+  viewTablesReady = true;
+}
+function parseDurSec(d) {
+  if (typeof d === "number") return d > 0 && isFinite(d) ? d : null;
+  const t = String(d == null ? "" : d).trim();
+  if (!/^\d{1,5}(:\d{1,2}){0,2}$/.test(t)) return null;
+  const sec = t.split(":").map(Number).reduce((m, v) => m * 60 + v, 0);
+  return sec > 0 ? sec : null;
+}
+function viewNeedSec(kind, durSec) {
+  const R = VIEW_RULE[kind] || VIEW_RULE.v, ok = typeof durSec === "number" && durSec > 0;
+  const base = ok && durSec >= R.longFrom ? R.longBase : R.base;
+  return ok ? Math.min(base, durSec * 0.8) : base;
+}
+async function viewWho(request, env) {
+  const u = await currentUser(request, env);
+  const iph = await ipKey(request, env);
+  const anon = (request.headers.get("X-Anon-Id") || "").trim();
+  const ident = u ? "u:" + u.id : (anon.length >= 8 && anon.length <= 128 ? "a:" + anon : "x");
+  return { u, iph, ident, viewer: u ? "u:" + u.id : "i:" + iph };
+}
+async function makeViewToken(env, payload) {
+  const body = b64uEnc(JSON.stringify(payload));
+  return body + "." + (await hmacB64Url(await getAppSecret(env, "view"), body));
+}
+async function readViewToken(env, tok) {
+  if (typeof tok !== "string" || tok.length > 700 || tok.indexOf(".") < 1) return null;
+  const [body, sig] = tok.split(".");
+  if (!body || !sig) return null;
+  if (!safeEq(sig, await hmacB64Url(await getAppSecret(env, "view"), body))) return null;
+  try { const p = JSON.parse(b64uDec(body)); return p && typeof p === "object" ? p : null; } catch (_) { return null; }
+}
+async function handleViewRoute(kind, id, step, request, env, db) {
+  const table = kind === "v" ? "videos" : "reels";
+  const row = await db.prepare("SELECT * FROM " + table + " WHERE id = ?").bind(id).first();
+  if (step === "start") { // playback started: hand out a signed ticket (never breaks playback)
+    try {
+      if (!row || row.removed || row.hidden) return json({ ok: true, token: null });
+      const w = await viewWho(request, env);
+      return json({ ok: true, token: await makeViewToken(env, { k: kind, c: id, w: w.ident, t: Date.now(), n: crypto.randomUUID().slice(0, 8) }) });
+    } catch (_) { return json({ ok: true, token: null }); }
+  }
+  // step === "count": the player says the watch rule was met. The server re-checks everything.
+  const out = (counted, reason) => json({ ok: true, counted, reason, views: row ? row.views + (counted ? 1 : 0) : null });
+  if (!row) return err("Not found", 404);
+  if (row.removed || row.hidden) return out(false, "hidden");
+  const body = await request.json().catch(() => ({}));
+  const w = await viewWho(request, env);
+  const tk = await readViewToken(env, body && body.token);
+  if (!tk || tk.k !== kind || tk.c !== id || tk.w !== w.ident) return out(false, "no_ticket");
+  const now = Date.now(), age = now - Number(tk.t);
+  if (!(age >= 0) || age > VIEW_TOKEN_TTL_MS) return out(false, "expired");
+  let dur = kind === "v" ? parseDurSec(row.duration) : (row.trim_end > 0 ? row.trim_end - (row.trim_start || 0) : null);
+  const need = viewNeedSec(kind, dur);
+  const minElapsedMs = Math.max(kind === "v" ? 5000 : 2000, (need / VIEW_MAX_SPEED) * 0.9 * 1000);
+  if (age < minElapsedMs) return out(false, "too_fast");
+  if (kind === "v" && w.u) { // keep the old "watch history" behaviour for signed-in users
+    try { await db.prepare("INSERT OR REPLACE INTO watch_history (user_id, video_id, watched_at) VALUES (?, ?, datetime('now'))").bind(w.u.id, id).run(); } catch (_) {}
+  }
+  const isOwner = !!(w.u && w.u.id === row.owner_id);
+  if (isOwner && !COUNT_OWNER_VIEWS) return out(false, "owner");
+  // Owner: the "already counted" window is unlimited (ts > 0 matches every old row) and the log row is marked ip = 'owner' so the cleanup below never deletes it.
+  const coolFrom = isOwner ? 0 : now - VIEW_COOLDOWN_MS, logIp = isOwner ? "owner" : w.iph;
+  await ensureViewTables(db);
+  const vid = uid("vw");
+  // One batch = one transaction: the log row is only written if every limit passes, and the counter only moves if that row exists.
+  const res = await db.batch([
+    db.prepare("INSERT INTO view_log (id, kind, content_id, viewer, ip, ts) SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM view_log WHERE kind = ? AND content_id = ? AND viewer = ? AND ts > ?) AND (SELECT COUNT(*) FROM view_log WHERE viewer = ? AND kind = ? AND ts > ?) < ? AND (SELECT COUNT(*) FROM view_log WHERE ip = ? AND kind = ? AND ts > ?) < ?")
+      .bind(vid, kind, id, w.viewer, logIp, now, kind, id, w.viewer, coolFrom, w.viewer, kind, now - 3600000, VIEW_CAP_VIEWER_HOUR[kind], w.iph, kind, now - 3600000, VIEW_CAP_IP_HOUR[kind]),
+    db.prepare("UPDATE " + table + " SET views = views + 1 WHERE id = ? AND EXISTS (SELECT 1 FROM view_log WHERE id = ?)").bind(id, vid),
+  ]);
+  const counted = !!(res && res[1] && res[1].meta && res[1].meta.changes === 1);
+  if (Math.random() < 0.02) { try { await db.prepare("DELETE FROM view_log WHERE ts < ? AND ip != 'owner'").bind(now - 2 * VIEW_COOLDOWN_MS).run(); } catch (_) {} }
+  return out(counted, counted ? "counted" : "limit");
+}
+// ================= END SECURITY LAYER =================
+
+// ================= COPYRIGHT / DUPLICATE CONTENT =================
+// Every uploaded video or reel can carry two "fingerprints":
+//  - fingerprint : SHA-256 of the ORIGINAL file, calculated by the app before upload (works even if the file is renamed or re-compressed on upload)
+//  - file_etag   : the storage's own checksum of the stored file, read by the SERVER (cannot be faked by the uploader)
+// If another creator already has content with the same fingerprint, the new upload is a copy.
+// Self-migrating: if the extra columns can not be created for any reason, this feature switches itself off and uploads work as before.
+let copyrightColsReady = null;
+async function ensureCopyrightColumns(db) {
+  if (copyrightColsReady !== null) return copyrightColsReady;
+  try {
+    for (const t of ["videos", "reels"]) {
+      for (const c of ["fingerprint", "file_etag", "dup_of"]) {
+        try { await db.prepare("ALTER TABLE " + t + " ADD COLUMN " + c + " TEXT").run(); } catch (_) { /* already exists */ }
+      }
+      await db.prepare("SELECT fingerprint, file_etag, dup_of FROM " + t + " LIMIT 1").first();
+      try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_" + t + "_fp ON " + t + " (fingerprint)").run(); } catch (_) {}
+      try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_" + t + "_etag ON " + t + " (file_etag)").run(); } catch (_) {}
+    }
+    copyrightColsReady = true;
+  } catch (_) { copyrightColsReady = false; }
+  return copyrightColsReady;
+}
+function cleanFingerprint(x) { return typeof x === "string" && /^fp[fs]_[0-9a-f]{64}$/.test(x) ? x : null; }
+const MIN_ETAG_BYTES = 100 * 1024; // tiny files are never compared by checksum
+async function storedFileEtag(env, fileUrl) {
+  try {
+    const m = /\/file\/([^?#]+)$/.exec(String(fileUrl || ""));
+    if (!m || !env.NOOR_BUCKET) return null;
+    const h = await env.NOOR_BUCKET.head(decodeURIComponent(m[1]));
+    return h && h.etag && h.size >= MIN_ETAG_BYTES ? String(h.etag) : null;
+  } catch (_) { return null; }
+}
+// Returns { ownerName } if ANOTHER creator already has the same file as a video or a reel, otherwise null. Never throws.
+async function findDuplicateOwner(db, { fingerprint, etag, legacyHash, ownerId }) {
+  try {
+    const run = async (table, cols) => {
+      const conds = [], binds = [];
+      if (fingerprint) { conds.push(table + ".fingerprint = ?"); binds.push(fingerprint); }
+      if (etag) { conds.push(table + ".file_etag = ?"); binds.push(etag); }
+      if (cols.legacy && legacyHash) { conds.push(table + ".content_hash = ?"); binds.push(legacyHash); }
+      if (!conds.length) return null;
+      // only compare with ORIGINAL uploads: copies that were already claimed never count as "the original"
+      const notCopy = table + ".dup_of IS NULL" + (cols.legacy ? " AND (" + table + ".copyright_status IS NULL OR " + table + ".copyright_status != 'claimed')" : "");
+      return await db.prepare("SELECT users.name AS owner_name, " + table + ".id AS dup_id FROM " + table + " JOIN users ON users.id = " + table + ".owner_id WHERE " + table + ".owner_id != ? AND " + notCopy + " AND (" + conds.join(" OR ") + ") LIMIT 1").bind(ownerId, ...binds).first();
+    };
+    const a = await run("videos", { legacy: true });
+    if (a) return { ownerName: a.owner_name, id: a.dup_id };
+    const b = await run("reels", { legacy: false });
+    return b ? { ownerName: b.owner_name, id: b.dup_id } : null;
+  } catch (_) { return null; }
+}
+async function applyCopyrightStrike(db, u, what, title, dupOwnerName) {
+  const newStrikes = (u.strikes || 0) + 1, suspended = newStrikes >= 3;
+  await db.prepare("UPDATE users SET strikes = ?, suspended = ?, monetization_enabled = CASE WHEN ? = 1 THEN 0 ELSE monetization_enabled END WHERE id = ?")
+    .bind(newStrikes, suspended ? 1 : 0, suspended ? 1 : 0, u.id).run();
+  await addNotification(db, u.id, "copyright", "Copyright Claim — " + what + " Removed",
+    `Your ${what.toLowerCase()} "${title}" was already uploaded by another channel${dupOwnerName ? ` ("${dupOwnerName}")` : ""}. It has been automatically removed and you received a copyright strike (${newStrikes}/3).${suspended ? " Your account has been permanently suspended." : ""}`);
+  return suspended;
+}
+// ================= END COPYRIGHT =================
+
+// The feedback table was created without the columns an admin reply needs; add them once, automatically.
+let feedbackColsReady = false;
+async function ensureFeedbackColumns(db) {
+  if (feedbackColsReady) return;
+  for (const c of ["reply", "replied_at"]) {
+    try { await db.prepare("ALTER TABLE feedback ADD COLUMN " + c + " TEXT").run(); } catch (_) { /* column already exists */ }
+  }
+  await db.prepare("SELECT reply, replied_at FROM feedback LIMIT 1").first(); // throws if the columns still do not exist
+  feedbackColsReady = true;
+}
+
 async function handleRequest(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -329,8 +565,8 @@ async function handleRequest(request, env) {
       const key = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${rawName}`;
       const expiry = Date.now() + 20 * 60 * 1000; // 20 minutes to complete the upload
       const uploadUrl = `${url.origin}/upload/${encodeURIComponent(key)}`;
-      if (!env.UPLOAD_SECRET) return json({ key, uploadUrl, token: null, expiry });
-      const token = await signUploadToken(key, expiry, env.UPLOAD_SECRET);
+      const upSecret = await getAppSecret(env, "upload"); // always on, even if UPLOAD_SECRET was never configured
+      const token = await signUploadToken(key, expiry, upSecret);
       return json({ key, uploadUrl, token, expiry });
     }
 
@@ -338,13 +574,13 @@ async function handleRequest(request, env) {
     if (method === "PUT" && path.startsWith("/upload/")) {
       const key = decodeURIComponent(path.replace("/upload/", ""));
       if (!key) return err("Missing filename", 400);
-      if (env.UPLOAD_SECRET) {
+      { // uploads ALWAYS need a valid signed ticket (nobody can write to storage without signing in first)
         const token = request.headers.get("X-Upload-Token");
         const expiry = Number(request.headers.get("X-Upload-Expiry") || 0);
         if (!token || !expiry) return err("Unauthorized", 401);
         if (expiry < Date.now()) return err("Upload authorization expired", 401);
-        const expected = await signUploadToken(key, expiry, env.UPLOAD_SECRET);
-        if (token !== expected) return err("Unauthorized", 401);
+        const expected = await signUploadToken(key, expiry, await getAppSecret(env, "upload"));
+        if (!safeEq(token, expected)) return err("Unauthorized", 401);
       }
       const upType = pickUploadType(request.headers.get("Content-Type"), key);
       if (!upType) return err("Only video and image files can be uploaded", 415);
@@ -407,7 +643,8 @@ async function handleRequest(request, env) {
       return new Response(obj.body, { status: 206, headers });
     }
     if (method === "DELETE" && path.startsWith("/file/")) {
-      if (env.UPLOAD_SECRET && request.headers.get("X-Upload-Secret") !== env.UPLOAD_SECRET) return err("Unauthorized", 401);
+      // deleting stored files is admin-only through the server secret; the app itself never needs this route
+      if (!env.UPLOAD_SECRET || !safeEq(request.headers.get("X-Upload-Secret") || "", String(env.UPLOAD_SECRET))) return err("Unauthorized", 401);
       const key = decodeURIComponent(path.replace("/file/", ""));
       await env.NOOR_BUCKET.delete(key);
       return json({ ok: true });
@@ -425,12 +662,14 @@ async function handleRequest(request, env) {
       if (name.trim().length < 1 || name.length > 60) return err("Name must be 1-60 characters");
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 254) return err("Enter a valid email address");
       if (password.length < 6 || password.length > 200) return err("Password must be at least 6 characters");
+      if (await signupBlocked(db, env, request)) return err("Too many accounts were created from this network recently. Please try again later.", 429);
       const existing = await db.prepare("SELECT id FROM users WHERE email = ?").bind(email.toLowerCase()).first();
       if (existing) return err("An account with this email already exists");
       const { hash, salt } = await hashPassword(password);
       const id = uid("u");
       await db.prepare("INSERT INTO users (id, name, email, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)")
         .bind(id, name, email.toLowerCase(), hash, salt).run();
+      await recordSignup(db, env, request);
       const token = crypto.randomUUID();
       await createSession(db, token, id);
       const user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
@@ -641,6 +880,48 @@ async function handleRequest(request, env) {
         pendingRequest: pend ? { id: pend.id, amountUsd: pend.amount_cents / 100, createdAt: pend.created_at } : null,
         lastRequest: last ? { status: last.status, amountUsd: last.amount_cents / 100, resolvedAt: last.resolved_at, note: last.note || "" } : null });
     }
+    // ----- creator: Studio dashboard data (READ-ONLY: one call, only the signed-in creator's OWN content) -----
+    // Realtime numbers come from view_log, which already keeps every counted view for 48 hours.
+    if (method === "GET" && path === "/api/me/studio") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (u.role === "guest") return err("Sign in to use Studio", 403);
+      try {
+        const now = Date.now(), H = 3600000;
+        const vids = await db.prepare("SELECT id, title, thumbnail, file_url, views, likes, dislikes, duration, monetized, hidden, copyright_status, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'video' AND target_id = videos.id) AS comments, (SELECT COUNT(*) FROM saved_videos WHERE video_id = videos.id) AS saves FROM videos WHERE owner_id = ? AND removed = 0 ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
+        const rls = await db.prepare("SELECT id, title, thumbnail, file_url, views, likes, hidden, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'reel' AND target_id = reels.id) AS comments FROM reels WHERE owner_id = ? ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
+        const fc = await db.prepare("SELECT COUNT(*) AS c FROM follows WHERE followee_id = ?").bind(u.id).first();
+        const cutoff = new Date(now - 62 * 24 * H).toISOString().slice(0, 10);
+        const rv = await db.prepare("SELECT COALESCE(SUM(views), 0) AS v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
+        let rt = null;
+        try {
+          await ensureViewTables(db);
+          const lg = await db.prepare("SELECT kind, content_id, ts, viewer FROM view_log WHERE ts > ? AND ((kind = 'v' AND content_id IN (SELECT id FROM videos WHERE owner_id = ? AND removed = 0)) OR (kind = 'r' AND content_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY ts DESC LIMIT 30000").bind(now - 48 * H, u.id, u.id).all();
+          const mk = () => ({ m60: new Array(60).fill(0), h48: new Array(48).fill(0) });
+          const series = { all: mk(), v: mk(), r: mk() }, per = {}, uniq = new Set();
+          for (const x of lg.results) {
+            const age = now - x.ts;
+            if (age < 0) continue;
+            const hi = 47 - Math.min(47, Math.floor(age / H));
+            const mi = age < H ? 59 - Math.min(59, Math.floor(age / 60000)) : -1;
+            const key = x.kind + ":" + x.content_id;
+            if (!per[key]) per[key] = mk();
+            for (const t of [series.all, series[x.kind], per[key]]) { t.h48[hi]++; if (mi >= 0) t.m60[mi]++; }
+            uniq.add(x.viewer);
+          }
+          rt = { series, perContent: per, uniqueViewers48h: uniq.size };
+        } catch (_) { rt = null; }
+        const cm = await db.prepare("SELECT comments.id AS id, comments.target_type AS type, comments.target_id AS tid, comments.text AS text, comments.created_at AS at, users.name AS name, users.avatar_color AS color FROM comments JOIN users ON users.id = comments.user_id WHERE comments.user_id != ? AND ((comments.target_type = 'video' AND comments.target_id IN (SELECT id FROM videos WHERE owner_id = ?)) OR (comments.target_type = 'reel' AND comments.target_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY comments.created_at DESC LIMIT 30").bind(u.id, u.id, u.id).all();
+        return json({
+          ok: true, now, followers: (fc && fc.c) || 0, watchHours: u.watch_hours || 0, reelViews62d: (rv && rv.v) || 0,
+          need: { followers: 1000, watchHours: 3000, reelViews: 2500000 },
+          videos: vids.results.map(v => ({ id: v.id, title: v.title, thumbnail: v.thumbnail, fileUrl: v.file_url, views: v.views || 0, likes: v.likes || 0, dislikes: v.dislikes || 0, duration: v.duration, monetized: !!v.monetized, hidden: !!v.hidden, copyrightStatus: v.copyright_status, uploadedAt: v.uploaded_at, comments: v.comments || 0, saves: v.saves || 0 })),
+          reels: rls.results.map(r => ({ id: r.id, title: r.title, thumbnail: r.thumbnail, fileUrl: r.file_url, views: r.views || 0, likes: r.likes || 0, hidden: !!r.hidden, uploadedAt: r.uploaded_at, comments: r.comments || 0 })),
+          rt,
+          comments: cm.results.map(c => ({ id: c.id, type: c.type, targetId: c.tid, text: c.text, at: c.at, name: c.name, color: c.color })),
+        });
+      } catch (_) { return err("Studio data unavailable", 500); }
+    }
     // ----- creator: request a withdrawal of the full unpaid balance (needs minimum + payout details) -----
     if (method === "POST" && path === "/api/me/withdraw") {
       const u = await currentUser(request, env);
@@ -660,6 +941,118 @@ async function handleRequest(request, env) {
           .bind(id, u.id, e.c.creator, e.totals.v, e.totals.r, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now()).run();
       } catch (_) { return err("You already have a withdrawal request pending", 409); }
       return json({ ok: true, id, amountUsd: e.c.creator / 100 });
+    }
+    // ----- admin: find (and optionally remove) duplicate uploads that already exist -----
+    if (method === "POST" && path === "/api/admin/scan-duplicates") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      if (!(await ensureCopyrightColumns(db))) return err("Could not prepare the database for duplicate scanning", 500);
+      const body = await request.json().catch(() => ({}));
+      const apply = body && body.apply === true;
+      // 1) read the storage checksum of older uploads that do not have one yet (small batches, repeat the scan until "remaining" is 0)
+      let scanned = 0;
+      const todo = [];
+      const vOld = await db.prepare("SELECT id, file_url FROM videos WHERE file_etag IS NULL AND file_url IS NOT NULL AND file_url != '' LIMIT 15").all();
+      (vOld.results || []).forEach((r) => todo.push({ t: "videos", id: r.id, url: r.file_url }));
+      const rOld = await db.prepare("SELECT id, file_url FROM reels WHERE file_etag IS NULL AND file_url IS NOT NULL AND file_url != '' LIMIT 15").all();
+      (rOld.results || []).forEach((r) => todo.push({ t: "reels", id: r.id, url: r.file_url }));
+      for (const it of todo) {
+        const et = await storedFileEtag(env, it.url);
+        await db.prepare("UPDATE " + it.t + " SET file_etag = ? WHERE id = ?").bind(et || "-", it.id).run();
+        scanned++;
+      }
+      const remV = await db.prepare("SELECT COUNT(*) AS n FROM videos WHERE file_etag IS NULL AND file_url IS NOT NULL AND file_url != ''").first();
+      const remR = await db.prepare("SELECT COUNT(*) AS n FROM reels WHERE file_etag IS NULL AND file_url IS NOT NULL AND file_url != ''").first();
+      const remaining = ((remV && remV.n) || 0) + ((remR && remR.n) || 0);
+      // 2) group everything that shares a checksum or fingerprint
+      const all = await db.prepare(
+        "SELECT kind, id, owner_id, title, file_etag, fingerprint, uploaded_at, removed, hidden, name, dup_of FROM (" +
+        "SELECT 'v' AS kind, videos.id AS id, videos.owner_id AS owner_id, videos.title AS title, videos.file_etag AS file_etag, videos.fingerprint AS fingerprint, videos.uploaded_at AS uploaded_at, videos.removed AS removed, videos.hidden AS hidden, users.name AS name, videos.dup_of AS dup_of FROM videos JOIN users ON users.id = videos.owner_id " +
+        "UNION ALL " +
+        "SELECT 'r', reels.id, reels.owner_id, reels.title, reels.file_etag, reels.fingerprint, reels.uploaded_at, 0, reels.hidden, users.name, reels.dup_of FROM reels JOIN users ON users.id = reels.owner_id" +
+        ") WHERE (file_etag IS NOT NULL AND file_etag NOT IN ('-', '')) OR fingerprint IS NOT NULL ORDER BY uploaded_at ASC, id ASC LIMIT 5000"
+      ).all();
+      const rows = all.results || [];
+      const found = {}; // id -> { row, original }
+      for (const keyName of ["file_etag", "fingerprint"]) {
+        const groups = {};
+        rows.forEach((r) => { const k = r[keyName]; if (k && k !== "-") (groups[k] = groups[k] || []).push(r); });
+        Object.values(groups).forEach((g) => {
+          if (g.length < 2) return;
+          const orig = g.find((r) => !r.dup_of) || g[0]; // the oldest upload that is not itself a claimed copy is the original
+          g.filter((r) => r !== orig).forEach((r) => { if (r.owner_id !== orig.owner_id && !r.removed && !r.hidden && !found[r.kind + r.id]) found[r.kind + r.id] = { row: r, original: orig }; });
+        });
+      }
+      const list = Object.values(found).map((f) => ({ kind: f.row.kind === "v" ? "video" : "reel", id: f.row.id, title: f.row.title, owner: f.row.name, ownerId: f.row.owner_id, originalTitle: f.original.title, originalOwner: f.original.name, originalId: f.original.id }));
+      let removedCount = 0;
+      if (apply) {
+        for (const f of list) {
+          if (f.kind === "video") await db.prepare("UPDATE videos SET removed = 1, monetized = 0, copyright_status = 'claimed', dup_of = ? WHERE id = ?").bind(f.originalId, f.id).run();
+          else await db.prepare("UPDATE reels SET hidden = 1, dup_of = ? WHERE id = ?").bind(f.originalId, f.id).run();
+          try { await addNotification(db, f.ownerId, "copyright", "Copyright Claim — " + (f.kind === "video" ? "Video" : "Reel") + " Removed", `Your ${f.kind} "${f.title}" is a copy of content already uploaded by another channel ("${f.originalOwner}"), so it was removed.`); } catch (_) {}
+          removedCount++;
+        }
+      }
+      return json({ ok: true, scannedNow: scanned, remaining, duplicates: list, removed: removedCount, applied: apply });
+    }
+    // ----- admin: create / delete a TEST monetized creator account (random password, shown once) -----
+    if (method === "POST" && path === "/api/admin/demo-account") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      const body = await request.json().catch(() => ({}));
+      const DEMO_EMAIL = "demo.creator@noortube.test";
+      await ensurePayoutTables(db);
+      try { await ensureWithdrawTable(db); } catch (_) {}
+      const old = await db.prepare("SELECT id FROM users WHERE email = ?").bind(DEMO_EMAIL).first();
+      if (old) { // remove the previous demo account completely (same clean-up as deleting a user)
+        const t = old.id;
+        const dels = [
+          db.prepare("DELETE FROM comments WHERE user_id = ? OR target_id IN (SELECT id FROM videos WHERE owner_id = ?) OR target_id IN (SELECT id FROM reels WHERE owner_id = ?)").bind(t, t, t),
+          db.prepare("DELETE FROM video_likes WHERE user_id = ?").bind(t), db.prepare("DELETE FROM reel_likes WHERE user_id = ?").bind(t),
+          db.prepare("DELETE FROM saved_videos WHERE user_id = ?").bind(t), db.prepare("DELETE FROM watch_history WHERE user_id = ?").bind(t),
+          db.prepare("DELETE FROM notifications WHERE user_id = ?").bind(t), db.prepare("DELETE FROM follows WHERE follower_id = ? OR followee_id = ?").bind(t, t),
+          db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(t), db.prepare("DELETE FROM anon_sessions WHERE user_id = ?").bind(t),
+          db.prepare("DELETE FROM videos WHERE owner_id = ?").bind(t), db.prepare("DELETE FROM reels WHERE owner_id = ?").bind(t),
+          db.prepare("DELETE FROM statuses WHERE owner_id = ?").bind(t),
+          db.prepare("DELETE FROM payout_records WHERE user_id = ?").bind(t), db.prepare("DELETE FROM withdraw_requests WHERE user_id = ?").bind(t),
+          db.prepare("DELETE FROM users WHERE id = ?").bind(t),
+        ];
+        await db.batch(dels);
+      }
+      if (body.action === "delete") return json({ ok: true, deleted: !!old });
+      const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      const rnd = crypto.getRandomValues(new Uint8Array(12));
+      const password = Array.from(rnd, (b) => alphabet[b % alphabet.length]).join("");
+      const { hash, salt } = await hashPassword(password);
+      const id = uid("u");
+      await db.prepare("INSERT INTO users (id, name, email, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)").bind(id, "Demo Creator (TEST)", DEMO_EMAIL, hash, salt).run();
+      await db.prepare("UPDATE users SET monetization_enabled = 1, watch_hours = ?, avatar_color = ?, payout_method = ?, payout_account_name = ?, payout_account_number = ?, payout_routing_code = ? WHERE id = ?")
+        .bind(3500, "#0d9488", "upi", "Demo Creator", "democreator@upi", "", id).run();
+      const SAMPLE = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
+      const vids = [
+        ["[DEMO] Surah Ar-Rahman — Beautiful Recitation", "Quran", "Surah/Qirat", 310000, 5200],
+        ["[DEMO] The Importance of Salah — Lecture", "Lecture", "Takreer", 180000, 3100],
+        ["[DEMO] Story of Prophet Yusuf (AS)", "Stories", "Takreer", 95000, 1900],
+      ];
+      for (let i = 0; i < vids.length; i++) {
+        const [title, cat, mix, views, likes] = vids[i];
+        const vid = uid("v");
+        await db.prepare(`INSERT INTO videos (id, owner_id, title, description, tags, category, mix_category, source_type, youtube_id, file_url, thumbnail, duration, trim_start, trim_end, monetized, copyright_status, removed, content_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(vid, id, title, "Demo video for testing the monetized creator account. It will be deleted with the demo account.", JSON.stringify(["demo"]), cat, mix, "gallery", null, SAMPLE, `https://picsum.photos/seed/noordemo${i + 1}/640/360`, "0:06", null, null, 1, "clear", 0, null).run();
+        await db.prepare("UPDATE videos SET views = ?, likes = ? WHERE id = ?").bind(views, likes, vid).run();
+      }
+      const rls = [["[DEMO] Short reminder 1", 420000, 6100], ["[DEMO] Short reminder 2", 260000, 3300]];
+      for (let i = 0; i < rls.length; i++) {
+        const [title, views, likes] = rls[i];
+        const rid = uid("r");
+        await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end, mix_category) VALUES (?,?,?,?,?,?,?,?,?)")
+          .bind(rid, id, title, JSON.stringify(["demo"]), SAMPLE, `https://picsum.photos/seed/noordemoreel${i + 1}/200/350`, null, null, "Naat").run();
+        await db.prepare("UPDATE reels SET views = ?, likes = ? WHERE id = ?").bind(views, likes, rid).run();
+      }
+      const S = await getPayoutSettings(db);
+      const e = await computeEarnings(db, id, S);
+      return json({ ok: true, email: DEMO_EMAIL, password, name: "Demo Creator (TEST)", videos: vids.length, reels: rls.length, creatorEarningsUsd: e.c.creator / 100, minWithdrawUsd: WITHDRAW_MIN_CENTS / 100 });
     }
     // ----- admin: pending withdrawal requests -----
     if (method === "GET" && path === "/api/admin/withdraw-requests") {
@@ -809,7 +1202,7 @@ async function handleRequest(request, env) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
       const rows = await db.prepare(
-        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id ORDER BY videos.uploaded_at DESC LIMIT 500"
+        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id ORDER BY videos.uploaded_at DESC LIMIT 500"
       ).all();
       return json({ videos: rows.results.map(videoOut) });
     }
@@ -826,7 +1219,7 @@ async function handleRequest(request, env) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
       const rows = await db.prepare(
-        "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id ORDER BY reels.uploaded_at DESC LIMIT 500"
+        "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id ORDER BY reels.uploaded_at DESC LIMIT 500"
       ).all();
       return json({ reels: rows.results.map(reelOut) });
     }
@@ -851,6 +1244,7 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/admin/feedback") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureFeedbackColumns(db); } catch (_) {}
       const rows = await db.prepare("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 200").all();
       return json({ feedback: rows.results.map(f => ({ id: f.id, userId: f.user_id, name: f.name, email: f.email, message: f.message, reply: f.reply, repliedAt: f.replied_at, createdAt: f.created_at })) });
     }
@@ -861,6 +1255,7 @@ async function handleRequest(request, env) {
       if (!reply || !reply.trim()) return err("Reply message is required");
       const fbRow = await db.prepare("SELECT * FROM feedback WHERE id = ?").bind(m[1]).first();
       if (!fbRow) return err("Feedback not found", 404);
+      await ensureFeedbackColumns(db);
       await db.prepare("UPDATE feedback SET reply = ?, replied_at = datetime('now') WHERE id = ?").bind(reply.trim(), m[1]).run();
       if (fbRow.user_id) {
         await addNotification(db, fbRow.user_id, "info", "Reply to your feedback", reply.trim());
@@ -944,13 +1339,13 @@ async function handleRequest(request, env) {
     // ---------- VIDEOS ----------
     if (method === "GET" && path === "/api/videos") {
       const rows = await db.prepare(
-        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.removed = 0 AND videos.hidden = 0 ORDER BY videos.uploaded_at DESC LIMIT 200"
+        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.removed = 0 AND videos.hidden = 0 ORDER BY videos.uploaded_at DESC LIMIT 200"
       ).all();
       return json({ videos: rows.results.map(videoOut) });
     }
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)$/))) {
       const v = await db.prepare(
-        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.id = ?"
+        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.id = ?"
       ).bind(m[1]).first();
       if (!v) return err("Video not found", 404);
       return json({ video: videoOut(v) });
@@ -969,6 +1364,14 @@ async function handleRequest(request, env) {
         ).bind(b.contentHash, u.id).first();
         if (dup) { removed = 1; monetized = 0; copyrightStatus = "claimed"; dupOwnerName = dup.owner_name; }
       }
+      const crReady = b.sourceType !== "youtube" && await ensureCopyrightColumns(db);
+      const vFp = crReady ? cleanFingerprint(b.fingerprint) : null;
+      const vEtag = crReady ? await storedFileEtag(env, b.fileUrl) : null;
+      let vDupOf = null;
+      if (crReady && !removed && (vFp || vEtag)) {
+        const d2 = await findDuplicateOwner(db, { fingerprint: vFp, etag: vEtag, ownerId: u.id });
+        if (d2) { removed = 1; monetized = 0; copyrightStatus = "claimed"; dupOwnerName = d2.ownerName; vDupOf = d2.id; }
+      }
       const id = uid("v");
       await db.prepare(
         `INSERT INTO videos (id, owner_id, title, description, tags, category, mix_category, source_type, youtube_id, file_url, thumbnail, duration, trim_start, trim_end, monetized, copyright_status, removed, content_hash)
@@ -976,6 +1379,7 @@ async function handleRequest(request, env) {
       ).bind(id, u.id, b.title, b.description || "", JSON.stringify(b.tags || []), b.category || null, b.mixCategory || null,
         b.sourceType, b.youtubeId || null, b.fileUrl || null, b.thumbnail || null, b.duration || null,
         b.trimStart ?? null, b.trimEnd ?? null, monetized, copyrightStatus, removed, b.contentHash || null).run();
+      if (vFp || vEtag) { try { await db.prepare("UPDATE videos SET fingerprint = ?, file_etag = ?, dup_of = ? WHERE id = ?").bind(vFp, vEtag, vDupOf, id).run(); } catch (_) {} }
       let suspended = false;
       if (removed) {
         const newStrikes = (u.strikes || 0) + 1;
@@ -1002,11 +1406,8 @@ async function handleRequest(request, env) {
       await db.prepare("DELETE FROM videos WHERE id = ?").bind(m[1]).run();
       return json({ ok: true });
     }
-    if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/view$/))) {
-      await db.prepare("UPDATE videos SET views = views + 1 WHERE id = ?").bind(m[1]).run();
-      const u = await currentUser(request, env);
-      if (u) await db.prepare("INSERT OR REPLACE INTO watch_history (user_id, video_id, watched_at) VALUES (?, ?, datetime('now'))").bind(u.id, m[1]).run();
-      return json({ ok: true });
+    if (method === "POST" && (m = path.match(/^\/api\/(videos|reels)\/([^/]+)\/view(-start)?$/))) {
+      return await handleViewRoute(m[1] === "videos" ? "v" : "r", m[2], m[3] ? "start" : "count", request, env, db);
     }
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/like$/))) {
       const u = await currentUserOrGuest(request, env);
@@ -1063,7 +1464,7 @@ async function handleRequest(request, env) {
     // ---------- REELS ----------
     if (method === "GET" && path === "/api/reels") {
       const rows = await db.prepare(
-        "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id WHERE reels.hidden = 0 ORDER BY reels.uploaded_at DESC LIMIT 200"
+        "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id WHERE reels.hidden = 0 ORDER BY reels.uploaded_at DESC LIMIT 200"
       ).all();
       return json({ reels: rows.results.map(reelOut) });
     }
@@ -1073,10 +1474,21 @@ async function handleRequest(request, env) {
       if (u.suspended) return err("Your account is suspended. Uploads are not allowed.", 403);
       const b = await request.json().catch(() => ({}));
       if (!b.title) return err("Title is required");
+      const rReady = await ensureCopyrightColumns(db);
+      const rFp = rReady ? cleanFingerprint(b.fingerprint) : null;
+      const rEtag = rReady ? await storedFileEtag(env, b.fileUrl) : null;
+      let rDup = null;
+      if (rReady && (rFp || rEtag)) rDup = await findDuplicateOwner(db, { fingerprint: rFp, etag: rEtag, ownerId: u.id });
       const id = uid("r");
       await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end, mix_category) VALUES (?,?,?,?,?,?,?,?,?)")
         .bind(id, u.id, b.title, JSON.stringify(b.tags || []), b.fileUrl || null, b.thumbnail || null, b.trimStart ?? null, b.trimEnd ?? null, b.mixCategory || null).run();
-      return json({ ok: true, id });
+      if (rFp || rEtag) { try { await db.prepare("UPDATE reels SET fingerprint = ?, file_etag = ?, dup_of = ? WHERE id = ?").bind(rFp, rEtag, rDup ? rDup.id : null, id).run(); } catch (_) {} }
+      let rSuspended = false;
+      if (rDup) { // a copy of another creator's reel: hidden right away + strike, same policy as videos
+        await db.prepare("UPDATE reels SET hidden = 1 WHERE id = ?").bind(id).run();
+        rSuspended = await applyCopyrightStrike(db, u, "Reel", b.title, rDup.ownerName);
+      }
+      return json({ ok: true, id, removed: !!rDup, suspended: rSuspended });
     }
     if (method === "DELETE" && (m = path.match(/^\/api\/reels\/([^/]+)$/))) {
       const u = await currentUser(request, env);
@@ -1085,10 +1497,6 @@ async function handleRequest(request, env) {
       if (!rl) return err("Reel not found", 404);
       if (rl.owner_id !== u.id && u.role !== "admin") return err("Not allowed", 403);
       await db.prepare("DELETE FROM reels WHERE id = ?").bind(m[1]).run();
-      return json({ ok: true });
-    }
-    if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/view$/))) {
-      await db.prepare("UPDATE reels SET views = views + 1 WHERE id = ?").bind(m[1]).run();
       return json({ ok: true });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/like$/))) {

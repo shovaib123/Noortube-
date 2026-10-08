@@ -246,7 +246,7 @@ button.check{width:100%;text-align:left;background:var(--surface)}
   fetch(API+'/api/me',{headers:{Authorization:'Bearer '+tok},cache:'no-store'})
     .then(function(r){return r.json().then(function(d){return{ok:r.ok,status:r.status,d:d};},function(){return{ok:r.ok,status:r.status,d:null};});})
     .then(function(x){
-      if(x.ok&&x.d&&x.d.user&&x.d.user.role==='admin'){g.parentNode.removeChild(g);}
+      if(x.ok&&x.d&&x.d.user&&x.d.user.role==='admin'){window.NT_ME=x.d.user;g.parentNode.removeChild(g);try{window.dispatchEvent(new Event('nt-me'))}catch(e){}}
       else if(x.status===401){deny('Please sign in again','Your session has expired. Sign in to NoorTube and open Admin Panel again.','Sign in to NoorTube','/login');}
       else{deny('Admins only','This account does not have admin access.','Back to NoorTube','/');}
     })
@@ -488,7 +488,7 @@ const ring=(pct,sub)=>{const r=54,c=2*Math.PI*r,p=Math.min(pct,100);
 let UI={},pendingQ='';
 const freshUI=()=>({q:'',tab:'all',cat:'all',status:'all',sel:new Set(),range:7});
 UI=freshUI();
-const route=()=>location.hash.replace(/^#\/?/,'')||'dashboard';
+const route=()=>location.hash.replace(/^#\/?/,'')||'l-users';
 const go=(id,q)=>{pendingQ=q||'';if(route()===id){UI=freshUI();UI.q=pendingQ;pendingQ='';render(true)}else location.hash='#/'+id};
 const layer=()=>$('#layer');
 const closeModal=()=>{layer().innerHTML=''};
@@ -517,10 +517,10 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'Content',['moderation','Moderation queue','shield'],['videos','Videos','video'],['reels','Islamic reels','reel'],['live','Live streams','live'],['categories','Categories','folder'],
+const NAV=['NoorTube app (live data)',['l-users','User stats','users'],['l-monet','Monetized channels','crown'],['l-pay','Payouts','wallet'],['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],['l-tools','Tools','sliders'],'Preview (sample data)',['dashboard','Dashboard','dash'],'Content',['moderation','Moderation queue','shield'],['videos','Videos','video'],['reels','Islamic reels','reel'],['live','Live streams','live'],['categories','Categories','folder'],
  'People',['creators','Creators & scholars','usercheck'],['users','All users','users'],'Money',['donations','Sadaqah & donations','heart'],['memberships','Memberships','crown'],['payouts','Creator payouts','wallet'],['ads','Halal ads','mega'],
  'System',['analytics','Analytics','chart'],['notifications','Push notifications','bell'],['settings','Settings & branding','sliders'],['audit','Audit log','history']];
-const badge=id=>id==='moderation'?S.queue.length:id==='payouts'?S.payouts.filter(p=>p.status==='pending').length:0;
+const badge=id=>id==='l-pay'?reqBadge():id==='moderation'?S.queue.length:id==='payouts'?S.payouts.filter(p=>p.status==='pending').length:0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
 const V={};
@@ -794,7 +794,7 @@ V.audit=()=>{const list=S.audit.filter(x=>(UI.tab==='all'||x.tone===UI.tab)&&mat
   tabs('tab',[['all','All'],['green','Approvals'],['rose','Rejections & bans'],['blue','Edits'],['amber','Payments']])+
   `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Admin</th><th>Item</th><th>When</th></tr></thead><tbody>${list.map(x=>`<tr><td>${chip(x.action,x.tone)}</td><td>${esc(x.admin)}</td><td class="muted">${esc(x.entity)}</td><td class="muted" title="${new Date(x.at).toLocaleString()}">${ago(x.at)}</td></tr>`).join('')}</tbody></table></div>${list.length?'':empty('Nothing logged yet','Actions you take will show up here.')}</div>`};
 /* ============ render ============ */
-const render=(top)=>{const id=V[route()]?route():'dashboard',view=$('#view'),pos=view.scrollTop,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
+const render=(top)=>{const id=V[route()]?route():'l-users',view=$('#view'),pos=view.scrollTop,fk=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.keep;
   view.innerHTML=`<div class="in">${V[id]()}</div>`;renderNav();view.scrollTop=top?0:pos;
   if(fk){const el=$(`[data-keep="${fk}"]`);if(el){el.focus();const L=el.value.length;try{el.setSelectionRange(L,L)}catch(e){}}}
   document.title=`${TITLES[id]||'Dashboard'} · ${S.settings.appName}`;$('#bell-dot').classList.toggle('hide',!alerts().length)};
@@ -933,6 +933,273 @@ const ACT={
 const updPreview=()=>{const t=$('#ntitle'),m=$('#nmsg');if(!t)return;$('#ptitle').textContent=t.value||'Notification title';$('#pmsg').textContent=m.value||'Your message will appear here.';$('#ncount').textContent=m.value.length};
 
 /* ============ events ============ */
+/* ============ LIVE: real NoorTube data (same endpoints as the old in-app Admin Panel) ============ */
+const NT_API='https://noortube-storage.mk7233624.workers.dev';
+const ntTok=()=>{try{return localStorage.getItem('nt_token')}catch(e){return null}};
+const api=async(path,opts={})=>{
+  const h={'Content-Type':'application/json'},t=ntTok();if(t)h.Authorization='Bearer '+t;
+  const res=await fetch(NT_API+path,Object.assign({cache:'no-store'},opts,{headers:h}));
+  let d=null;try{d=await res.json()}catch(e){}
+  if(!res.ok){const e=new Error(d&&d.error?d.error:'Request failed ('+res.status+')');e.status=res.status;throw e}
+  return d||{}};
+const LIVE={d:{},busy:null,pf:null,drafts:{},cp:null,cpMap:{},pmsg:'',rmsg:'',fol:{},folStarted:false,
+  scan:{busy:false,res:null,err:''},demo:{busy:false,res:null,err:'',deleted:false}};
+const SRC={
+  users:()=>api('/api/admin/users').then(r=>r.users||[]),
+  pvideos:()=>api('/api/videos').then(r=>r.videos||[]),
+  preels:()=>api('/api/reels').then(r=>r.reels||[]),
+  pstatus:()=>api('/api/statuses').then(r=>r.statuses||[]),
+  avideos:()=>api('/api/admin/videos').then(r=>r.videos||[]),
+  areels:()=>api('/api/admin/reels').then(r=>r.reels||[]),
+  reports:()=>api('/api/admin/reports').then(r=>r.reports||[]),
+  feedback:()=>api('/api/admin/feedback').then(r=>r.feedback||[]),
+  payouts:()=>api('/api/admin/payouts'),
+  reqs:()=>api('/api/admin/withdraw-requests').then(r=>r.requests||[])};
+const PAGE_KEYS={'l-users':['users','pvideos','preels','pstatus'],'l-monet':['users','pvideos','preels','pstatus'],
+  'l-pay':['payouts','reqs','users','pvideos','pstatus'],'l-videos':['avideos','users','pvideos','pstatus'],'l-reels':['areels','users','pvideos','pstatus'],
+  'l-reports':['reports','users','pvideos','pstatus'],'l-feedback':['feedback','users','pvideos','pstatus'],'l-tools':['users','pvideos','pstatus']};
+const isLive=()=>route().startsWith('l-');
+const load=(key,silent)=>{
+  const prev=LIVE.d[key],keep=silent&&prev&&prev.st==='ok',n=keep?prev:(LIVE.d[key]={st:'loading',data:null,err:''});
+  SRC[key]().then(d=>{n.st='ok';n.data=d;n.err=''})
+    .catch(e=>{n.err=e.message||'Failed';n.status=e.status;if(keep)toast(n.err);else n.st='err'})
+    .finally(()=>{if(isLive())render();else renderNav()});
+  return n};
+const get=key=>LIVE.d[key]||load(key);
+const refreshAll=()=>Object.keys(LIVE.d).forEach(k=>{if(LIVE.d[k].st!=='loading')load(k,true)});
+const kfmt=n=>{n=n||0;return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n)};
+const f2=n=>'$'+(+n||0).toFixed(2);
+const agoS=x=>{const t=new Date(x).getTime();return isNaN(t)?'':ago(t)};
+const meId=()=>(window.NT_ME||{}).id||null;
+const errCard=(s,keys)=>{const auth=s.status===401||s.status===403;
+  return `<div class="card pad empty"><b>Could not load data</b>${esc(auth?'Your session is not valid for admin actions. Sign in to NoorTube again.':s.err)}<div style="margin-top:12px">${auth?'<a class="btn pri" href="/login">Sign in</a>':`<button type="button" class="btn pri" data-act="l-retry" data-keys="${esc(keys.join(','))}">Retry</button>`}</div></div>`};
+const gate=(keys,fn)=>{const st=keys.map(get),bad=st.find(s=>s.st==='err');
+  if(bad)return errCard(bad,keys);
+  if(st.some(s=>s.st!=='ok'))return '<div class="card pad empty"><b>Loading&hellip;</b>Fetching live data from NoorTube.</div>';
+  return fn(...st.map(s=>s.data))};
+const kpi=(l,v)=>`<div class="card kpi"><span class="l">${l}</span><div class="v">${v}</div></div>`;
+const liveKpis=()=>{const u=get('users'),v=get('pvideos'),s=get('pstatus'),ok=x=>x.st==='ok';
+  const views=ok(v)&&ok(s)?kfmt(sum(v.data.map(x=>x.views||0))+sum(s.data.map(x=>x.views||0))):'…';
+  return `<div class="kpis">${kpi('Total users',ok(u)?u.data.length:'…')}${kpi('Total videos',ok(v)?v.data.length:'…')}${kpi('Total views',views)}${kpi('Platform revenue',ok(v)?f2(sum(v.data.map(x=>x.earnings||0))*.45):'…')}</div>`};
+const liveHead=(t,sub,extra='')=>pageH(t,sub,`${extra}<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+liveKpis();
+const avatarOf=(name,color,sz)=>`<span class="avatar" style="width:${sz||30}px;height:${sz||30}px;background:${esc(color||'#0b6b50')};color:#fff">${esc(initials(name||'?'))}</span>`;
+const reqBadge=()=>{const r=LIVE.d.reqs;return r&&r.st==='ok'?r.data.length:0};
+const thr=()=>({min:{minFollowers:1000,minWatchHours:3000,minReelViews2Months:2500000}});
+
+/* ---- User stats ---- */
+const loadFollowers=()=>{
+  const u=LIVE.d.users;if(LIVE.folStarted||!u||u.st!=='ok')return;LIVE.folStarted=true;
+  const q=u.data.map(x=>x.id),total=q.length;let done=0,run=0;
+  const next=()=>{const id=q.shift();if(!id)return;run++;
+    api('/api/users/'+id).then(r=>{LIVE.fol[id]=r.followerCount||0}).catch(()=>{if(LIVE.fol[id]===undefined)LIVE.fol[id]=0})
+      .finally(()=>{run--;done++;if(done%8===0||done===total)if(isLive())render();next()})};
+  for(let k=0;k<6;k++)next()};
+const userRows=(us,vs,rs)=>{const cut=new Date();cut.setMonth(cut.getMonth()-2);
+  return us.map(u=>{const V1=vs.filter(x=>x.ownerId===u.id),R1=rs.filter(x=>x.ownerId===u.id);
+    return{u,vv:sum(V1.map(x=>x.views||0)),rv:sum(R1.map(x=>x.views||0)),
+      r2:sum(R1.filter(x=>new Date(x.uploadedAt)>=cut).map(x=>x.views||0)),fol:LIVE.fol[u.id],earn:sum(V1.map(x=>x.earnings||0))}})};
+V['l-users']=()=>liveHead('User stats','Every NoorTube account with live numbers from the app.')+
+  gate(['users','pvideos','preels'],(us,vs,rs)=>{loadFollowers();
+    const me=meId(),all=userRows(us,vs,rs),rows=all.filter(x=>match(UI.q,x.u.name,x.u.email));
+    return `<div class="row wrap" style="margin-bottom:12px">${searchBox('Search name or email')}<span class="muted sm">${rows.length} of ${all.length} users</span></div>
+    <div class="card"><div class="tbl-wrap"><table style="min-width:1000px"><thead><tr><th>User</th><th>Role</th><th class="right">Watch hours</th><th class="right">Video views</th><th class="right">Reel views</th><th class="right">Reels (2mo)</th><th class="right">Followers</th><th class="right">Earnings</th><th>Monetization</th><th>Strikes</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${rows.length?rows.map(({u,vv,rv,r2,fol,earn})=>`<tr><td><div class="row">${avatarOf(u.name,u.avatarColor)}<div><div class="b">${esc(u.name)}</div><div class="sm muted">${esc(u.email)}</div></div></div></td>
+      <td>${u.role==='admin'?'<span class="b" style="color:var(--accent-t)">admin</span>':esc(u.role)}</td>
+      <td class="right">${(u.watchHours||0).toFixed(1)}h</td><td class="right">${kfmt(vv)}</td><td class="right">${kfmt(rv)}</td>
+      <td class="right"><span class="${r2>=thr().min.minReelViews2Months?'b up':''}">${kfmt(r2)}</span></td>
+      <td class="right">${fol===undefined?'…':kfmt(fol)}</td><td class="right">${f2(earn)}</td>
+      <td>${u.monetizationEnabled?chip('On','green','check'):'<span class="muted sm">Off</span>'}</td>
+      <td>${u.strikes>0?`<span class="b dn">${u.strikes}/3</span>`:'0/3'}</td>
+      <td>${u.suspended?chip('Suspended','rose','ban'):chip('Active','green')}</td>
+      <td>${u.id===me?'<span class="muted sm">(you)</span>':`<div class="row"><button type="button" class="btn sm" data-act="l-susp" data-id="${esc(u.id)}" data-name="${esc(u.name)}" ${LIVE.busy===u.id||!me?'disabled':''}>${u.suspended?'Reactivate':'Deactivate'}</button><button type="button" class="btn sm danger" data-act="l-deluser" data-id="${esc(u.id)}" data-name="${esc(u.name)}" ${LIVE.busy===u.id||!me?'disabled':''}>Delete</button></div>`}</td></tr>`).join(''):`<tr><td colspan="12">${empty('No users found','Try a different search.')}</td></tr>`}
+    </tbody></table></div></div>`});
+
+/* ---- Monetized channels ---- */
+V['l-monet']=()=>liveHead('Monetized channels','Channels that have monetization switched on.')+
+  gate(['users','pvideos','preels'],(us,vs,rs)=>{loadFollowers();
+    const rows=userRows(us,vs,rs).filter(x=>x.u.monetizationEnabled);
+    return rows.length?`<div class="stack">${rows.map(({u,fol,earn})=>`<div class="card pad"><div class="row wrap">${avatarOf(u.name,u.avatarColor,44)}
+      <div class="grow"><div class="b row">${esc(u.name)} ${chip('Monetized ✓','green')}</div><div class="sm muted">${esc(u.email)}</div></div>
+      <div class="row" style="gap:28px;text-align:center"><div><div class="b">${(u.watchHours||0).toFixed(0)}h</div><div class="sm muted">Watch hours</div></div>
+      <div><div class="b">${fol===undefined?'…':kfmt(fol)}</div><div class="sm muted">Followers</div></div>
+      <div><div class="b">${f2(earn)}</div><div class="sm muted">Earnings</div></div></div></div></div>`).join('')}</div>`
+      :`<div class="card">${empty('No monetized channel yet.','Channels appear here once monetization is enabled.')}</div>`});
+
+/* ---- Payouts ---- */
+const copyKey=(k,text)=>{LIVE.cpMap[k]=text;return k};
+const cpBtn=(k,label,text)=>`<button type="button" class="btn sm" data-act="l-copy" data-k="${esc(copyKey(k,text))}">${LIVE.cp===k?'Copied ✓':label}</button>`;
+const mLabel=m=>m==='bank'?'Bank account':m==='paypal'?'PayPal':m==='upi'?'UPI':'Mobile wallet';
+const payLines=pi=>pi?['Name: '+pi.accountName,(pi.method==='upi'?'UPI ID: ':pi.method==='paypal'?'PayPal: ':pi.method==='bank'?'Account: ':'Mobile: ')+pi.accountNumber].concat(pi.method==='bank'&&pi.routingCode?['IFSC/Bank: '+pi.routingCode]:[]):[];
+const payActions=(pi,inr,name,k)=>{
+  if(!pi)return '';
+  const acct=String(pi.accountNumber||'').trim(),ifsc=String(pi.routingCode||'').trim().toUpperCase(),holder=pi.accountName||name,note='NoorTube payout',ok=inr>0;
+  if(pi.method==='upi')return (ok?`<a class="btn pri sm" href="${esc('upi://pay?pa='+encodeURIComponent(acct)+'&pn='+encodeURIComponent(holder)+'&am='+inr.toFixed(2)+'&cu=INR&tn='+encodeURIComponent(note))}">Pay via UPI</a>`:'')+cpBtn(k+'u','Copy UPI ID',acct);
+  if(pi.method==='bank'){
+    const link=ok&&/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)&&/^\d{6,20}$/.test(acct)?'upi://pay?pa='+acct+'@'+ifsc+'.ifsc.npci&pn='+encodeURIComponent(holder)+'&am='+inr.toFixed(2)+'&cu=INR&tn='+encodeURIComponent(note):null;
+    return (link?`<a class="btn pri sm" href="${esc(link)}">Pay to A/C (UPI app)</a>`:'')+cpBtn(k+'a','Copy A/C no.',acct)+(ifsc?cpBtn(k+'i','Copy IFSC',ifsc):'')+cpBtn(k+'n','Copy name',holder)}
+  return cpBtn(k+'c',pi.method==='paypal'?'Copy PayPal email':'Copy number',acct)};
+const pfOk=(t,lo,hi)=>{const n=parseFloat(t);return !isNaN(n)&&n>=lo&&n<=hi};
+const pfCalc=()=>{const d=LIVE.d.payouts.data,L=d.limits,f=LIVE.pf,S=d.settings,
+    o={v:pfOk(f.v,L.vrpm[0],L.vrpm[1]),r:pfOk(f.r,L.rrpm[0],L.rrpm[1]),s:pfOk(f.s,0,100),i:pfOk(f.i,.01,999)};
+  o.dirty=String(S.vrpm)!==f.v||String(S.rrpm)!==f.r||String(S.share)!==f.s||String(S.inr)!==f.i;o.all=o.v&&o.r&&o.s&&o.i;return o};
+const pfHint=(k,o)=>{const L=LIVE.d.payouts.data.limits,f=LIVE.pf;
+  return k==='v'?'Allowed $'+L.vrpm[0].toFixed(2)+' – $'+L.vrpm[1].toFixed(2):k==='r'?'Allowed $'+L.rrpm[0].toFixed(2)+' – $'+L.rrpm[1].toFixed(2):
+    k==='s'?(o.s?'NoorTube keeps '+(100-parseFloat(f.s)).toFixed(0)+'%':'Enter 0 – 100'):'For UPI / bank amounts'};
+const updPf=()=>{if(!LIVE.pf||!LIVE.d.payouts||LIVE.d.payouts.st!=='ok')return;const o=pfCalc();
+  ['v','r','s','i'].forEach(k=>{const h=$('#pf-h-'+k);if(h){h.textContent=pfHint(k,o);h.style.color=o[k]?'':'var(--rose)'}});
+  const b=$('#pf-save');if(b)b.disabled=!(o.dirty&&o.all)||LIVE.busy==='settings'};
+V['l-pay']=()=>{
+  const pend=reqBadge();
+  return liveHead('Payouts','Withdrawal requests, creator earnings and payment details.'+(pend?` <b style="color:var(--rose)">${pend} pending</b>`:''))+
+  gate(['payouts','reqs'],(data,reqs)=>{
+    const S=data.settings,rows=data.rows||[];
+    if(!LIVE.pf)LIVE.pf={v:String(S.vrpm),r:String(S.rrpm),s:String(S.share),i:String(S.inr)};
+    const o=pfCalc(),sumUsd=rows.reduce((a,r)=>a+r.creatorCents,0)/100,sumPlat=rows.reduce((a,r)=>a+r.platformUsd,0);
+    const fld=(label,k,step)=>`<label class="field"><span>${label}</span><input class="inp" type="number" inputmode="decimal" step="${step}" data-pf="${k}" data-keep="pf-${k}" value="${esc(LIVE.pf[k])}" aria-label="${esc(label)}"><small id="pf-h-${k}" style="${o[k]?'':'color:var(--rose)'}" class="muted">${esc(pfHint(k,o))}</small></label>`;
+    const reqCards=reqs.map(q=>{const pi=q.payoutInfo,inr=q.amountUsd*S.inr,lines=payLines(pi);
+      return `<div class="card pad" style="background:var(--surface-2);margin-top:10px"><div class="row between" style="align-items:flex-start;gap:10px"><div style="min-width:0"><div class="b">${esc(q.name)}</div><div class="sm muted" style="word-break:break-all">${esc(q.email)}</div><div class="sm muted">Requested ${esc(new Date(q.createdAt).toLocaleString())}</div></div>
+        <div class="right"><div class="b" style="font-size:18px">${f2(q.amountUsd)}</div><div class="sm muted">₹${inr.toFixed(0)}</div></div></div>
+        ${pi?`<div style="margin-top:10px"><div class="sm muted">${mLabel(pi.method)}</div>${lines.map(l=>`<div style="word-break:break-all">${esc(l)}</div>`).join('')}</div>`:'<div class="sm dn" style="margin-top:10px">No payout details on this request.</div>'}
+        <div class="row wrap" style="margin-top:12px">${pi?cpBtn('rq'+q.id,'Copy details',lines.concat(['Amount: ₹'+inr.toFixed(0)+' ('+f2(q.amountUsd)+')']).join('\n')):''}${payActions(pi,inr,q.name,'rq'+q.id)}
+        <button type="button" class="btn pri sm" data-act="l-reqpaid" data-id="${esc(q.id)}" ${LIVE.busy===q.id?'disabled':''}>${LIVE.busy===q.id?'Please wait…':'Mark as Paid'}</button>
+        <button type="button" class="btn sm" data-act="l-reqreject" data-id="${esc(q.id)}" ${LIVE.busy===q.id?'disabled':''}>Reject</button></div></div>`}).join('');
+    const rowCards=rows.map(r=>{const pi=r.payoutInfo,inr=r.creatorUsd*S.inr,lines=payLines(pi);
+      return `<div class="card pad" style="margin-top:12px"><div class="row between" style="align-items:flex-start;gap:10px"><div style="min-width:0"><div class="b">${esc(r.name)}</div><div class="sm muted" style="word-break:break-all">${esc(r.email)}</div></div>
+        <div class="right"><div class="b" style="font-size:20px">${f2(r.creatorUsd)} (₹${inr.toFixed(0)})</div><div class="sm muted">creator ${esc(S.share)}%</div></div></div>
+        <div class="sm muted" style="margin-top:8px;line-height:1.6"><div>Videos: ${(r.videoViews||0).toLocaleString()} new views × $${esc(S.vrpm)}/1000 = ${f2(r.videoRevenueUsd)}</div>
+        <div>Reels: ${(r.reelViews||0).toLocaleString()} new views × $${esc(S.rrpm)}/1000 = ${f2(r.reelRevenueUsd)}</div>
+        <div>Revenue ${f2((r.videoRevenueUsd||0)+(r.reelRevenueUsd||0))} → NoorTube keeps ${f2(r.platformUsd)}</div>
+        <div>Paid so far: ${f2(r.paidUsd||0)}${r.lastPaidAt?' • last: '+esc(new Date(r.lastPaidAt).toLocaleDateString()):''}</div></div>
+        ${pi?`<div class="card pad-sm" style="background:var(--surface-2);margin-top:12px;box-shadow:none"><div class="sm muted">${mLabel(pi.method)}</div>${lines.map(l=>`<div style="word-break:break-all">${esc(l)}</div>`).join('')}</div>`:'<div class="sm dn" style="margin-top:12px">Payout details not added yet by this creator.</div>'}
+        <div class="row wrap" style="margin-top:12px">${pi?cpBtn('p'+r.id,'Copy details',lines.concat(['Amount: ₹'+inr.toFixed(0)+' ('+f2(r.creatorUsd)+')']).join('\n')):''}${payActions(pi,inr,r.name,'p'+r.id)}
+        ${r.hasPendingRequest?'<span class="sm muted">Has a withdrawal request — handle it above</span>':''}
+        <button type="button" class="btn pri sm" data-act="l-markpaid" data-id="${esc(r.id)}" ${r.creatorCents<=0||LIVE.busy===r.id||r.hasPendingRequest?'disabled':''}>${LIVE.busy===r.id?'Please wait…':'Mark as Paid'}</button></div></div>`}).join('');
+    return `<div class="card pad"><h3>Withdrawal requests${reqs.length?' ('+reqs.length+')':''}</h3>
+      <p class="sm muted" style="margin:4px 0 8px">Creators tap “Request Withdrawal” (minimum $${esc(data.minWithdrawUsd||100)}). Pay them with the details below, then tap “Mark as Paid”. Nothing is deducted until you do.</p>
+      ${LIVE.rmsg?`<div class="sm muted" style="margin-bottom:6px">${esc(LIVE.rmsg)}</div>`:''}${reqs.length?reqCards:'<div class="muted">No pending requests.</div>'}</div>
+    <div class="card pad" style="margin-top:14px"><h3>Creator payouts</h3>
+      <p class="sm muted" style="margin:4px 0 12px">Revenue = (new views ÷ 1000) × rate. Videos and reels have separate rates. The creator gets the share % of that revenue; the rest is NoorTube’s and is shown only here. Creators see only their own earnings. After you pay someone, tap “Mark as Paid”. Amounts below use the saved rates.</p>
+      <div class="grid g2">${fld('Video: $ per 1,000 views','v','0.01')}${fld('Reels: $ per 1,000 views','r','0.01')}${fld('Creator share (%)','s','1')}${fld('₹ per $1 (today’s rate)','i','0.01')}</div>
+      <div class="row wrap" style="margin-top:14px"><button type="button" class="btn pri" id="pf-save" data-act="l-saverates" ${o.dirty&&o.all&&LIVE.busy!=='settings'?'':'disabled'}>${LIVE.busy==='settings'?'Saving…':'Save rates'}</button>${LIVE.pmsg?`<span class="sm muted">${esc(LIVE.pmsg)}</span>`:''}</div>
+      <div style="margin-top:14px">Total to pay creators: <b>${f2(sumUsd)} (₹${(sumUsd*S.inr).toFixed(0)})</b><div class="sm muted">NoorTube share: ${f2(sumPlat)}</div></div></div>
+    ${rows.length?rowCards:`<div class="card" style="margin-top:12px">${empty('No creators yet','Creator earnings will appear here.')}</div>`}`})};
+
+/* ---- Videos / Reels ---- */
+const contentTable=(kind,list)=>{
+  const rows=list.filter(x=>match(UI.q,x.title,x.channel)),k=kind==='video'?'video':'reel';
+  return `<div class="row wrap" style="margin-bottom:12px">${searchBox('Search title or channel')}<span class="muted sm">${rows.length} of ${list.length}</span></div>
+  <div class="card"><div class="tbl-wrap"><table style="min-width:760px"><thead><tr><th>Title</th><th>Channel</th><th>Status</th><th class="right">Views</th><th>Actions</th></tr></thead><tbody>
+  ${rows.length?rows.map(x=>`<tr><td style="max-width:320px"><div class="trunc" title="${esc(x.title)}">${esc(x.title)}</div></td><td>${esc(x.channel)}</td>
+    <td>${x.hidden?chip('Deactivated','rose'):(k==='video'&&x.removed)?chip('Removed (Copyright)','rose'):chip('Active','green')}</td><td class="right">${kfmt(x.views)}</td>
+    <td><div class="row"><button type="button" class="btn sm" data-act="l-hide" data-kind="${k}" data-id="${esc(x.id)}" ${LIVE.busy===x.id?'disabled':''}>${x.hidden?'Reactivate':'Deactivate'}</button>
+    <button type="button" class="btn sm danger" data-act="l-del" data-kind="${k}" data-id="${esc(x.id)}" data-title="${esc(x.title)}" ${LIVE.busy===x.id?'disabled':''}>Delete</button></div></td></tr>`).join(''):`<tr><td colspan="5">${empty('Nothing found','No '+k+'s match.')}</td></tr>`}
+  </tbody></table></div></div>`};
+V['l-videos']=()=>liveHead('All videos','Deactivate (hide) or permanently delete any video.')+gate(['avideos'],l=>contentTable('video',l));
+V['l-reels']=()=>liveHead('All reels','Deactivate (hide) or permanently delete any reel.')+gate(['areels'],l=>contentTable('reel',l));
+
+/* ---- Reports ---- */
+V['l-reports']=()=>liveHead('Reports','Content reported by viewers.')+
+  gate(['reports'],list=>list.length?`<div class="stack">${list.map(rp=>{
+    const t=rp.targetType==='video'?'Video':'Reel',st=rp.status,tone=st==='open'?'amber':st==='resolved'?'green':'gray',b=LIVE.busy===rp.id||LIVE.busy===rp.targetId,
+      kind=rp.targetType==='video'?'video':'reel';
+    return `<div class="card pad"><div class="row" style="align-items:flex-start;gap:12px">
+      ${rp.targetThumbnail?`<img src="${esc(rp.targetThumbnail)}" alt="" style="width:84px;aspect-ratio:16/9;object-fit:cover;border-radius:9px;flex:none" onerror="this.style.display='none'">`:''}
+      <div class="grow"><div class="row between wrap" style="align-items:flex-start"><div><div class="b">${t}: ${esc(rp.targetTitle)}</div><div class="sm muted">Reported by ${esc(rp.reporterName)} · ${esc(agoS(rp.createdAt))}</div></div>${chip(st,tone)}</div></div></div>
+      <p style="margin:12px 0">${esc(rp.reason)}</p>
+      ${rp.targetRemoved?'<div class="sm dn" style="margin-bottom:8px">Content already removed (copyright)</div>':rp.targetHidden?'<div class="sm dn" style="margin-bottom:8px">Content is currently deactivated</div>':''}
+      <div class="row wrap"><button type="button" class="btn sm" data-act="l-ropen" data-type="${esc(rp.targetType)}" data-id="${esc(rp.targetId||'')}" data-url="${esc(rp.targetFileUrl||'')}" ${rp.targetId?'':'disabled'}>Open</button>
+      ${st==='open'?`<button type="button" class="btn sm" data-act="l-rstat" data-id="${esc(rp.id)}" data-s="resolved" ${b?'disabled':''}>Mark Resolved</button>
+        <button type="button" class="btn sm" data-act="l-rstat" data-id="${esc(rp.id)}" data-s="dismissed" ${b?'disabled':''}>Dismiss</button>
+        ${!rp.targetRemoved?`<button type="button" class="btn sm" data-act="l-hide" data-kind="${kind}" data-id="${esc(rp.targetId||'')}" ${b||!rp.targetId?'disabled':''}>${rp.targetHidden?'Reactivate':'Deactivate'}</button>
+        <button type="button" class="btn sm danger" data-act="l-del" data-kind="${kind}" data-id="${esc(rp.targetId||'')}" data-title="${esc(rp.targetTitle)}" ${b||!rp.targetId?'disabled':''}>Delete</button>`:''}`:''}</div></div>`}).join('')}</div>`
+    :`<div class="card">${empty('No reports yet.','Viewer reports will show up here.')}</div>`);
+
+/* ---- Feedback ---- */
+V['l-feedback']=()=>liveHead('Feedback','Messages from users. Replies go back to the sender.')+
+  gate(['feedback'],list=>list.length?`<div class="stack">${list.map(fb=>`<div class="card pad"><div class="row between"><div class="b">${esc(fb.name||'Anonymous')}</div><div class="sm muted">${esc(agoS(fb.createdAt))}</div></div>
+    ${fb.email?`<div class="sm muted">${esc(fb.email)}</div>`:''}<p style="margin:10px 0;white-space:pre-wrap">${esc(fb.message)}</p>
+    ${fb.reply?`<div class="card pad-sm" style="background:var(--surface-2);box-shadow:none"><div class="sm b" style="color:var(--accent-t)">Your reply</div><p style="white-space:pre-wrap">${esc(fb.reply)}</p></div>`
+    :`<div class="row wrap"><input class="inp grow" style="min-width:200px" data-fb="${esc(fb.id)}" data-keep="fb-${esc(fb.id)}" value="${esc(LIVE.drafts[fb.id]||'')}" placeholder="Write a reply..." aria-label="Reply"><button type="button" class="btn pri" data-act="l-fbreply" data-id="${esc(fb.id)}" ${LIVE.busy===fb.id?'disabled':''}>${LIVE.busy===fb.id?'Sending…':'Reply'}</button></div>`}</div>`).join('')}</div>`
+    :`<div class="card">${empty('No feedback yet.','User feedback will show up here.')}</div>`);
+
+/* ---- Tools ---- */
+V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.demo,dr=dm.res;
+  const row=(k,l,v)=>`<div class="card pad-sm row between" style="background:var(--surface-2);box-shadow:none;margin-bottom:8px"><div style="min-width:0"><div class="sm muted">${l}</div><div class="b" style="word-break:break-all">${esc(v)}</div></div>${cpBtn(k,'Copy',v)}</div>`;
+  return liveHead('Tools','Duplicate scan and demo account for testing.')+
+  `<div class="card pad"><h3>Duplicate content scan</h3><p class="sm muted" style="margin:4px 0 12px">Finds videos/reels that are the same file uploaded by a different account. The oldest upload is treated as the original. Scanning only checks; nothing is removed until you press Remove.</p>
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-scan" ${sc.busy?'disabled':''}>${sc.busy?'Please wait…':(r?'Scan again':'Scan for duplicates')}</button>
+    ${dl.length>0&&!r.applied?`<button type="button" class="btn danger" data-act="l-scanapply" ${sc.busy?'disabled':''}>Remove ${dl.length} duplicate${dl.length>1?'s':''}</button>`:''}</div>
+    ${sc.err?`<div class="err">${esc(sc.err)}</div>`:''}
+    ${r?`<div style="margin-top:12px"><div class="sm muted" style="margin-bottom:8px">${(r.scannedNow?'Checked '+r.scannedNow+' older upload(s) now. ':'')+(r.remaining>0?r.remaining+' more still to check — press Scan again. ':'All uploads checked. ')+(r.applied?'Removed '+r.removed+'.':'')}</div>
+    ${dl.length===0&&!r.applied?'<div class="muted">No duplicates found so far.</div>':''}
+    ${dl.map(d=>`<div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;margin-bottom:8px"><div class="b sm">[${esc(d.kind)}] “${esc(d.title)}” by ${esc(d.owner)}</div><div class="sm muted">Copy of “${esc(d.originalTitle)}” by ${esc(d.originalOwner)}</div></div>`).join('')}</div>`:''}</div>
+  <div class="card pad" style="margin-top:14px"><h3>Demo monetized account (for testing)</h3><p class="sm muted" style="margin:4px 0 12px">Creates a test creator who is already monetized, with sample videos, reels, views and payout details, so you can log in and see everything a monetized creator sees (Studio earnings, Request Withdrawal, channel badge). Delete it when you are done: it also removes its content.</p>
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-demo" data-a="create" ${dm.busy?'disabled':''}>${dm.busy?'Please wait…':(dr?'Create again (new password)':'Create demo account')}</button>
+    <button type="button" class="btn" data-act="l-demo" data-a="delete" ${dm.busy?'disabled':''}>Delete demo account</button></div>
+    ${dm.err?`<div class="err">${esc(dm.err)}</div>`:''}${dm.deleted?'<div class="sm muted" style="margin-top:8px">Demo account deleted.</div>':''}
+    ${dr?`<div style="margin-top:12px">${row('de','Email',dr.email)}${row('dp','Password (shown only now)',dr.password)}<div class="sm muted">${esc(dr.videos)} videos + ${esc(dr.reels)} reels created. Earnings: $${Number(dr.creatorEarningsUsd).toFixed(2)} (withdraw minimum $${esc(dr.minWithdrawUsd)}). Log out of the admin account, then sign in with these details.</div></div>`:''}</div>`};
+
+/* ---- actions ---- */
+const lerr=e=>toast((e&&e.message)||'Action failed');
+Object.assign(ACT,{
+ 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
+ 'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
+ 'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
+   const done=()=>{LIVE.cp=k;render();setTimeout(()=>{if(LIVE.cp===k){LIVE.cp=null;render()}},1800)};
+   const fb=()=>{try{const t=document.createElement('textarea');t.value=text;t.style.cssText='position:fixed;opacity:0';document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);done()}catch(e){}};
+   try{navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(text).then(done,fb):fb()}catch(e){fb()}},
+ 'l-susp':el=>{const id=el.dataset.id,name=el.dataset.name,u=(LIVE.d.users.data||[]).find(x=>x.id===id),will=!(u&&u.suspended);
+   const run=async()=>{LIVE.busy=id;render();try{const r=await api('/api/admin/users/'+id+'/suspend',{method:'PATCH'});if(u)u.suspended=r.suspended;toast(r.suspended?name+' deactivated':name+' reactivated')}catch(e){lerr(e)}finally{LIVE.busy=null;render()}};
+   will?confirmBox(`Deactivate <b>${esc(name)}</b>’s channel? They will be notified.`,run,'Deactivate'):run()},
+ 'l-deluser':el=>{const id=el.dataset.id,name=el.dataset.name;
+   confirmBox(`Permanently delete <b>${esc(name)}</b>’s account and all their content? This cannot be undone.`,async()=>{LIVE.busy=id;render();
+     try{await api('/api/admin/users/'+id,{method:'DELETE'});LIVE.d.users.data=LIVE.d.users.data.filter(x=>x.id!==id);toast('Account deleted');refreshAll()}catch(e){lerr(e)}finally{LIVE.busy=null;render()}},'Delete account')},
+ 'l-hide':async el=>{const id=el.dataset.id,kind=el.dataset.kind;if(!id)return;LIVE.busy=id;render();
+   try{await api('/api/admin/'+kind+'s/'+id+'/hide',{method:'PATCH'});toast('Updated');refreshAll()}catch(e){lerr(e)}finally{LIVE.busy=null;render()}},
+ 'l-del':el=>{const id=el.dataset.id,kind=el.dataset.kind,title=el.dataset.title;if(!id)return;
+   confirmBox(`Delete “${esc(title)}” permanently? This cannot be undone.`,async()=>{LIVE.busy=id;render();
+     try{await api('/api/'+kind+'s/'+id,{method:'DELETE'});toast('Deleted');refreshAll()}catch(e){lerr(e)}finally{LIVE.busy=null;render()}},'Delete')},
+ 'l-ropen':el=>{const id=el.dataset.id;if(!id)return;
+   if(el.dataset.type==='video')window.open('/watch/'+encodeURIComponent(id),'_blank');
+   else if(el.dataset.url)window.open(el.dataset.url,'_blank');else toast('Preview not available')},
+ 'l-rstat':async el=>{const id=el.dataset.id;LIVE.busy=id;render();
+   try{await api('/api/admin/reports/'+id,{method:'PATCH',body:JSON.stringify({status:el.dataset.s})});toast('Report '+el.dataset.s);load('reports',true)}catch(e){lerr(e)}finally{LIVE.busy=null;render()}},
+ 'l-fbreply':async el=>{const id=el.dataset.id,text=(LIVE.drafts[id]||'').trim();if(!text){toast('Write a reply first');return}
+   LIVE.busy=id;render();
+   try{await api('/api/admin/feedback/'+id+'/reply',{method:'POST',body:JSON.stringify({reply:text})});delete LIVE.drafts[id];toast('Reply sent');load('feedback',true)}catch(e){toast((e&&e.message)||'Reply failed — please try again')}finally{LIVE.busy=null;render()}},
+ 'l-saverates':async()=>{const f=LIVE.pf;LIVE.busy='settings';LIVE.pmsg='';render();
+   try{await api('/api/admin/payout-settings',{method:'PUT',body:JSON.stringify({vrpm:parseFloat(f.v),rrpm:parseFloat(f.r),share:parseFloat(f.s),inr:parseFloat(f.i)})});LIVE.pmsg='Rates saved';LIVE.pf=null;load('payouts',true)}
+   catch(e){LIVE.pmsg=(e&&e.message)||'Could not save rates'}finally{LIVE.busy=null;render()}},
+ 'l-markpaid':el=>{const id=el.dataset.id,S=LIVE.d.payouts.data.settings,r=LIVE.d.payouts.data.rows.find(x=>x.id===id);if(!r||r.creatorCents<=0)return;
+   confirmBox(`Mark ${f2(r.creatorUsd)} (Rs ${(r.creatorUsd*S.inr).toFixed(0)}) as PAID to <b>${esc(r.name)}</b>? Their balance will reset to $0.00.`,async()=>{LIVE.busy=id;LIVE.pmsg='';render();
+     try{await api('/api/admin/payouts/'+id+'/mark-paid',{method:'POST',body:JSON.stringify({expectedCents:r.creatorCents})});LIVE.pmsg='Marked as paid: '+r.name}
+     catch(e){LIVE.pmsg=(e&&e.message)||'Could not mark as paid'}finally{LIVE.busy=null;load('payouts',true);load('reqs',true);render()}},'Mark as Paid')},
+ 'l-reqpaid':el=>{const id=el.dataset.id,S=LIVE.d.payouts.data.settings,q=LIVE.d.reqs.data.find(x=>x.id===id);if(!q)return;
+   confirmBox(`Have you already sent ${f2(q.amountUsd)} (Rs ${(q.amountUsd*S.inr).toFixed(0)}) to <b>${esc(q.name)}</b>? Tapping the button marks this request as PAID.`,async()=>{LIVE.busy=id;LIVE.rmsg='';render();
+     try{await api('/api/admin/withdraw-requests/'+id+'/mark-paid',{method:'POST',body:'{}'});LIVE.rmsg='Marked as paid: '+q.name}
+     catch(e){LIVE.rmsg=(e&&e.message)||'Could not mark as paid'}finally{LIVE.busy=null;load('payouts',true);load('reqs',true);render()}},'Mark as Paid')},
+ 'l-reqreject':el=>{const id=el.dataset.id,q=LIVE.d.reqs.data.find(x=>x.id===id);if(!q)return;
+   modal({title:'Reject withdrawal request',ok:'Reject',danger:true,body:`<p style="margin-bottom:12px">Reject <b>${esc(q.name)}</b>’s request of <b>${f2(q.amountUsd)}</b>? Their balance stays with them.</p>${field('Reason (optional — the creator will see it)','<textarea class="inp" name="note" rows="3" maxlength="300"></textarea>')}`,
+     onOk:async f=>{const note=(f.get('note')||'').trim();LIVE.busy=id;LIVE.rmsg='';render();
+       try{await api('/api/admin/withdraw-requests/'+id+'/reject',{method:'POST',body:JSON.stringify({note})});LIVE.rmsg='Request rejected: '+q.name}
+       catch(e){LIVE.rmsg=(e&&e.message)||'Could not reject'}finally{LIVE.busy=null;load('payouts',true);load('reqs',true);render()}}})},
+ 'l-scan':async()=>{LIVE.scan.busy=true;LIVE.scan.err='';render();
+   try{LIVE.scan.res=await api('/api/admin/scan-duplicates',{method:'POST',body:JSON.stringify({apply:false})})}catch(e){LIVE.scan.err=(e&&e.message)||'Scan failed'}finally{LIVE.scan.busy=false;render()}},
+ 'l-scanapply':()=>{const n=((LIVE.scan.res||{}).duplicates||[]).length;if(!n)return;
+   confirmBox(`Remove ${n} duplicate upload(s)? The creators will be notified.`,async()=>{LIVE.scan.busy=true;LIVE.scan.err='';render();
+     try{LIVE.scan.res=await api('/api/admin/scan-duplicates',{method:'POST',body:JSON.stringify({apply:true})});refreshAll()}catch(e){LIVE.scan.err=(e&&e.message)||'Scan failed'}finally{LIVE.scan.busy=false;render()}},'Remove')},
+ 'l-demo':el=>{const a=el.dataset.a;
+   const run=async()=>{LIVE.demo.busy=true;LIVE.demo.err='';LIVE.demo.deleted=false;render();
+     try{const r=await api('/api/admin/demo-account',{method:'POST',body:JSON.stringify({action:a})});LIVE.demo.res=a==='create'?r:null;LIVE.demo.deleted=a==='delete';refreshAll()}
+     catch(e){LIVE.demo.err=(e&&e.message)||'Failed'}finally{LIVE.demo.busy=false;render()}};
+   a==='delete'?confirmBox('Delete the demo account and all its demo videos/reels?',run,'Delete'):run()}
+});
+document.addEventListener('input',e=>{const el=e.target;
+  if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
+  else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}});
+window.addEventListener('nt-me',()=>render());
+load('reqs');
+
 document.addEventListener('click',e=>{const pop=$('#pop');if(pop&&!e.target.closest('#pop')&&!e.target.closest('[data-act="bell"]'))pop.remove();
   const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(!fn)return;if(el.tagName==='INPUT')return;fn(el,e)});
 document.addEventListener('change',e=>{const el=e.target;
