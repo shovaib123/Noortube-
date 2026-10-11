@@ -516,8 +516,8 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'Manage (live data)',['l-users','User stats','users'],['l-monet','Monetized channels','crown'],['l-pay','Payouts','wallet'],['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],['l-tools','Tools','sliders']];
-const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():0;
+const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Sadaqah','heart'],['l-sadreq','Sadaqah withdrawals','wallet'],['l-ads','Halal ads','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
+const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
 const V={};
@@ -1138,7 +1138,7 @@ V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.dem
 const lerr=e=>toast((e&&e.message)||'Action failed');
 Object.assign(ACT,{
  'l-refresh-all':()=>{LIVE.folStarted=false;refreshAll();toast('Refreshing…')},
- 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
+ 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
  'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
  'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
    const done=()=>{LIVE.cp=k;render();setTimeout(()=>{if(LIVE.cp===k){LIVE.cp=null;render()}},1800)};
@@ -1192,10 +1192,11 @@ Object.assign(ACT,{
 });
 document.addEventListener('input',e=>{const el=e.target;
   if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
-  else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}});
+  else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}
+  else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}});
 window.addEventListener('nt-me',()=>{paintMe();render()});
 /* ---- Dashboard (real data) ---- */
-const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback'];
+const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback','sad','settings'];
 PAGE_KEYS.dashboard=DKEYS;
 const dOk=k=>LIVE.d[k]&&LIVE.d[k].st==='ok',dData=k=>dOk(k)?LIVE.d[k].data:null;
 const openReports=()=>{const r=dData('reports');return r?r.filter(x=>x.status==='open').length:0};
@@ -1206,17 +1207,15 @@ V.dashboard=()=>{
   DKEYS.forEach(get);
   const U=dData('users'),vs=dData('pvideos'),rs=dData('preels'),ss=dData('pstatus'),pay=dData('payouts'),reqs=dData('reqs'),reps=dData('reports'),fbs=dData('feedback');
   const failed=DKEYS.filter(k=>LIVE.d[k]&&LIVE.d[k].st==='err'),loading=DKEYS.some(k=>LIVE.d[k]&&LIVE.d[k].st==='loading');
-  const dash='–',me=window.NT_ME||{},inr=pay?pay.settings.inr:0;
+  const dash='–',me=window.NT_ME||{},inr=pay?pay.settings.inr:0,SD=dData('sad'),ST=SD?SD.totals:null;
   const owed=pay?sum(pay.rows.map(r=>r.creatorCents))/100:null,plat=pay?sum(pay.rows.map(r=>r.platformUsd)):null;
   const reqSum=reqs?sum(reqs.map(q=>q.amountUsd)):null,open=reps?reps.filter(r=>r.status==='open'):null,unrep=fbs?fbs.filter(f=>!f.reply):null;
   const due=pay?pay.rows.filter(r=>r.creatorCents>0&&!r.hasPendingRequest).sort((a,b)=>b.creatorCents-a.creatorCents):null;
   const vViews=vs?sum(vs.map(x=>x.views||0)):null,rViews=rs?sum(rs.map(x=>x.views||0)):null;
-  const summary=[reqs&&reqs.length?`${reqs.length} withdrawal request${reqs.length>1?'s':''} to pay`:'',open&&open.length?`${open.length} open report${open.length>1?'s':''}`:'',unrep&&unrep.length?`${unrep.length} feedback to reply`:''].filter(Boolean);
+  const summary=[reqs&&reqs.length?`${reqs.length} withdrawal request${reqs.length>1?'s':''} to pay`:'',open&&open.length?`${open.length} open report${open.length>1?'s':''}`:'',unrep&&unrep.length?`${unrep.length} feedback to reply`:'',ST&&ST.awaitingCount?`${ST.awaitingCount} sadaqah to verify`:'',ST&&ST.pendingRequestCount?`${ST.pendingRequestCount} sadaqah withdrawal${ST.pendingRequestCount>1?'s':''}`:''].filter(Boolean);
   const top=(list,label,href)=>`<div class="card"><div class="card-h"><h3>${label}</h3><a class="btn sm" href="#/${href}">View all</a></div>${list?(list.length?[...list].sort((a,b)=>(b.views||0)-(a.views||0)).slice(0,5).map((x,i)=>dRow(`${i+1}. ${esc(x.title)}`,`${esc(x.channel)} · ${kfmt(x.views)} views`,'')).join(''):empty('Nothing yet','')):'<div class="pad muted">Loading…</div>'}</div>`;
   const recent=vs&&rs?[...vs.map(x=>({...x,k:'Video'})),...rs.map(x=>({...x,k:'Reel'}))].sort((a,b)=>new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,6):null;
-  return `<section class="hero lattice" aria-label="Today"><div><div class="ar">السلام عليكم ورحمة الله</div><h2>Assalamu alaikum, ${esc(me.name||'Admin')}</h2>
-    <p style="margin-top:6px">${loading&&!summary.length?'Loading live data…':summary.length?esc(summary.join(' · '))+'.':'Everything is up to date. Nothing needs your attention.'}</p>
-    <p class="sm" style="margin-top:10px;opacity:.8">${esc(hijri().en)}</p></div></section>
+  return `${heroHtml(me,`${loading&&!summary.length?'Loading live data…':summary.length?esc(summary.join(' · '))+'.':'Everything is up to date. Nothing needs your attention.'}`)}
   <div class="row between wrap" style="margin-bottom:12px"><span class="sm muted">${failed.length?`<span class="dn">Could not load: ${esc(failed.join(', '))}. Press Refresh.</span>`:'Live numbers from NoorTube'}</span><button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button></div>
   <div class="kpis k3">
     ${dkp('Total users',U?U.length:dash,U?`${U.filter(u=>u.suspended).length} deactivated`:'','muted','l-users')}
@@ -1228,13 +1227,18 @@ V.dashboard=()=>{
     ${dkp('Withdrawal requests',reqs?reqs.length:dash,reqs?(reqs.length?f2(reqSum)+' waiting':'No pending requests'):'',reqs&&reqs.length?'dn':'muted','l-pay')}
     ${dkp('Open reports',open?open.length:dash,open?(open.length?'Needs review':'All clear'):'',open&&open.length?'dn':'muted','l-reports')}
     ${dkp('Feedback to reply',unrep?unrep.length:dash,unrep?(unrep.length?'Users waiting':'All replied'):'',unrep&&unrep.length?'dn':'muted','l-feedback')}
+    ${dkp('Sadaqah to verify',ST?ST.awaitingCount:dash,ST?(ST.awaitingCount?rp(ST.awaitingPaise)+' claimed':'Nothing to verify'):'',ST&&ST.awaitingCount?'dn':'muted','l-sad')}
+    ${dkp('Sadaqah held',ST?rp(ST.heldPaise):dash,ST?`${rp(ST.receivedPaise)} received · ${rp(ST.paidPaise)} paid out`:'','up','l-sad')}
+    ${dkp('Sadaqah withdrawals',ST?ST.pendingRequestCount:dash,ST?(ST.pendingRequestCount?rp(ST.pendingRequestPaise)+' waiting':'No pending requests'):'',ST&&ST.pendingRequestCount?'dn':'muted','l-sadreq')}
   </div>
   <div class="grid g2" style="margin-bottom:16px">
     <div class="card"><div class="card-h"><h3>Needs your attention</h3></div>
+      ${(SD&&SD.requests||[]).map(q=>dRow(`${esc(q.name)} · ${rp(q.amountPaise)}`,'Sadaqah withdrawal — pay and mark as paid',`<a class="btn pri sm" href="#/l-sadreq">Pay now</a>`)).join('')}
+      ${ST&&ST.awaitingCount?dRow(`${ST.awaitingCount} sadaqah payment${ST.awaitingCount>1?'s':''} to verify`,`${rp(ST.awaitingPaise)} claimed by donors — match with your UPI statement`,`<a class="btn sm" href="#/l-sad">Verify</a>`):''}
       ${(reqs||[]).map(q=>dRow(`${esc(q.name)} · ${f2(q.amountUsd)} (₹${(q.amountUsd*inr).toFixed(0)})`,'Withdrawal request — pay and mark as paid',`<a class="btn pri sm" href="#/l-pay">Pay now</a>`)).join('')}
       ${(open||[]).slice(0,5).map(r=>dRow(`${r.targetType==='video'?'Video':'Reel'}: ${esc(r.targetTitle)}`,esc(r.reason),`<a class="btn sm" href="#/l-reports">Review</a>`)).join('')}
       ${(unrep||[]).slice(0,5).map(f=>dRow(esc(f.name||'Anonymous'),esc(f.message),`<a class="btn sm" href="#/l-feedback">Reply</a>`)).join('')}
-      ${(reqs&&open&&unrep&&!reqs.length&&!open.length&&!unrep.length)?empty('All caught up','No withdrawals, reports or feedback waiting.'):''}</div>
+      ${(reqs&&open&&unrep&&!reqs.length&&!open.length&&!unrep.length&&(!ST||(!ST.awaitingCount&&!ST.pendingRequestCount)))?empty('All caught up','No withdrawals, reports or feedback waiting.'):''}</div>
     <div class="card"><div class="card-h"><h3>Creators with money due</h3><a class="btn sm" href="#/l-pay">Open payouts</a></div>
       ${due?(due.length?due.slice(0,6).map(r=>dRow(esc(r.name),`${f2(r.creatorUsd)} (₹${(r.creatorUsd*inr).toFixed(0)})`+(r.payoutInfo?'':' · no payout details yet'),`<a class="btn pri sm" href="#/l-pay">Pay</a>`)).join(''):empty('Nothing else due','Creators with a pending withdrawal request are listed under “Needs your attention”.')):'<div class="pad muted">Loading…</div>'}</div>
   </div>
@@ -1245,11 +1249,278 @@ V.dashboard=()=>{
 const alerts=()=>{const a=[],q=reqBadge(),o=openReports(),f=newFeedback();
   if(q)a.push([`${q} withdrawal request${q>1?'s':''}`,'Creators waiting to be paid','l-pay','wallet']);
   if(o)a.push([`${o} open report${o>1?'s':''}`,'Review reported content','l-reports','flag']);
-  if(f)a.push([`${f} feedback message${f>1?'s':''} to reply`,'Users are waiting for a reply','l-feedback','send']);return a};
+  if(f)a.push([`${f} feedback message${f>1?'s':''} to reply`,'Users are waiting for a reply','l-feedback','send']);
+  const sa=sadAwaiting(),sq=sadReqCount();
+  if(sa)a.push([`${sa} sadaqah payment${sa>1?'s':''} to verify`,'Match them with your UPI statement','l-sad','heart']);
+  if(sq)a.push([`${sq} sadaqah withdrawal${sq>1?'s':''}`,'Creators waiting to be paid','l-sadreq','wallet']);return a};
 const paintMe=()=>{const u=window.NT_ME,m=$('.me');if(!u||!m)return;m.querySelector('.avatar').textContent=initials(u.name||'A');m.querySelector('.b').textContent=u.name||'Admin';m.querySelector('.sm').textContent=u.email||''};
 ['moderation','videos','reels','live','categories','creators','users','donations','memberships','payouts','ads','analytics','notifications','settings','audit'].forEach(k=>delete V[k]);
 
-load('reqs');load('reports');load('feedback');paintMe();
+/* ---- Sadaqah (live): donors pay YOUR UPI; you confirm each payment; creators withdraw from here ---- */
+SRC.sad=()=>api('/api/admin/sadaqah');
+PAGE_KEYS['l-sad']=['sad'];PAGE_KEYS['l-sadreq']=['sad'];
+LIVE.sdf=null;
+const rp=p=>'₹'+((p||0)/100).toLocaleString('en-IN',{minimumFractionDigits:(p||0)%100?2:0,maximumFractionDigits:2});
+const sadTot=()=>{const s=dData('sad');return s?s.totals:null};
+const sadAwaiting=()=>{const t=sadTot();return t?t.awaitingCount:0};
+const sadReqCount=()=>{const t=sadTot();return t?t.pendingRequestCount:0};
+const when=ms=>ms?new Date(ms).toLocaleString():'';
+const sadHead=(t,sub)=>pageH(t,sub,`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`);
+const sadKpis=T=>`<div class="kpis">${kpi('Total received',rp(T.receivedPaise)+` <span class="sm muted">${T.receivedCount} payments</span>`)}${kpi('Held by NoorTube',rp(T.heldPaise))}${kpi('Paid to creators',rp(T.paidPaise))}${kpi('To verify',T.awaitingCount+` <span class="sm muted">${rp(T.awaitingPaise)}</span>`)}</div>`;
+const dCell=d=>`<td><div class="b">${esc(d.videoTitle)}</div><div class="sm muted">${esc(d.creatorName)}</div></td>`;
+V['l-sad']=()=>sadHead('Sadaqah','Viewers pay your UPI from the Sadaqah button under each video. Confirm each payment here; creators see it in Studio.')+
+  gate(['sad'],D=>{
+    const T=D.totals,S=D.settings;
+    if(!LIVE.sdf)LIVE.sdf={upi:S.upiId,name:S.payeeName,limit:String(S.unlockPaise/100)};
+    const awaitRows=D.awaiting.map(d=>`<tr><td><span class="b">${esc(d.ref)}</span><div class="sm muted">${esc(when(d.claimedAt))}</div></td>${dCell(d)}<td>${esc(d.donorName)}</td><td class="right b">${rp(d.claimedPaise)}</td><td class="sm">${esc(d.utr||'—')}</td>
+      <td><div class="row"><button type="button" class="btn pri sm" data-act="l-sd-confirm" data-id="${esc(d.id)}" ${LIVE.busy===d.id?'disabled':''}>Confirm received</button><button type="button" class="btn sm danger" data-act="l-sd-reject" data-id="${esc(d.id)}" ${LIVE.busy===d.id?'disabled':''}>Not received</button></div></td></tr>`).join('');
+    const uncRows=D.unclaimed.map(d=>`<tr><td><span class="b">${esc(d.ref)}</span><div class="sm muted">${esc(when(d.createdAt))}</div></td>${dCell(d)}<td>${esc(d.donorName)}</td>
+      <td><div class="row"><button type="button" class="btn sm" data-act="l-sd-confirm" data-id="${esc(d.id)}" ${LIVE.busy===d.id?'disabled':''}>Enter amount &amp; confirm</button></div></td></tr>`).join('');
+    const credRows=D.creators.map(c=>`<tr><td><div class="b">${esc(c.name)}</div><div class="sm muted">${esc(c.email)}</div></td><td class="right">${c.count}</td><td class="right b">${rp(c.receivedPaise)}</td><td class="right">${rp(c.paidPaise)}</td><td class="right">${c.pendingPaise?rp(c.pendingPaise):'—'}</td><td class="right b up">${rp(c.availablePaise)}</td></tr>`).join('');
+    const vidRows=D.videos.map(v=>`<tr><td><div class="b">${esc(v.title)}</div></td><td>${esc(v.creator)}</td><td class="right">${v.count}</td><td class="right b">${rp(v.receivedPaise)}</td></tr>`).join('');
+    const histRows=D.history.map(d=>`<tr><td class="sm">${esc(when(d.resolvedAt))}</td><td class="b">${esc(d.ref)}</td>${dCell(d)}<td>${esc(d.donorName)}</td><td class="right b">${d.status==='received'?rp(d.amountPaise):'<span class="muted">'+rp(d.claimedPaise)+'</span>'}</td><td>${d.status==='received'?chip('Received','green','check'):chip('Not received','rose','x')}</td></tr>`).join('');
+    const tbl=(head,rows,empt,min)=>`<div class="card"><div class="tbl-wrap"><table style="min-width:${min||640}px"><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan="9">${empty(empt,'')}</td></tr>`}</tbody></table></div></div>`;
+    return sadKpis(T)+
+    `<div class="card pad" style="margin-bottom:14px"><h3>Where donors pay</h3><p class="sm muted" style="margin:4px 0 12px">This is the UPI the Sadaqah button opens. Money comes straight to you; creators can withdraw it from you later.</p>
+      ${S.upiId?'':`<div style="margin-bottom:12px">${chip('Sadaqah is OFF — add your UPI ID so donors can pay','rose','ban')}</div>`}
+      <div class="grid g2">${field('Your UPI ID',`<input class="inp" data-sd="upi" data-keep="sd-upi" value="${esc(LIVE.sdf.upi)}" placeholder="yourname@bank" autocapitalize="none" aria-label="UPI ID">`)}
+      ${field('Name shown in the UPI app',`<input class="inp" data-sd="name" data-keep="sd-name" value="${esc(LIVE.sdf.name)}" maxlength="60" aria-label="Payee name">`)}
+      ${field('Creator withdrawal limit (₹)',`<input class="inp" type="number" inputmode="decimal" data-sd="limit" data-keep="sd-limit" value="${esc(LIVE.sdf.limit)}" aria-label="Withdrawal limit">`,'Creators can request a withdrawal once their available sadaqah reaches this amount.')}</div>
+      <div class="row wrap" style="margin-top:14px"><button type="button" class="btn pri" data-act="l-sd-save" ${LIVE.busy==='sdsave'?'disabled':''}>${LIVE.busy==='sdsave'?'Saving…':'Save settings'}</button></div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>How verifying works</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>A viewer pays your UPI and tells the app the amount. The payment note contains a reference like <b>NT7K2QXA</b>.</li><li>Open your UPI app, find that payment (reference + amount), then tap <b>Confirm received</b> below. Fix the amount if it differs.</li><li>Only confirmed amounts are added to the creator. Tap <b>Not received</b> if you cannot find the payment.</li></ol></div>
+    <h3 style="margin:18px 0 8px">To verify (${D.awaiting.length})</h3>
+    ${tbl('<th>Reference</th><th>Video / creator</th><th>Donor</th><th class="right">Donor says</th><th>UTR</th><th>Actions</th>',awaitRows,'Nothing to verify',760)}
+    ${D.unclaimed.length?`<h3 style="margin:18px 0 4px">Started but amount not reported (last 3 days)</h3><p class="sm muted" style="margin-bottom:8px">The donor opened UPI but did not tell us the amount. If you can see the payment with this reference in your UPI app, confirm it here.</p>${tbl('<th>Reference</th><th>Video / creator</th><th>Donor</th><th>Actions</th>',uncRows,'',620)}`:''}
+    <h3 style="margin:18px 0 8px">By creator</h3>
+    ${tbl('<th>Creator</th><th class="right">Payments</th><th class="right">Received</th><th class="right">Paid out</th><th class="right">Pending</th><th class="right">Available</th>',credRows,'No sadaqah yet',700)}
+    <h3 style="margin:18px 0 8px">By video</h3>
+    ${tbl('<th>Video</th><th>Creator</th><th class="right">Payments</th><th class="right">Total</th>',vidRows,'No sadaqah yet',560)}
+    <h3 style="margin:18px 0 8px">History</h3>
+    ${tbl('<th>When</th><th>Ref</th><th>Video / creator</th><th>Donor</th><th class="right">Amount</th><th>Result</th>',histRows,'No history yet',760)}`});
+V['l-sadreq']=()=>sadHead('Sadaqah withdrawals','Creators asking for their sadaqah. Pay them, then tap Mark as Paid.')+
+  gate(['sad'],D=>{
+    const reqCard=q=>{const pi=q.payoutInfo,rup=q.amountPaise/100,lines=payLines(pi);
+      return `<div class="card pad" style="margin-bottom:12px"><div class="row between" style="align-items:flex-start;gap:10px"><div style="min-width:0"><div class="b">${esc(q.name)}</div><div class="sm muted" style="word-break:break-all">${esc(q.email)}</div><div class="sm muted">Requested ${esc(when(q.createdAt))}</div></div><div class="right"><div class="b" style="font-size:20px">${rp(q.amountPaise)}</div></div></div>
+      ${pi?`<div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;margin-top:12px"><div class="sm muted">${mLabel(pi.method)}</div>${lines.map(l=>`<div style="word-break:break-all">${esc(l)}</div>`).join('')}</div>`:'<div class="sm dn" style="margin-top:12px">No payout details on this request.</div>'}
+      <div class="row wrap" style="margin-top:12px">${pi?cpBtn('sq'+q.id,'Copy details',lines.concat(['Amount: ₹'+rup.toFixed(2)]).join('\n')):''}${payActions(pi,rup,q.name,'sq'+q.id)}
+      <button type="button" class="btn pri sm" data-act="l-sr-paid" data-id="${esc(q.id)}" ${LIVE.busy===q.id?'disabled':''}>${LIVE.busy===q.id?'Please wait…':'Mark as Paid'}</button>
+      <button type="button" class="btn sm danger" data-act="l-sr-reject" data-id="${esc(q.id)}" ${LIVE.busy===q.id?'disabled':''}>Reject</button></div></div>`};
+    const done=D.recentRequests.map(q=>`<tr><td class="sm">${esc(when(q.resolvedAt))}</td><td><div class="b">${esc(q.name)}</div></td><td class="right b">${rp(q.amountPaise)}</td><td>${q.status==='Paid'?chip('Paid','green','check'):chip('Rejected','rose','x')}</td><td class="sm">${esc(q.note||'')}</td></tr>`).join('');
+    return `<div class="card pad" style="margin-bottom:14px"><h3>How to pay a creator</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>Tap <b>Pay via UPI</b> (or <b>Copy details</b>) on the request below.</li><li>Send the amount from your own UPI / bank app.</li><li>Come back and tap <b>Mark as Paid</b>. The amount is then deducted from the creator’s sadaqah balance.</li></ol></div>
+    <h3 style="margin:0 0 8px">Pending (${D.requests.length})</h3>${D.requests.length?D.requests.map(reqCard).join(''):`<div class="card">${empty('No pending sadaqah withdrawals','Requests appear here when a creator asks for their sadaqah.')}</div>`}
+    <h3 style="margin:18px 0 8px">Recently handled</h3><div class="card"><div class="tbl-wrap"><table style="min-width:560px"><thead><tr><th>When</th><th>Creator</th><th class="right">Amount</th><th>Result</th><th>Note</th></tr></thead><tbody>${done||`<tr><td colspan="5">${empty('Nothing yet','')}</td></tr>`}</tbody></table></div></div>`});
+const sadFind=id=>{const D=dData('sad');return D?[...D.awaiting,...D.unclaimed].find(x=>x.id===id):null};
+const sadRun=async(busy,fn,okMsg)=>{LIVE.busy=busy;render();try{await fn();toast(okMsg)}catch(e){lerr(e)}finally{LIVE.busy=null;load('sad',true);render()}};
+Object.assign(ACT,{
+ 'l-sd-save':async()=>{const f=LIVE.sdf;LIVE.busy='sdsave';render();
+   try{await api('/api/admin/sadaqah/settings',{method:'PUT',body:JSON.stringify({upiId:f.upi,payeeName:f.name,unlockRupees:parseFloat(f.limit)})});toast('Sadaqah settings saved')}
+   catch(e){lerr(e)}finally{LIVE.busy=null;load('sad',true);render()}},
+ 'l-sd-confirm':el=>{const d=sadFind(el.dataset.id);if(!d)return;
+   modal({title:'Confirm sadaqah received',ok:'Confirm received',body:`<p style="margin-bottom:12px">Reference <b>${esc(d.ref)}</b> · ${esc(d.videoTitle)}<br>${d.claimedPaise?`Donor says they sent <b>${rp(d.claimedPaise)}</b>.`:'The donor did not report an amount.'}</p>${field('Amount you actually received (₹)',`<input class="inp" name="amount" type="number" inputmode="decimal" step="0.01" min="1" value="${d.claimedPaise?d.claimedPaise/100:''}">`,'Check your UPI app first. Only this amount is added for the creator.')}`,
+     onOk:f=>{const n=parseFloat(f.get('amount'));if(!(n>=1))return 'Enter the amount you received (at least ₹1).';sadRun(d.id,()=>api('/api/admin/sadaqah/donations/'+d.id+'/confirm',{method:'POST',body:JSON.stringify({amount:n})}),'Sadaqah confirmed')}})},
+ 'l-sd-reject':el=>{const d=sadFind(el.dataset.id);if(!d)return;
+   modal({title:'Payment not received',ok:'Mark not received',danger:true,body:`<p style="margin-bottom:12px">You could not find <b>${rp(d.claimedPaise)}</b> (reference <b>${esc(d.ref)}</b>) in your UPI app? The donor will be told it was not found.</p>${field('Note (optional)','<textarea class="inp" name="note" rows="2" maxlength="300"></textarea>')}`,
+     onOk:f=>{const note=(f.get('note')||'').trim();sadRun(d.id,()=>api('/api/admin/sadaqah/donations/'+d.id+'/reject',{method:'POST',body:JSON.stringify({note})}),'Marked as not received')}})},
+ 'l-sr-paid':el=>{const D=dData('sad'),q=D&&D.requests.find(x=>x.id===el.dataset.id);if(!q)return;
+   modal({title:'Mark as Paid',ok:'Mark as Paid',body:`<p>Have you already sent <b>${rp(q.amountPaise)}</b> to <b>${esc(q.name)}</b>? Tapping the button deducts it from their sadaqah balance and tells them it was paid.</p>`,
+     onOk:()=>{sadRun(q.id,()=>api('/api/admin/sadaqah/requests/'+q.id+'/mark-paid',{method:'POST',body:'{}'}),'Marked as paid: '+q.name)}})},
+ 'l-sr-reject':el=>{const D=dData('sad'),q=D&&D.requests.find(x=>x.id===el.dataset.id);if(!q)return;
+   modal({title:'Reject withdrawal',ok:'Reject',danger:true,body:`<p style="margin-bottom:12px">Reject <b>${esc(q.name)}</b>’s request of <b>${rp(q.amountPaise)}</b>? Their sadaqah stays with them.</p>${field('Reason (optional — the creator will see it)','<textarea class="inp" name="note" rows="3" maxlength="300"></textarea>')}`,
+     onOk:f=>{const note=(f.get('note')||'').trim();sadRun(q.id,()=>api('/api/admin/sadaqah/requests/'+q.id+'/reject',{method:'POST',body:JSON.stringify({note})}),'Request rejected')}})}
+});
+
+/* ---- Platform: prayer times + Salah guard, Settings, Halal ads, Notifications, Analytics, Audit log (all real data) ---- */
+// ===== Prayer times (astronomical formulas, same approach as praytimes.org). Returns local clock hours (e.g. 5.5 = 5:30). =====
+const PRAYER_METHODS = { MWL: { fajr: 18, isha: 17, name: "Muslim World League" }, Karachi: { fajr: 18, isha: 18, name: "Univ. of Islamic Sciences, Karachi" }, ISNA: { fajr: 15, isha: 15, name: "ISNA (North America)" }, Egypt: { fajr: 19.5, isha: 17.5, name: "Egyptian General Authority" }, Makkah: { fajr: 18.5, ishaMin: 90, name: "Umm al-Qura, Makkah" } };
+function computePrayerTimes(dateMs, lat, lng, tz, methodKey, hanafi) {
+  const R = Math.PI / 180, D = 180 / Math.PI;
+  const sin = (d) => Math.sin(d * R), cos = (d) => Math.cos(d * R), tan = (d) => Math.tan(d * R);
+  const asin = (x) => D * Math.asin(x), acos = (x) => D * Math.acos(x), atan2 = (y, x) => D * Math.atan2(y, x), acot = (x) => D * Math.atan(1 / x);
+  const fixAngle = (a) => { a -= 360 * Math.floor(a / 360); return a; }, fixHour = (h) => { h -= 24 * Math.floor(h / 24); return h; };
+  const dt = new Date(dateMs + tz * 3600000); // local calendar date at the location
+  let Y = dt.getUTCFullYear(), M = dt.getUTCMonth() + 1; const Dd = dt.getUTCDate();
+  if (M <= 2) { Y -= 1; M += 12; }
+  const A = Math.floor(Y / 100), B = 2 - A + Math.floor(A / 4);
+  const jd0 = Math.floor(365.25 * (Y + 4716)) + Math.floor(30.6001 * (M + 1)) + Dd + B - 1524.5 - lng / (15 * 24);
+  const sunPos = (jd) => { const d = jd - 2451545.0, g = fixAngle(357.529 + 0.98560028 * d), q = fixAngle(280.459 + 0.98564736 * d), L = fixAngle(q + 1.915 * sin(g) + 0.020 * sin(2 * g)), e = 23.439 - 0.00000036 * d, RA = fixHour(atan2(cos(e) * sin(L), cos(L)) / 15); return { decl: asin(sin(e) * sin(L)), eqt: q / 15 - RA }; };
+  const midDay = (t) => fixHour(12 - sunPos(jd0 + t).eqt);
+  const angleTime = (angle, t, ccw) => { const decl = sunPos(jd0 + t).decl, noon = midDay(t), x = (-sin(angle) - sin(decl) * sin(lat)) / (cos(decl) * cos(lat)); if (x < -1 || x > 1) return NaN; const h = acos(x) / 15; return noon + (ccw ? -h : h); };
+  const asrTime = (factor, t) => { const decl = sunPos(jd0 + t).decl, angle = -acot(factor + tan(Math.abs(lat - decl))); return angleTime(angle, t, false); };
+  const m = PRAYER_METHODS[methodKey] || PRAYER_METHODS.MWL;
+  let T = { fajr: 5, sunrise: 6, dhuhr: 12, asr: 13, maghrib: 18, isha: 18 };
+  for (let it = 0; it < 2; it++) {
+    const t = (h) => h / 24;
+    T = {
+      fajr: angleTime(m.fajr, t(T.fajr), true), sunrise: angleTime(0.833, t(T.sunrise), true), dhuhr: midDay(t(T.dhuhr)),
+      asr: asrTime(hanafi ? 2 : 1, t(T.asr)), maghrib: angleTime(0.833, t(T.maghrib), false),
+      isha: m.ishaMin ? NaN : angleTime(m.isha, t(T.isha), false),
+    };
+    if (m.ishaMin) T.isha = T.maghrib + m.ishaMin / 60;
+  }
+  const adj = tz - lng / 15, out = {};
+  Object.keys(T).forEach((k) => { out[k] = fixHour(T[k] + adj + (k === "dhuhr" ? 2 / 60 : 0)); }); // dhuhr +2 min safety, like most apps
+  return out;
+}
+const PRAYER_ORDER = [["fajr", "Fajr"], ["dhuhr", "Dhuhr"], ["asr", "Asr"], ["maghrib", "Maghrib"], ["isha", "Isha"]];
+// Is "now" inside a prayer window? Returns { active, name, untilMs } using the guard length in minutes after each prayer starts.
+function salahGuardState(nowMs, cfg) {
+  if (!cfg || !cfg.guardOn || !isFinite(cfg.lat) || !isFinite(cfg.lng)) return { active: false };
+  const local = new Date(nowMs + cfg.tz * 3600000), startOfDay = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - cfg.tz * 3600000;
+  const T = computePrayerTimes(nowMs, cfg.lat, cfg.lng, cfg.tz, cfg.method, cfg.hanafi);
+  for (const [k, name] of PRAYER_ORDER) {
+    const h = T[k]; if (!isFinite(h)) continue;
+    const start = startOfDay + h * 3600000, end = start + cfg.guardMin * 60000;
+    if (nowMs >= start && nowMs < end) return { active: true, name, untilMs: end };
+  }
+  if (cfg.jummah && local.getUTCDay() === 5) { // Jumu'ah: Friday 12:00 to 14:00 local time
+    const a = startOfDay + 12 * 3600000, b = startOfDay + 14 * 3600000;
+    if (nowMs >= a && nowMs < b) return { active: true, name: "Jumu'ah", untilMs: b };
+  }
+  return { active: false };
+}
+
+SRC.settings=()=>api('/api/admin/settings');
+SRC.ads=()=>api('/api/admin/ads');
+SRC.notify=()=>api('/api/admin/broadcasts').then(r=>r.broadcasts);
+SRC.audit=()=>api('/api/admin/audit').then(r=>r.entries);
+[7,30,90].forEach(n=>{SRC['an'+n]=()=>api('/api/admin/analytics?days='+n)});
+LIVE.anDays=30;LIVE.stf=null;
+PAGE_KEYS['l-ads']=['ads','settings'];PAGE_KEYS['l-notify']=['notify'];PAGE_KEYS['l-settings']=['settings'];PAGE_KEYS['l-audit']=['audit'];
+Object.defineProperty(PAGE_KEYS,'l-analytics',{get:()=>['an'+LIVE.anDays],enumerable:true,configurable:true});
+const hm12=h=>{const m=Math.round(h*60)%1440,hh=Math.floor(m/60),mm=m%60;return{t:`${((hh+11)%12)+1}:${String(mm).padStart(2,'0')}`,ap:hh>=12?'PM':'AM'}};
+const dayStartMs=(ms,tz)=>{const l=new Date(ms+tz*3600000);return Date.UTC(l.getUTCFullYear(),l.getUTCMonth(),l.getUTCDate())-tz*3600000};
+const todayPrayers=(cfg,now)=>{const T=computePrayerTimes(now,cfg.lat,cfg.lng,cfg.tz,cfg.method,cfg.hanafi),s=dayStartMs(now,cfg.tz);return PRAYER_ORDER.map(([k,n])=>({k,n,h:T[k],t:s+T[k]*3600000}))};
+const nextPrayerOf=(cfg,now)=>todayPrayers(cfg,now).find(p=>p.t>now)||todayPrayers(cfg,now+86400000)[0];
+const guardText=(cfg,now)=>{const g=salahGuardState(now,cfg);return g.active?`Ads are paused for ${g.name} until ${new Date(g.untilMs).toLocaleTimeString('en',{hour:'numeric',minute:'2-digit'})}.`:!cfg.guardOn?'Salah guard is off, so ads run through prayer times.':`Salah guard on: ads pause for ${cfg.guardMin} min at each prayer${cfg.jummah?' and during Jumu\u2019ah':''}.`};
+const heroHtml=(me,summary)=>{
+  const sd=LIVE.d.settings,now=Date.now();let right='';
+  try{
+  if(sd&&sd.st==='ok'&&sd.data&&sd.data.settings){const cfg=sd.data.settings,list=todayPrayers(cfg,now),nx=nextPrayerOf(cfg,now);
+    right=`<div><div class="salah" role="list" aria-label="Prayer times">${list.map(p=>{const f=hm12(p.h);return`<div role="listitem" class="${p.n===nx.n?'next':''}"><b>${p.n}</b><span>${f.t}<small> ${f.ap}</small></span></div>`}).join('')}</div>
+      <p class="sm" style="margin-top:10px"><b>${nx.n} in ${cd(nx.t-now)}.</b> ${esc(guardText(cfg,now))}</p><p class="sm" style="margin-top:2px;opacity:.75">${esc(cfg.city||'Your location')} · <a href="#/l-settings" style="text-decoration:underline">change location</a></p></div>`}
+  else if(sd&&sd.st==='err')right='<div><p class="sm">Prayer times need the latest backend update (worker.js).</p></div>';
+  }catch(e){right=''}
+  return`<section class="hero lattice" aria-label="Today"><div><div class="ar">السلام عليكم ورحمة الله</div><h2>Assalamu alaikum, ${esc(me.name||'Admin')}</h2><p style="margin-top:6px">${summary}</p><p class="sm" style="margin-top:10px;opacity:.8">${esc(hijri().en)}</p></div>${right}</section>`};
+const stBox=s=>`<div class="card pad row wrap" style="margin-bottom:16px;border-color:${s.active?'var(--amber)':'var(--line)'}"><span class="thumb" style="width:40px;height:40px;border-radius:12px;background:${s.active?'var(--amber)':'var(--accent)'}">${ic(s.active?'pause':'moonstar')}</span><div class="grow">${s.html}<div class="sm muted">Viewers should never be interrupted by an ad during salah.</div></div><a class="btn sm" href="#/l-settings">Guard settings</a></div>`;
+
+/* ---- Settings & prayer location ---- */
+const stInit=()=>{const s=LIVE.d.settings.data.settings;return{city:s.city,lat:String(s.lat),lng:String(s.lng),tz:String(s.tz),method:s.method,hanafi:s.hanafi?'hanafi':'shafi',guardOn:s.guardOn,jummah:s.jummah,guardMin:String(s.guardMin)}};
+const stCfg=f=>({lat:parseFloat(f.lat),lng:parseFloat(f.lng),tz:parseFloat(f.tz),method:f.method,hanafi:f.hanafi==='hanafi',guardOn:f.guardOn,jummah:f.jummah,guardMin:parseInt(f.guardMin,10)||12});
+const stPreviewHtml=f=>{const c=stCfg(f);if(![c.lat,c.lng,c.tz].every(isFinite)||Math.abs(c.lat)>90||Math.abs(c.lng)>180)return'<span class="muted sm">Enter a valid latitude, longitude and time zone to preview.</span>';
+  try{return todayPrayers(c,Date.now()).map(p=>{const x=hm12(p.h);return`<div class="card pad-sm" style="text-align:center;box-shadow:none"><div class="sm muted">${p.n}</div><div class="b">${isFinite(p.h)?x.t+' '+x.ap:'—'}</div></div>`}).join('')}catch(e){return''}};
+V['l-settings']=()=>pageH('Settings','Where you are decides the prayer times shown on the Dashboard and when ads pause (Salah guard).','')+
+  gate(['settings'],D=>{if(!LIVE.stf)LIVE.stf=stInit();const f=LIVE.stf,S=D.settings,ms=D.methods;
+    const chk=(k,l,h)=>`<label class="row" style="gap:10px;align-items:flex-start"><input type="checkbox" data-st="${k}" ${f[k]?'checked':''} style="margin-top:3px;width:18px;height:18px"><span><span class="b">${l}</span><span class="sm muted" style="display:block">${h}</span></span></label>`;
+    return`<div class="card pad" style="margin-bottom:14px"><h3>Prayer location &amp; method</h3><p class="sm muted" style="margin:4px 0 12px">Times are calculated from these values with the standard astronomical formulas. Pick the method your community follows.</p>
+      <div class="row wrap" style="margin-bottom:12px"><button type="button" class="btn" data-act="l-st-geo">${ic('search','sm')}Use this device’s location</button><span class="sm muted" id="stGeoMsg"></span></div>
+      <div class="grid g2">${field('City / place name',`<input class="inp" data-st="city" data-keep="st-city" value="${esc(f.city)}" maxlength="60" aria-label="City">`)}
+      ${field('Time zone (hours from UTC)',`<input class="inp" type="number" step="0.25" data-st="tz" data-keep="st-tz" value="${esc(f.tz)}" aria-label="Time zone">`,'India is 5.5')}
+      ${field('Latitude',`<input class="inp" type="number" step="0.0001" data-st="lat" data-keep="st-lat" value="${esc(f.lat)}" aria-label="Latitude">`)}
+      ${field('Longitude',`<input class="inp" type="number" step="0.0001" data-st="lng" data-keep="st-lng" value="${esc(f.lng)}" aria-label="Longitude">`)}
+      ${field('Calculation method',`<select class="inp" data-st="method" aria-label="Method">${ms.map(m=>`<option value="${esc(m.key)}" ${m.key===f.method?'selected':''}>${esc(m.name)}</option>`).join('')}</select>`)}
+      ${field('Asr calculation',`<select class="inp" data-st="hanafi" aria-label="Asr"><option value="hanafi" ${f.hanafi==='hanafi'?'selected':''}>Hanafi (later Asr)</option><option value="shafi" ${f.hanafi==='shafi'?'selected':''}>Shafi\u2019i / Maliki / Hanbali</option></select>`)}</div>
+      <h4 style="margin:18px 0 8px">Today’s prayer times with these values</h4><div class="grid" id="stPreview" style="grid-template-columns:repeat(5,1fr);gap:8px">${stPreviewHtml(f)}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Salah guard</h3><p class="sm muted" style="margin:4px 0 12px">Ads stop being served while people pray.</p><div class="stack">
+      ${chk('guardOn','Pause ads at every prayer','No ad is served for the minutes below, starting at each prayer time.')}
+      ${chk('jummah','Pause ads during Jumu\u2019ah','Every Friday from 12:00 to 14:00 local time.')}
+      ${field('Minutes to pause after each prayer starts',`<input class="inp" type="number" min="1" max="60" data-st="guardMin" data-keep="st-gm" value="${esc(f.guardMin)}" style="max-width:140px" aria-label="Guard minutes">`)}</div></div>
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-st-save" ${LIVE.busy==='stsave'?'disabled':''}>${LIVE.busy==='stsave'?'Saving…':'Save settings'}</button></div>`});
+
+/* ---- Halal ads ---- */
+const PL_NAME={home:'Home banner',watch:'Under videos',reels:'Reels'};
+const adStatus=a=>{const n=Date.now();return!a.active?chip('Paused','gray','pause'):a.startsAt&&a.startsAt>n?chip('Scheduled','amber','clock'):a.endsAt&&a.endsAt<n?chip('Ended','gray'):chip('Live','green','check')};
+const dateOnly=ms=>ms?new Date(ms).toLocaleDateString():'Always';
+V['l-ads']=()=>pageH('Halal ads','Upload banners and choose where they appear: the home page, under videos, or on the reels screen.',`<button type="button" class="btn pri" data-act="l-ad-add" ${LIVE.busy==='adnew'?'disabled':''}>${ic('plus','sm')}${LIVE.busy==='adnew'?'Uploading…':'Upload new ad'}</button><button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['ads','settings'],(A,SD)=>{const cfg=SD.settings,now=Date.now(),g=salahGuardState(now,cfg),nx=nextPrayerOf(cfg,now),list=A.ads.filter(a=>UI.tab==='all'||(UI.tab==='paused'?!a.active:a.placements.includes(UI.tab)));
+    const live=A.ads.filter(a=>a.active),imp=sum(A.ads.map(a=>a.impressions)),clk=sum(A.ads.map(a=>a.clicks));
+    const html=g.active?`<b>Paused for ${esc(g.name)}</b> until ${new Date(g.untilMs).toLocaleTimeString('en',{hour:'numeric',minute:'2-digit'})}. No ads are being served right now.`:!cfg.guardOn?'<b>Salah guard is off.</b> Ads run during prayer times.':`<b>Ads are running.</b> Next pause: ${esc(nx.n)} at ${hm12(nx.h).t} ${hm12(nx.h).ap}, in ${cd(nx.t-now)}.`;
+    return stBox({active:g.active,html})+`<div class="kpis">${kpi('Live ads',live.length)}${kpi('Impressions',imp.toLocaleString())}${kpi('Clicks',clk.toLocaleString())}${kpi('CTR',imp?(clk/imp*100).toFixed(2)+'%':'—')}</div>`+
+    tabs('tab',[['all','All',A.ads.length],['home','Home banner',A.ads.filter(a=>a.placements.includes('home')).length],['watch','Under videos',A.ads.filter(a=>a.placements.includes('watch')).length],['reels','Reels',A.ads.filter(a=>a.placements.includes('reels')).length],['paused','Paused',A.ads.filter(a=>!a.active).length]])+
+    `<div class="card"><div class="tbl-wrap"><table style="min-width:820px"><thead><tr><th>Ad</th><th>Where</th><th>Performance</th><th>Schedule</th><th>Status</th><th class="right">Actions</th></tr></thead><tbody>${list.length?list.map(a=>`<tr>
+      <td><div class="row">${a.type==='image'?`<img src="${esc(a.mediaUrl)}" alt="" style="width:64px;height:36px;object-fit:cover;border-radius:8px;flex:none" onerror="this.style.visibility='hidden'">`:`<span class="thumb" style="width:64px;height:36px;border-radius:8px">${ic('play','sm')}</span>`}<div style="min-width:0"><div class="b">${esc(a.name)}</div><div class="sm muted">${a.type==='video'?'Video':'Image'}${a.clickUrl?' · has link':''}</div></div></div></td>
+      <td><div class="row wrap" style="gap:4px">${a.placements.map(p=>chip(PL_NAME[p]||p,'green')).join('')}</div></td>
+      <td><div>${a.impressions.toLocaleString()} views</div><div class="sm muted">${a.clicks.toLocaleString()} clicks · CTR ${a.impressions?(a.clicks/a.impressions*100).toFixed(2):'0.00'}%</div></td>
+      <td class="sm">${esc(dateOnly(a.startsAt))} → ${a.endsAt?esc(dateOnly(a.endsAt)):'no end'}</td><td>${adStatus(a)}</td>
+      <td class="right"><div class="row" style="justify-content:flex-end"><button type="button" class="btn sm" data-act="l-ad-toggle" data-id="${esc(a.id)}" ${LIVE.busy===a.id?'disabled':''}>${a.active?'Pause':'Resume'}</button><button type="button" class="btn sm" data-act="l-ad-edit" data-id="${esc(a.id)}">Edit</button><button type="button" class="btn sm danger" data-act="l-ad-del" data-id="${esc(a.id)}" data-name="${esc(a.name)}" ${LIVE.busy===a.id?'disabled':''}>Delete</button></div></td></tr>`).join(''):`<tr><td colspan="6">${empty('No ads here yet','Tap “Upload new ad” to add your first banner.')}</td></tr>`}</tbody></table></div></div>`});
+
+/* ---- Push notifications (in-app bell) ---- */
+V['l-notify']=()=>pageH('Push notifications','Send a message that appears in the bell of the people you choose.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['notify'],H=>{const f=LIVE.nf||(LIVE.nf={title:'',message:'',audience:'all'});
+    return`<div class="card pad" style="margin-bottom:14px"><h3>New message</h3><p class="sm muted" style="margin:4px 0 12px">It shows in each person’s notification bell inside NoorTube. Phone lock-screen push alerts are not part of this yet.</p>
+      <div class="stack">${field('Title',`<input class="inp" data-nf="title" data-keep="nf-t" value="${esc(f.title)}" maxlength="80" placeholder="e.g. Eid Mubarak" aria-label="Title">`)}
+      ${field('Message',`<textarea class="inp" rows="3" data-nf="message" data-keep="nf-m" maxlength="300" placeholder="Write the message people will read" aria-label="Message">${esc(f.message)}</textarea>`)}
+      ${field('Send to',`<select class="inp" data-nf="audience" aria-label="Audience"><option value="all" ${f.audience==='all'?'selected':''}>Everyone</option><option value="creators" ${f.audience==='creators'?'selected':''}>Creators (people with uploads)</option><option value="monetized" ${f.audience==='monetized'?'selected':''}>Monetized channels</option><option value="admins" ${f.audience==='admins'?'selected':''}>Admins only</option></select>`)}</div>
+      <div class="row wrap" style="margin-top:14px"><button type="button" class="btn pri" data-act="l-nf-send" ${LIVE.busy==='nfsend'?'disabled':''}>${ic('send','sm')}${LIVE.busy==='nfsend'?'Sending…':'Send now'}</button></div></div>
+    <h3 style="margin:18px 0 8px">Sent so far</h3><div class="card"><div class="tbl-wrap"><table style="min-width:560px"><thead><tr><th>When</th><th>Message</th><th>To</th><th class="right">Delivered</th></tr></thead><tbody>${H.length?H.map(b=>`<tr><td class="sm">${esc(when(b.createdAt))}</td><td><div class="b">${esc(b.title)}</div><div class="sm muted">${esc(b.message)}</div></td><td>${esc({all:'Everyone',creators:'Creators',monetized:'Monetized',admins:'Admins'}[b.audience]||b.audience)}</td><td class="right b">${b.sent.toLocaleString()}</td></tr>`).join(''):`<tr><td colspan="4">${empty('Nothing sent yet','')}</td></tr>`}</tbody></table></div></div>`});
+
+/* ---- Platform analytics ---- */
+const miniBars=(vals,labels,color,fmt)=>{const mx=Math.max(1,...vals),n=vals.length;fmt=fmt||(x=>x.toLocaleString());
+  return`<svg viewBox="0 0 ${n*10} 100" preserveAspectRatio="none" style="width:100%;height:120px;display:block">${vals.map((v,i)=>`<rect x="${i*10+1}" width="8" y="${100-v/mx*100}" height="${Math.max(v/mx*100,v?1.5:0)}" fill="${color}" rx="1"><title>${esc(labels[i])}: ${esc(fmt(v))}</title></rect>`).join('')}<line x1="0" y1="100" x2="${n*10}" y2="100" stroke="currentColor" stroke-opacity=".25"/></svg><div class="row between sm muted" style="margin-top:4px"><span>${esc(labels[0])}</span><span>${esc(labels[n-1])}</span></div>`};
+const anCard=(title,total,vals,labels,color,fmt)=>`<div class="card pad"><div class="row between"><h3>${title}</h3><span class="b">${total}</span></div><div style="margin-top:10px">${miniBars(vals,labels,color,fmt)}</div></div>`;
+const lblDay=d=>new Date(d+'T00:00:00').toLocaleDateString('en',{day:'numeric',month:'short'});
+V['l-analytics']=()=>{const n=LIVE.anDays;return pageH('Analytics','What is happening on the platform: real counts only.',`<div class="tabs" role="tablist">${[7,30,90].map(d=>`<button type="button" class="tab ${n===d?'on':''}" role="tab" data-act="l-an-days" data-d="${d}">${d} days</button>`).join('')}</div><button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['an'+n],D=>{const L=D.days.map(lblDay),vv=D.viewsVideos.map((x,i)=>x+D.viewsReels[i]),T=D.totals||{};
+    const lst=(title,rows,fn)=>`<div class="card pad"><h3>${title}</h3>${rows&&rows.length?rows.map((r,i)=>`<div class="row pad-sm" style="border-bottom:1px solid var(--line)"><div class="grow" style="min-width:0"><div class="trunc b">${i+1}. ${esc(r.title||r.name)}</div><div class="sm muted trunc">${esc(fn(r))}</div></div></div>`).join(''):'<div class="muted sm" style="margin-top:8px">Nothing yet.</div>'}</div>`;
+    return`<div class="kpis">${kpi('Users',(T.users||0).toLocaleString())}${kpi('Videos · reels',`${(T.videos||0).toLocaleString()} · ${(T.reels||0).toLocaleString()}`)}${kpi('Video views',kfmt(T.videoViews||0))}${kpi('Reel views',kfmt(T.reelViews||0))}</div>
+    <div class="grid g2" style="margin-bottom:16px">${anCard('Views per day',sum(vv).toLocaleString(),vv,L,'#22a06b')}${anCard('New users per day',D.hasSignups?sum(D.signups).toLocaleString():'—',D.signups,L,'#2a5fa8')}${anCard('Uploads per day',sum(D.uploads).toLocaleString(),D.uploads,L,'#b8892b')}${anCard('Sadaqah received per day',rp(sum(D.sadaqahPaise)),D.sadaqahPaise,L,'#a23b72',x=>rp(x))}</div>
+    <p class="sm muted" style="margin-bottom:16px">${D.firstViewDay?`Daily views are recorded from ${esc(lblDay(D.firstViewDay))} onwards.`:'Daily views start being recorded when the first view is counted.'}${D.ads?` Ads so far: ${D.ads.impressions.toLocaleString()} impressions, ${D.ads.clicks.toLocaleString()} clicks.`:''}</p>
+    <div class="grid g3">${lst('Top videos',D.topVideos,r=>`${r.channel||''} · ${kfmt(r.views)} views`)}${lst('Top reels',D.topReels,r=>`${r.channel||''} · ${kfmt(r.views)} views`)}${lst('Top creators',D.topCreators,r=>`${kfmt(r.views)} views · ${r.videos} video${r.videos===1?'':'s'}`)}</div>`})};
+
+/* ---- Audit log ---- */
+V['l-audit']=()=>pageH('Audit log','Every change an admin makes is recorded here.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['audit'],E=>{const rows=E.filter(e=>match(UI.q,e.action,e.admin));
+    return`<div class="row wrap" style="margin-bottom:12px">${searchBox('Search actions or admin')}<span class="muted sm">${rows.length} of ${E.length} (latest 300)</span></div><div class="card"><div class="tbl-wrap"><table style="min-width:560px"><thead><tr><th>When</th><th>Admin</th><th>Action</th></tr></thead><tbody>${rows.length?rows.map(e=>`<tr><td class="sm">${esc(when(e.ts))}</td><td>${esc(e.admin)}</td><td><div class="b">${esc(e.action)}</div></td></tr>`).join(''):`<tr><td colspan="3">${empty('No entries','Actions you take as admin will be listed here.')}</td></tr>`}</tbody></table></div></div>`});
+
+/* ---- actions ---- */
+const stSync=()=>{const el=$('#stPreview');if(el&&LIVE.stf)el.innerHTML=stPreviewHtml(LIVE.stf)};
+const adFiles=ms=>{const D=dData('ads');return D?D.ads:[]};
+const adUpload=async file=>{
+  const tk=await api('/api/upload-token',{method:'POST',body:JSON.stringify({filename:file.name})});
+  const res=await fetch(tk.uploadUrl,{method:'PUT',headers:{'X-Upload-Token':tk.token,'X-Upload-Expiry':String(tk.expiry),'Content-Type':file.type||'application/octet-stream'},body:file});
+  let d={};try{d=await res.json()}catch(e){}
+  if(!res.ok)throw new Error(d.error||'Upload failed ('+res.status+')');return d.url};
+const plChecks=sel=>Object.keys(PL_NAME).map(k=>`<label class="row" style="gap:8px"><input type="checkbox" name="pl" value="${k}" ${sel.includes(k)?'checked':''} style="width:18px;height:18px">${PL_NAME[k]}</label>`).join('');
+const dateMs=(s,end)=>s?new Date(s+(end?'T23:59:59':'T00:00:00')).getTime():null;
+Object.assign(ACT,{
+ 'l-st-geo':()=>{const m=$('#stGeoMsg');if(!navigator.geolocation){m&&(m.textContent='This device cannot share its location.');return}
+   m&&(m.textContent='Getting location…');
+   navigator.geolocation.getCurrentPosition(p=>{LIVE.stf.lat=p.coords.latitude.toFixed(4);LIVE.stf.lng=p.coords.longitude.toFixed(4);LIVE.stf.tz=String(-new Date().getTimezoneOffset()/60);toast('Location filled in');render()},()=>{m&&(m.textContent='Could not get the location. Enter it by hand.')},{timeout:10000})},
+ 'l-st-save':async()=>{const f=LIVE.stf,c=stCfg(f);LIVE.busy='stsave';render();
+   try{await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({city:f.city,lat:c.lat,lng:c.lng,tz:c.tz,method:f.method,hanafi:c.hanafi,guardOn:f.guardOn,jummah:f.jummah,guardMin:c.guardMin})});LIVE.stf=null;toast('Settings saved')}
+   catch(e){lerr(e)}finally{LIVE.busy=null;load('settings',true);render()}},
+ 'l-an-days':el=>{LIVE.anDays=+el.dataset.d;render()},
+ 'l-nf-send':()=>{const f=LIVE.nf;if(!f||!f.title.trim()||!f.message.trim()){toast('Write a title and a message');return}
+   const who={all:'everyone',creators:'all creators',monetized:'monetized channels',admins:'admins'}[f.audience];
+   modal({title:'Send notification',ok:'Send now',body:`<p>Send <b>“${esc(f.title.trim())}”</b> to <b>${who}</b>? It cannot be taken back.</p>`,
+     onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people');LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
+ 'l-ad-add':()=>{modal({title:'Upload new ad',ok:'Upload ad',body:`<div class="stack">${field('Ad name (only you see this)','<input class="inp" name="name" maxlength="80" placeholder="e.g. Ramadan banner">')}
+   ${field('Image or video','<input class="inp" type="file" name="file" accept="image/*,video/mp4,video/webm">','Banner image works best (wide, about 1200×300). Videos should be short.')}
+   ${field('Link when tapped (optional)','<input class="inp" name="click" placeholder="https://…" autocapitalize="none">')}
+   <div><span class="b sm">Show it on</span><div class="stack" style="margin-top:6px">${plChecks(['home'])}</div></div>
+   <div class="grid g2">${field('Start date (optional)','<input class="inp" type="date" name="start">')}${field('End date (optional)','<input class="inp" type="date" name="end">')}</div></div>`,
+   onOk:f=>{const name=(f.get('name')||'').trim(),file=f.get('file'),click=(f.get('click')||'').trim(),pls=f.getAll('pl');
+     if(!name)return'Give the ad a name.';if(!file||!file.size)return'Choose an image or video file.';
+     const isImg=/^image\//.test(file.type),isVid=/^video\//.test(file.type);if(!isImg&&!isVid)return'Only image or video files can be used.';
+     if(file.size>30*1024*1024)return'Keep ad files under 30 MB.';if(click&&!/^https?:\/\//.test(click))return'The link must start with http:// or https://';if(!pls.length)return'Choose where the ad should appear.';
+     (async()=>{LIVE.busy='adnew';render();toast('Uploading ad…');
+       try{const url=await adUpload(file);await api('/api/admin/ads',{method:'POST',body:JSON.stringify({name,type:isVid?'video':'image',mediaUrl:url,clickUrl:click,placements:pls,startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)})});toast('Ad is ready')}
+       catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
+ 'l-ad-edit':el=>{const a=adFiles().find(x=>x.id===el.dataset.id);if(!a)return;
+   modal({title:'Edit ad',ok:'Save changes',body:`<div class="stack">${field('Ad name',`<input class="inp" name="name" maxlength="80" value="${esc(a.name)}">`)}${field('Link when tapped',`<input class="inp" name="click" value="${esc(a.clickUrl)}" placeholder="https://…" autocapitalize="none">`)}
+     <div><span class="b sm">Show it on</span><div class="stack" style="margin-top:6px">${plChecks(a.placements)}</div></div>
+     <div class="grid g2">${field('Start date',`<input class="inp" type="date" name="start" value="${a.startsAt?new Date(a.startsAt).toISOString().slice(0,10):''}">`)}${field('End date',`<input class="inp" type="date" name="end" value="${a.endsAt?new Date(a.endsAt).toISOString().slice(0,10):''}">`)}</div></div>`,
+     onOk:f=>{const name=(f.get('name')||'').trim(),click=(f.get('click')||'').trim(),pls=f.getAll('pl');if(!name)return'Give the ad a name.';if(click&&!/^https?:\/\//.test(click))return'The link must start with http:// or https://';if(!pls.length)return'Choose where the ad should appear.';
+       (async()=>{LIVE.busy=a.id;render();try{await api('/api/admin/ads/'+a.id,{method:'PATCH',body:JSON.stringify({name,clickUrl:click,placements:pls,startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)})});toast('Ad updated')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
+ 'l-ad-toggle':async el=>{const a=adFiles().find(x=>x.id===el.dataset.id);if(!a)return;LIVE.busy=a.id;render();
+   try{await api('/api/admin/ads/'+a.id,{method:'PATCH',body:JSON.stringify({active:!a.active})});toast(a.active?'Ad paused':'Ad is live again')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}},
+ 'l-ad-del':el=>{const id=el.dataset.id;confirmBox(`Delete the ad <b>${esc(el.dataset.name)}</b>? Its numbers are lost too.`,async()=>{LIVE.busy=id;render();
+   try{await api('/api/admin/ads/'+id,{method:'DELETE'});toast('Ad deleted')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}},'Delete ad')}
+});
+document.addEventListener('input',e=>{const el=e.target,d=el.dataset||{};
+  if(d.st&&LIVE.stf){LIVE.stf[d.st]=el.type==='checkbox'?el.checked:el.value;stSync()}
+  else if(d.nf&&LIVE.nf){LIVE.nf[d.nf]=el.value}});
+
+load('reqs');load('reports');load('feedback');load('sad');load('settings');paintMe();
 
 document.addEventListener('click',e=>{const pop=$('#pop');if(pop&&!e.target.closest('#pop')&&!e.target.closest('[data-act="bell"]'))pop.remove();
   const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(!fn)return;if(el.tagName==='INPUT')return;fn(el,e)});

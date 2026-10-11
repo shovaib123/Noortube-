@@ -258,6 +258,388 @@ async function getPendingWithdraw(db, userId) {
   } catch (_) { return null; }
 }
 
+// ================= PLATFORM SETTINGS, SALAH GUARD, HALAL ADS, BROADCASTS, AUDIT LOG, ANALYTICS =================
+// ===== Prayer times (astronomical formulas, same approach as praytimes.org). Returns local clock hours (e.g. 5.5 = 5:30). =====
+const PRAYER_METHODS = { MWL: { fajr: 18, isha: 17, name: "Muslim World League" }, Karachi: { fajr: 18, isha: 18, name: "Univ. of Islamic Sciences, Karachi" }, ISNA: { fajr: 15, isha: 15, name: "ISNA (North America)" }, Egypt: { fajr: 19.5, isha: 17.5, name: "Egyptian General Authority" }, Makkah: { fajr: 18.5, ishaMin: 90, name: "Umm al-Qura, Makkah" } };
+function computePrayerTimes(dateMs, lat, lng, tz, methodKey, hanafi) {
+  const R = Math.PI / 180, D = 180 / Math.PI;
+  const sin = (d) => Math.sin(d * R), cos = (d) => Math.cos(d * R), tan = (d) => Math.tan(d * R);
+  const asin = (x) => D * Math.asin(x), acos = (x) => D * Math.acos(x), atan2 = (y, x) => D * Math.atan2(y, x), acot = (x) => D * Math.atan(1 / x);
+  const fixAngle = (a) => { a -= 360 * Math.floor(a / 360); return a; }, fixHour = (h) => { h -= 24 * Math.floor(h / 24); return h; };
+  const dt = new Date(dateMs + tz * 3600000); // local calendar date at the location
+  let Y = dt.getUTCFullYear(), M = dt.getUTCMonth() + 1; const Dd = dt.getUTCDate();
+  if (M <= 2) { Y -= 1; M += 12; }
+  const A = Math.floor(Y / 100), B = 2 - A + Math.floor(A / 4);
+  const jd0 = Math.floor(365.25 * (Y + 4716)) + Math.floor(30.6001 * (M + 1)) + Dd + B - 1524.5 - lng / (15 * 24);
+  const sunPos = (jd) => { const d = jd - 2451545.0, g = fixAngle(357.529 + 0.98560028 * d), q = fixAngle(280.459 + 0.98564736 * d), L = fixAngle(q + 1.915 * sin(g) + 0.020 * sin(2 * g)), e = 23.439 - 0.00000036 * d, RA = fixHour(atan2(cos(e) * sin(L), cos(L)) / 15); return { decl: asin(sin(e) * sin(L)), eqt: q / 15 - RA }; };
+  const midDay = (t) => fixHour(12 - sunPos(jd0 + t).eqt);
+  const angleTime = (angle, t, ccw) => { const decl = sunPos(jd0 + t).decl, noon = midDay(t), x = (-sin(angle) - sin(decl) * sin(lat)) / (cos(decl) * cos(lat)); if (x < -1 || x > 1) return NaN; const h = acos(x) / 15; return noon + (ccw ? -h : h); };
+  const asrTime = (factor, t) => { const decl = sunPos(jd0 + t).decl, angle = -acot(factor + tan(Math.abs(lat - decl))); return angleTime(angle, t, false); };
+  const m = PRAYER_METHODS[methodKey] || PRAYER_METHODS.MWL;
+  let T = { fajr: 5, sunrise: 6, dhuhr: 12, asr: 13, maghrib: 18, isha: 18 };
+  for (let it = 0; it < 2; it++) {
+    const t = (h) => h / 24;
+    T = {
+      fajr: angleTime(m.fajr, t(T.fajr), true), sunrise: angleTime(0.833, t(T.sunrise), true), dhuhr: midDay(t(T.dhuhr)),
+      asr: asrTime(hanafi ? 2 : 1, t(T.asr)), maghrib: angleTime(0.833, t(T.maghrib), false),
+      isha: m.ishaMin ? NaN : angleTime(m.isha, t(T.isha), false),
+    };
+    if (m.ishaMin) T.isha = T.maghrib + m.ishaMin / 60;
+  }
+  const adj = tz - lng / 15, out = {};
+  Object.keys(T).forEach((k) => { out[k] = fixHour(T[k] + adj + (k === "dhuhr" ? 2 / 60 : 0)); }); // dhuhr +2 min safety, like most apps
+  return out;
+}
+const PRAYER_ORDER = [["fajr", "Fajr"], ["dhuhr", "Dhuhr"], ["asr", "Asr"], ["maghrib", "Maghrib"], ["isha", "Isha"]];
+// Is "now" inside a prayer window? Returns { active, name, untilMs } using the guard length in minutes after each prayer starts.
+function salahGuardState(nowMs, cfg) {
+  if (!cfg || !cfg.guardOn || !isFinite(cfg.lat) || !isFinite(cfg.lng)) return { active: false };
+  const local = new Date(nowMs + cfg.tz * 3600000), startOfDay = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - cfg.tz * 3600000;
+  const T = computePrayerTimes(nowMs, cfg.lat, cfg.lng, cfg.tz, cfg.method, cfg.hanafi);
+  for (const [k, name] of PRAYER_ORDER) {
+    const h = T[k]; if (!isFinite(h)) continue;
+    const start = startOfDay + h * 3600000, end = start + cfg.guardMin * 60000;
+    if (nowMs >= start && nowMs < end) return { active: true, name, untilMs: end };
+  }
+  if (cfg.jummah && local.getUTCDay() === 5) { // Jumu'ah: Friday 12:00 to 14:00 local time
+    const a = startOfDay + 12 * 3600000, b = startOfDay + 14 * 3600000;
+    if (nowMs >= a && nowMs < b) return { active: true, name: "Jumu'ah", untilMs: b };
+  }
+  return { active: false };
+}
+let platformReady = false;
+async function ensurePlatformTables(db) {
+  if (platformReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS app_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS ads (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, media_url TEXT NOT NULL, click_url TEXT, placements TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, starts_at INTEGER, ends_at INTEGER, impressions INTEGER NOT NULL DEFAULT 0, clicks INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS broadcasts (id TEXT PRIMARY KEY, admin_id TEXT, title TEXT NOT NULL, message TEXT NOT NULL, audience TEXT NOT NULL, sent_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, ts INTEGER NOT NULL, admin_id TEXT, admin_name TEXT, action TEXT NOT NULL, method TEXT, path TEXT)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts)").run();
+  platformReady = true;
+}
+async function getAppSettings(db) {
+  const rows = await db.prepare("SELECT k, v FROM app_settings").all();
+  const m = {};
+  (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+  const num = (k, d) => { const n = parseFloat(m[k]); return isFinite(n) ? n : d; };
+  return {
+    city: m.prayer_city || "Delhi, India", lat: num("prayer_lat", 28.6139), lng: num("prayer_lng", 77.209), tz: num("prayer_tz", 5.5),
+    method: PRAYER_METHODS[m.prayer_method] ? m.prayer_method : "Karachi", hanafi: (m.prayer_asr || "hanafi") !== "shafi",
+    guardOn: (m.salah_guard == null ? "1" : m.salah_guard) !== "0", jummah: (m.jummah_guard == null ? "1" : m.jummah_guard) !== "0", guardMin: Math.max(1, Math.min(60, Math.round(num("guard_min", 12)))),
+  };
+}
+const AUDIT_LABELS = [
+  [/^PATCH \/api\/admin\/users\/[^/]+\/suspend$/, "Deactivated / reactivated a channel"], [/^DELETE \/api\/admin\/users\/[^/]+$/, "Deleted an account"],
+  [/^PATCH \/api\/admin\/(videos|reels)\/[^/]+\/hide$/, "Deactivated / reactivated content"], [/^DELETE \/api\/(videos|reels)\/[^/]+$/, "Deleted a video / reel"],
+  [/^PATCH \/api\/admin\/reports\/[^/]+$/, "Updated a report"], [/^POST \/api\/admin\/feedback\/[^/]+\/reply$/, "Replied to feedback"],
+  [/^PUT \/api\/admin\/payout-settings$/, "Changed payout rates"], [/^POST \/api\/admin\/payouts\/[^/]+\/mark-paid$/, "Marked a creator payout as paid"],
+  [/^POST \/api\/admin\/withdraw-requests\/[^/]+\/mark-paid$/, "Marked a withdrawal as paid"], [/^POST \/api\/admin\/withdraw-requests\/[^/]+\/reject$/, "Rejected a withdrawal"],
+  [/^PUT \/api\/admin\/sadaqah\/settings$/, "Changed sadaqah settings"], [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/confirm$/, "Confirmed a sadaqah payment"],
+  [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/reject$/, "Marked a sadaqah payment as not received"], [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/mark-paid$/, "Marked a sadaqah withdrawal as paid"],
+  [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/reject$/, "Rejected a sadaqah withdrawal"], [/^POST \/api\/admin\/ads$/, "Created an ad"], [/^PATCH \/api\/admin\/ads\/[^/]+$/, "Edited / paused an ad"],
+  [/^DELETE \/api\/admin\/ads\/[^/]+$/, "Deleted an ad"], [/^POST \/api\/admin\/broadcast$/, "Sent a notification to users"], [/^PUT \/api\/admin\/settings$/, "Changed platform settings"],
+  [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
+];
+function auditLabel(method, path) {
+  const key = method + " " + path;
+  for (const [re, label] of AUDIT_LABELS) if (re.test(key)) return label;
+  return key;
+}
+async function adminUser(request, env) { const u = await currentUser(request, env); return u && u.role === "admin" ? u : null; }
+const AD_PLACEMENTS = ["home", "watch", "reels"];
+function adOut(a) {
+  return { id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", placements: String(a.placements || "").split(",").filter(Boolean), active: !!a.active,
+    startsAt: a.starts_at || null, endsAt: a.ends_at || null, impressions: a.impressions || 0, clicks: a.clicks || 0, createdAt: a.created_at };
+}
+
+// ================= FEED RANKING ("viral algorithm") =================
+// base score   = popularity x quality x velocity x freshness x evergreen x safety        (same for everyone, cached ~30 s)
+// For You      = base x personal (follows, interests, already-watched) x tiny steady jitter, then creator diversity + "new video" trial slots
+// Trending     = base x momentum (views in the last 24 h vs the 24 h before), same for everyone
+// The default feed order of /api/videos and /api/reels is NOT changed: add ?rank=1 to get rankFY / rankTR / rankReason on every item.
+const RANK_TTL_MS = 30000;
+const rankCache = {};
+const FEED_SQL = {
+  v: "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.removed = 0 AND videos.hidden = 0",
+  r: "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id WHERE reels.hidden = 0",
+};
+const rkClamp = (x, a, b) => Math.max(a, Math.min(b, x));
+function rkAgeH(s, now) {
+  if (!s) return 9999;
+  const str = String(s), t = Date.parse(/[TZ]/.test(str) ? str : str.replace(" ", "T") + "Z");
+  return isFinite(t) ? Math.max(0, (now - t) / 3600000) : 9999;
+}
+function rkHash(str) { // 0..1, stable
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) % 100000) / 100000;
+}
+function rkWilson(up, total) { // lower bound of the true like share, so 1 like out of 1 vote does not look perfect
+  if (total <= 0) return 0.7;
+  const z = 1.28, p = up / total;
+  return (p + z * z / (2 * total) - z * Math.sqrt((p * (1 - p) + z * z / (4 * total)) / total)) / (1 + z * z / total);
+}
+function rkBase(row, kind, sig, now) {
+  const views = Math.max(0, Number(row.views) || 0), likes = Math.max(0, Number(row.likes) || 0), dislikes = Math.max(0, Number(row.dislikes) || 0), comments = Math.max(0, Number(row.comment_count) || 0);
+  const ageH = rkAgeH(row.uploaded_at, now), isV = kind === "v";
+  const h24 = sig.h24[row.id] || 0, h48 = sig.h48[row.id] || 0, prior24 = Math.max(0, h48 - h24);
+  // popularity: bounded, so a 10,000-view video is ~3x (not 100x) a new one
+  const popM = 0.8 + 0.22 * Math.log(1 + views);
+  // quality: smoothed like rate, comment rate, like/dislike share, and (videos) how much of the video people really watch
+  const qLike = rkClamp(((likes + 2) / (views + 40)) / 0.10, 0, 1.5), qCmt = rkClamp(((comments + 0.5) / (views + 80)) / 0.02, 0, 1.5), qRatio = rkWilson(likes, likes + dislikes);
+  let watchQ = 1;
+  if (isV) {
+    const ws = sig.watch[row.id], dur = parseDurSec(row.duration);
+    if (ws && ws.sessions >= 5 && dur > 0) { const f = rkClamp(ws.seconds / ws.sessions / dur, 0, 1); watchQ = rkClamp(((f * ws.sessions + 0.4 * 8) / (ws.sessions + 8)) / 0.45, 0.4, 1.6); }
+  }
+  const quality = isV ? 0.40 * qLike + 0.15 * qCmt + 0.15 * qRatio * 1.4 + 0.30 * watchQ : 0.55 * qLike + 0.20 * qCmt + 0.25 * qRatio * 1.4;
+  const engM = 0.6 + 0.8 * rkClamp(quality, 0, 1.6);
+  // velocity = how many views in the last 24 h, and is it speeding up compared with the 24 h before
+  const accel = rkClamp((h24 + 2) / (prior24 + 2), 0.6, 2.5), momentum = Math.log(1 + h24) * Math.sqrt(accel);
+  const velM = rkClamp(0.85 + 0.3 * momentum, 0.85, 2.2);
+  // freshness: smooth boost for the first day or two (stronger for reels), then a slow evergreen decay so old good content never vanishes
+  // the boost is scaled by quality, so a fresh video nobody likes does not beat a proven one (new creators get trial slots instead)
+  const fq = 0.35 + 0.65 * rkClamp(quality, 0, 1.2) / 1.2;
+  const fresh = isV ? 1 + 0.9 * fq * Math.exp(-ageH / 20) : 1 + 1.3 * fq * Math.exp(-ageH / 12);
+  const evergreen = isV ? 0.65 + 0.35 * Math.exp(-ageH / (30 * 24)) : 0.55 + 0.45 * Math.exp(-ageH / (12 * 24));
+  // safety: open reports and copyright claims push content down
+  const reports = sig.reports[row.id] || 0, safety = (1 / (1 + 0.6 * reports)) * (isV && row.copyright_status === "claimed" ? 0.5 : 1);
+  const base = popM * engM * velM * fresh * evergreen * safety;
+  return { base, trend: base * (0.5 + momentum), ageH, views, velM, quality, h24 };
+}
+async function rkLoad(db, kind, now) {
+  const c = rankCache[kind];
+  if (c && now - c.t < RANK_TTL_MS) return c;
+  const tbl = kind === "v" ? "videos" : "reels", sel = FEED_SQL[kind];
+  const [newest, top] = await Promise.all([db.prepare(sel + " ORDER BY " + tbl + ".uploaded_at DESC LIMIT 400").all(), db.prepare(sel + " ORDER BY " + tbl + ".views DESC LIMIT 200").all()]);
+  const seen = new Set(), rows = [];
+  for (const r of [...(newest.results || []), ...(top.results || [])]) { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); } }
+  const sig = { h24: Object.create(null), h48: Object.create(null), watch: Object.create(null), reports: Object.create(null) };
+  try {
+    await ensureViewTables(db);
+    const q = await db.prepare("SELECT content_id AS id, SUM(CASE WHEN ts > ? THEN 1 ELSE 0 END) AS h24, COUNT(*) AS h48 FROM view_log WHERE kind = ? AND ts > ? GROUP BY content_id").bind(now - 86400000, kind, now - 172800000).all();
+    for (const r of q.results || []) { sig.h24[r.id] = r.h24 || 0; sig.h48[r.id] = r.h48 || 0; }
+  } catch (_) {}
+  if (kind === "v") {
+    try { await ensureRetentionTables(db); const q = await db.prepare("SELECT video_id AS id, sessions, seconds FROM video_watch_stats").all(); for (const r of q.results || []) sig.watch[r.id] = { sessions: r.sessions || 0, seconds: r.seconds || 0 }; } catch (_) {}
+  }
+  try { const q = await db.prepare("SELECT target_id AS id, COUNT(*) AS n FROM reports WHERE status = 'open' AND target_type = ? GROUP BY target_id").bind(kind === "v" ? "video" : "reel").all(); for (const r of q.results || []) sig.reports[r.id] = r.n; } catch (_) {}
+  const items = rows.map((row) => { const b = rkBase(row, kind, sig, now); return { id: row.id, row, owner: row.owner_id, cat: row.category || null, mix: row.mix_category || null, ...b }; });
+  const cache = { t: now, items, byId: Object.fromEntries(items.map((x) => [x.id, x])) };
+  rankCache[kind] = cache;
+  return cache;
+}
+async function rkPersonal(db, userId, kind) {
+  const P = { key: userId ? "u:" + userId : "anon", follows: new Set(), cats: Object.create(null), mix: Object.create(null), seen: new Set(), has: !!userId };
+  if (!userId) return P;
+  try { const f = await db.prepare("SELECT followee_id FROM follows WHERE follower_id = ? LIMIT 500").bind(userId).all(); for (const r of f.results || []) P.follows.add(r.followee_id); } catch (_) {}
+  try {
+    const h = await db.prepare("SELECT watch_history.video_id AS id, videos.category AS cat, videos.mix_category AS mix FROM watch_history LEFT JOIN videos ON videos.id = watch_history.video_id WHERE watch_history.user_id = ? ORDER BY watch_history.watched_at DESC LIMIT 200").bind(userId).all();
+    (h.results || []).forEach((r, i) => {
+      if (kind === "v") P.seen.add(r.id);
+      const w = i < 60 ? Math.pow(0.96, i) : 0;
+      if (w && r.cat) P.cats[r.cat] = (P.cats[r.cat] || 0) + w;
+      if (w && r.mix) P.mix[r.mix] = (P.mix[r.mix] || 0) + w;
+    });
+  } catch (_) {}
+  return P;
+}
+function rkPersonalMult(it, P) {
+  let m = 1;
+  if (P.follows.has(it.owner)) m += 0.45;
+  if (it.cat && P.cats[it.cat]) m += 0.30 * Math.min(1, P.cats[it.cat] / 4);
+  if (it.mix && P.mix[it.mix]) m += 0.15 * Math.min(1, P.mix[it.mix] / 4);
+  if (P.seen.has(it.id)) m *= 0.45; // already watched: show something new first
+  return Math.min(m, 2.2);
+}
+// greedy re-rank so one creator cannot fill the whole top of the feed
+function rkDiversify(list, scoreOf, decay, depth) {
+  const head = list.slice(0, depth), tail = list.slice(depth), out = [], cnt = Object.create(null), pool = head.slice();
+  while (pool.length) {
+    let bi = 0, bs = -1;
+    for (let i = 0; i < pool.length; i++) { const s = scoreOf(pool[i]) * Math.pow(decay, cnt[pool[i].owner] || 0); if (s > bs) { bs = s; bi = i; } }
+    const it = pool.splice(bi, 1)[0]; cnt[it.owner] = (cnt[it.owner] || 0) + 1; out.push(it);
+  }
+  return out.concat(tail);
+}
+// Rank everything for one viewer. Returns { fy: Map(id -> {pos, reason}), tr: Map(id -> pos), order: ids in For You order }
+async function rkRanks(db, kind, userId) {
+  const now = Date.now(), cache = await rkLoad(db, kind, now), P = await rkPersonal(db, userId, kind), hour = Math.floor(now / 3600000);
+  const jit = (it) => 0.97 + 0.06 * rkHash(it.id + "|" + P.key + "|" + hour);
+  const sc = new Map(cache.items.map((it) => [it.id, it.base * rkPersonalMult(it, P) * jit(it)]));
+  let list = [...cache.items].sort((a, b) => sc.get(b.id) - sc.get(a.id));
+  list = rkDiversify(list, (it) => sc.get(it.id), 0.78, 120);
+  // trial slots: brand-new content with almost no views gets shown to a few people (positions 3, 8, 13...) so a new creator can take off
+  const slots = new Set();
+  const trialKey = (it) => it.quality * (1 + 1.2 * Math.exp(-it.ageH / 24)) * (0.9 + 0.2 * rkHash(it.id + P.key + hour)) * (P.follows.has(it.owner) ? 2.5 : 1);
+  const pool = cache.items.filter((it) => it.views <= 25 && it.ageH < 72 && !P.seen.has(it.id)).sort((a, b) => trialKey(b) - trialKey(a));
+  let pi = 0;
+  for (let pos = 2; pos < list.length && pi < pool.length && slots.size < 6; pos += 5) {
+    const cand = pool[pi++], from = list.indexOf(cand);
+    if (from < 0 || from <= pos) { if (from >= 0 && from <= pos) slots.add(cand.id); continue; }
+    list.splice(from, 1); list.splice(pos, 0, cand); slots.add(cand.id);
+  }
+  const fy = new Map();
+  list.forEach((it, i) => {
+    let reason = "popular";
+    if (P.follows.has(it.owner)) reason = "following";
+    else if (slots.has(it.id)) reason = "new";
+    else if ((it.cat && P.cats[it.cat]) || (it.mix && P.mix[it.mix])) reason = "interest";
+    else if (it.velM > 1.4) reason = "trending";
+    fy.set(it.id, { pos: i + 1, reason });
+  });
+  let tl = [...cache.items].sort((a, b) => b.trend - a.trend);
+  tl = rkDiversify(tl, (it) => it.trend, 0.85, 40);
+  const tr = new Map(tl.map((it, i) => [it.id, i + 1]));
+  return { fy, tr, order: list.map((it) => it.id), trOrder: tl.map((it) => it.id), cache };
+}
+// Adds rankFY / rankTR / rankReason to already-mapped items (the order of the array is untouched).
+// Items that were uploaded after the cache was built are treated as brand new: they rank first, newest first.
+function rkAttach(out, ranks) {
+  let fresh = 0;
+  return out.map((o) => {
+    const f = ranks.fy.get(o.id);
+    if (f) return { ...o, rankFY: f.pos, rankTR: ranks.tr.get(o.id) || f.pos, rankReason: f.reason };
+    fresh += 1;
+    return { ...o, rankFY: fresh, rankTR: fresh, rankReason: "new" };
+  });
+}
+// "Up next": same creator, same category / mix, shared tags, plus the general quality of the video. Stable (no random shuffling).
+async function rkRelated(db, kind, seedId, userId, limit) {
+  const now = Date.now(), cache = await rkLoad(db, kind, now), P = await rkPersonal(db, userId, kind);
+  let seed = cache.byId[seedId];
+  if (!seed) {
+    const row = await db.prepare("SELECT * FROM " + (kind === "v" ? "videos" : "reels") + " WHERE id = ?").bind(seedId).first();
+    if (!row) return null;
+    seed = { id: row.id, row, owner: row.owner_id, cat: row.category || null, mix: row.mix_category || null };
+  }
+  let seedTags = [];
+  try { seedTags = (JSON.parse(seed.row.tags || "[]") || []).map((t) => String(t).toLowerCase()); } catch (_) {}
+  const tagSet = new Set(seedTags);
+  const scored = [];
+  for (const it of cache.items) {
+    if (it.id === seed.id) continue;
+    let aff = 0;
+    if (it.owner === seed.owner) aff += 0.9;
+    if (seed.cat && it.cat === seed.cat) aff += 0.45;
+    if (seed.mix && it.mix === seed.mix) aff += 0.35;
+    if (tagSet.size) { try { const tg = (JSON.parse(it.row.tags || "[]") || []).filter((t) => tagSet.has(String(t).toLowerCase())).length; aff += Math.min(3, tg) * 0.15; } catch (_) {} }
+    let s = it.base * (1 + aff * 1.6) * (aff > 0 ? 1 : 0.5);
+    if (P.seen.has(it.id)) s *= 0.45;
+    if (P.follows.has(it.owner)) s *= 1.15;
+    scored.push({ it, s });
+  }
+  scored.sort((a, b) => b.s - a.s);
+  return scored.slice(0, limit).map((x) => x.it);
+}
+const rkLimit = (url, d) => { const n = parseInt(url.searchParams.get("limit"), 10); return isFinite(n) ? Math.max(1, Math.min(200, n)) : d; };
+
+async function feedResponse(db, request, env, url, kind) {
+  const key = kind === "v" ? "videos" : "reels", tbl = key, mk = kind === "v" ? videoOut : reelOut;
+  const sort = (url.searchParams.get("sort") || "").toLowerCase(), wantRank = url.searchParams.get("rank") === "1";
+  if (!sort && !wantRank) { // unchanged default: newest first
+    const rows = await db.prepare(FEED_SQL[kind] + " ORDER BY " + tbl + ".uploaded_at DESC LIMIT 200").all();
+    return json({ [key]: rows.results.map(mk) });
+  }
+  const limit = rkLimit(url, 200);
+  let me = null;
+  try { me = await currentUser(request, env); } catch (_) {}
+  const userId = me && me.role !== "guest" ? me.id : null;
+  let ranks = null;
+  try { ranks = await rkRanks(db, kind, userId); } catch (_) { ranks = null; }
+  if ((sort === "trending" || sort === "foryou") && ranks) {
+    const ids = sort === "trending" ? ranks.trOrder : ranks.order;
+    const out = ids.slice(0, limit).map((id) => mk(ranks.cache.byId[id].row));
+    return json({ [key]: rkAttach(out, ranks), sort });
+  }
+  const order = sort === "popular" ? tbl + ".views DESC, " + tbl + ".uploaded_at DESC" : tbl + ".uploaded_at DESC";
+  const rows = await db.prepare(FEED_SQL[kind] + " ORDER BY " + order + " LIMIT " + limit).all();
+  const out = rows.results.map(mk);
+  return json({ [key]: ranks ? rkAttach(out, ranks) : out, sort: sort || "latest" });
+}
+
+// ================= CREATOR ANALYTICS (real data only) =================
+// Daily views: counted in view_daily (above). Audience retention: the app reports which 10% parts of a video a viewer really watched.
+const istDay = (ms) => new Date(ms + 19800000).toISOString().slice(0, 10);
+let retentionReady = false;
+async function ensureRetentionTables(db) {
+  if (retentionReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS video_retention (video_id TEXT NOT NULL, bucket INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (video_id, bucket))").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS video_watch_stats (video_id TEXT PRIMARY KEY, sessions INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 0)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS retention_seen (viewer TEXT NOT NULL, video_id TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (viewer, video_id))").run();
+  retentionReady = true;
+}
+function lastDays(n, now) { const out = []; for (let i = n - 1; i >= 0; i--) out.push(istDay(now - i * 86400000)); return out; }
+
+// ================= SADAQAH =================
+// Viewers give sadaqah under a video by paying the ADMIN's UPI (set in the admin panel). The app cannot see UPI payments, so:
+//   1) tapping Sadaqah creates a short reference (e.g. NT7K2QX) that goes into the UPI note,
+//   2) the donor then tells the app how much they sent ("claimed"),
+//   3) the admin checks the UPI statement and confirms ("received"). Only RECEIVED amounts count for the creator.
+// Money stays with the admin. A creator can request a withdrawal once their available sadaqah reaches the limit (default Rs 5000),
+// either the full amount or a custom amount; the admin pays them by UPI/bank and taps Paid. Not linked to monetization at all.
+const SADAQAH_UNLOCK_PAISE = 500000;      // Rs 5000 available balance needed before a creator can request a withdrawal
+const SADAQAH_MIN_REQUEST_PAISE = 10000;  // smallest custom withdrawal: Rs 100
+const SADAQAH_MAX_CLAIM_PAISE = 10000000; // a donor can claim at most Rs 1,00,000 per sadaqah
+let sadaqahReady = false;
+async function ensureSadaqahTables(db) {
+  if (sadaqahReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS sadaqah_donations (id TEXT PRIMARY KEY, ref TEXT NOT NULL, video_id TEXT NOT NULL, creator_id TEXT NOT NULL, donor_id TEXT, donor_name TEXT, status TEXT NOT NULL DEFAULT 'initiated', claimed_paise INTEGER, amount_paise INTEGER, utr TEXT, created_at INTEGER NOT NULL, claimed_at INTEGER, resolved_at INTEGER, note TEXT)").run();
+  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_sd_ref ON sadaqah_donations (ref)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_sd_creator ON sadaqah_donations (creator_id, status)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_sd_status ON sadaqah_donations (status, created_at)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_sd_donor ON sadaqah_donations (donor_id, created_at)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS sadaqah_requests (id TEXT PRIMARY KEY, creator_id TEXT NOT NULL, amount_paise INTEGER NOT NULL, method TEXT, account_name TEXT, account_number TEXT, routing_code TEXT, status TEXT NOT NULL DEFAULT 'Pending', created_at INTEGER NOT NULL, resolved_at INTEGER, note TEXT)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_sr_status ON sadaqah_requests (status, created_at)").run();
+  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_sr_one_pending ON sadaqah_requests (creator_id) WHERE status = 'Pending'").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS sadaqah_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)").run();
+  sadaqahReady = true;
+}
+async function getSadaqahSettings(db) {
+  const rows = await db.prepare("SELECT k, v FROM sadaqah_settings").all();
+  const m = {};
+  (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+  const unlock = parseInt(m.unlock_paise, 10);
+  return { upiId: m.upi_id || "", payeeName: m.payee_name || "NoorTube Sadaqah", unlockPaise: unlock >= SADAQAH_MIN_REQUEST_PAISE ? unlock : SADAQAH_UNLOCK_PAISE, minRequestPaise: SADAQAH_MIN_REQUEST_PAISE };
+}
+async function sadaqahBalance(db, creatorId) {
+  const r = await db.prepare(
+    "SELECT COALESCE((SELECT SUM(amount_paise) FROM sadaqah_donations WHERE creator_id = ? AND status = 'received'), 0) AS received, " +
+    "COALESCE((SELECT COUNT(*) FROM sadaqah_donations WHERE creator_id = ? AND status = 'received'), 0) AS receivedCount, " +
+    "COALESCE((SELECT SUM(amount_paise) FROM sadaqah_requests WHERE creator_id = ? AND status = 'Paid'), 0) AS paid, " +
+    "COALESCE((SELECT SUM(amount_paise) FROM sadaqah_requests WHERE creator_id = ? AND status = 'Pending'), 0) AS pending, " +
+    "COALESCE((SELECT SUM(claimed_paise) FROM sadaqah_donations WHERE creator_id = ? AND status = 'claimed'), 0) AS awaiting"
+  ).bind(creatorId, creatorId, creatorId, creatorId, creatorId).first();
+  const received = r.received || 0, paid = r.paid || 0, pending = r.pending || 0;
+  return { receivedPaise: received, receivedCount: r.receivedCount || 0, paidPaise: paid, pendingPaise: pending, awaitingPaise: r.awaiting || 0, availablePaise: Math.max(0, received - paid - pending) };
+}
+// Never throws. Removes a deleted creator's sadaqah rows (the account and its videos are being deleted too).
+async function purgeSadaqah(db, userId) {
+  try {
+    await ensureSadaqahTables(db);
+    await db.batch([
+      db.prepare("DELETE FROM sadaqah_donations WHERE creator_id = ?").bind(userId),
+      db.prepare("DELETE FROM sadaqah_requests WHERE creator_id = ?").bind(userId),
+    ]);
+  } catch (_) {}
+}
+function sadaqahRef() {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", b = crypto.getRandomValues(new Uint8Array(6));
+  let s = "NT";
+  for (let i = 0; i < 6; i++) s += A[b[i] % A.length];
+  return s;
+}
+function parseRupeesToPaise(v) {
+  const n = typeof v === "number" ? v : parseFloat(String(v == null ? "" : v).replace(/,/g, ""));
+  if (!isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100);
+}
+const rs2 = (p) => "\u20B9" + ((p || 0) / 100).toFixed(2).replace(/\.00$/, "");
+function sadaqahDonationOut(d) {
+  return { id: d.id, ref: d.ref, videoId: d.video_id, videoTitle: d.vtitle || "Deleted video", creatorId: d.creator_id, creatorName: d.creator_name || "", donorName: d.donor_name || "Guest",
+    status: d.status, claimedPaise: d.claimed_paise, amountPaise: d.amount_paise, utr: d.utr || "", createdAt: d.created_at, claimedAt: d.claimed_at, resolvedAt: d.resolved_at, note: d.note || "" };
+}
+
 function publicUser(u, withPrivate = false) {
   if (!u) return null;
   if (!withPrivate) {
@@ -299,8 +681,25 @@ function statusOut(s) {
   };
 }
 
-export default {
+const WORKER = {
   async fetch(request, env) {
+    const res = await WORKER.main(request, env);
+    try {
+      const m = request.method, p = new URL(request.url).pathname;
+      const mutating = m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
+      const adminPath = p.startsWith("/api/admin/") || /^\/api\/(videos|reels)\/[^/]+$/.test(p);
+      if (mutating && adminPath && res.status < 400) {
+        const u = await currentUser(request, env);
+        if (u && u.role === "admin") {
+          const db = env.NOOR_DB;
+          await ensurePlatformTables(db);
+          await db.prepare("INSERT INTO audit_log (id, ts, admin_id, admin_name, action, method, path) VALUES (?,?,?,?,?,?,?)").bind(uid("au"), Date.now(), u.id, u.name || "Admin", auditLabel(m, p), m, p).run();
+        }
+      }
+    } catch (_) {}
+    return res;
+  },
+  async main(request, env) {
     try {
       return await handleRequest(request, env);
     } catch (e) {
@@ -311,6 +710,7 @@ export default {
     }
   },
 };
+export default WORKER;
 
 // ================= SECURITY LAYER =================
 // 1) Server-side secrets: use the Cloudflare secret if you set one (UPLOAD_SECRET / VIEW_SECRET); otherwise a random
@@ -398,6 +798,9 @@ async function ensureViewTables(db) {
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_viewer ON view_log (viewer, kind, ts)").run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_ip ON view_log (ip, kind, ts)").run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_vl_ts ON view_log (ts)").run();
+  // Daily counted views per video/reel (kept long term, view_log itself is trimmed after 2 days). Day = India time (IST).
+  await db.prepare("CREATE TABLE IF NOT EXISTS view_daily (kind TEXT NOT NULL, content_id TEXT NOT NULL, owner_id TEXT NOT NULL, day TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, content_id, day))").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vd_owner ON view_daily (owner_id, day)").run();
   viewTablesReady = true;
 }
 function parseDurSec(d) {
@@ -470,6 +873,9 @@ async function handleViewRoute(kind, id, step, request, env, db) {
     db.prepare("UPDATE " + table + " SET views = views + 1 WHERE id = ? AND EXISTS (SELECT 1 FROM view_log WHERE id = ?)").bind(id, vid),
   ]);
   const counted = !!(res && res[1] && res[1].meta && res[1].meta.changes === 1);
+  if (counted) {
+    try { await db.prepare("INSERT INTO view_daily (kind, content_id, owner_id, day, views) VALUES (?, ?, ?, ?, 1) ON CONFLICT(kind, content_id, day) DO UPDATE SET views = views + 1").bind(kind, id, row.owner_id, istDay(now)).run(); } catch (_) {}
+  }
   if (Math.random() < 0.02) { try { await db.prepare("DELETE FROM view_log WHERE ts < ? AND ip != 'owner'").bind(now - 2 * VIEW_COOLDOWN_MS).run(); } catch (_) {} }
   return out(counted, counted ? "counted" : "limit");
 }
@@ -911,16 +1317,449 @@ async function handleRequest(request, env) {
           }
           rt = { series, perContent: per, uniqueViewers48h: uniq.size };
         } catch (_) { rt = null; }
+        let daily = null, retention = null;
+        try {
+          await ensureViewTables(db);
+          const days = lastDays(90, now);
+          const dr = await db.prepare("SELECT day, kind, SUM(views) AS n FROM view_daily WHERE owner_id = ? AND day >= ? GROUP BY day, kind").bind(u.id, days[0]).all();
+          const ix = {};
+          days.forEach((d, i) => { ix[d] = i; });
+          const dv = { days, all: new Array(90).fill(0), v: new Array(90).fill(0), r: new Array(90).fill(0), firstDay: null };
+          (dr.results || []).forEach((r) => { const i = ix[r.day]; if (i === undefined) return; dv[r.kind === "r" ? "r" : "v"][i] += r.n; dv.all[i] += r.n; });
+          const fd = await db.prepare("SELECT MIN(day) AS d FROM view_daily WHERE owner_id = ?").bind(u.id).first();
+          dv.firstDay = fd && fd.d ? fd.d : null;
+          daily = dv;
+        } catch (_) { daily = null; }
+        try {
+          await ensureRetentionTables(db);
+          const st = await db.prepare("SELECT s.video_id AS id, s.sessions AS sessions, s.seconds AS seconds FROM video_watch_stats s WHERE s.video_id IN (SELECT id FROM videos WHERE owner_id = ?)").bind(u.id).all();
+          const bk = await db.prepare("SELECT r.video_id AS id, r.bucket AS b, r.n AS n FROM video_retention r WHERE r.video_id IN (SELECT id FROM videos WHERE owner_id = ?)").bind(u.id).all();
+          const per = {};
+          (st.results || []).forEach((r) => { per[r.id] = { sessions: r.sessions || 0, seconds: r.seconds || 0, n: new Array(10).fill(0) }; });
+          (bk.results || []).forEach((r) => { if (per[r.id] && r.b >= 0 && r.b < 10) per[r.id].n[r.b] = r.n; });
+          const out = { sessions: 0, seconds: 0, n: new Array(10).fill(0) }, perVideo = {};
+          Object.keys(per).forEach((id) => {
+            const p = per[id];
+            out.sessions += p.sessions; out.seconds += p.seconds; p.n.forEach((x, i) => { out.n[i] += x; });
+            perVideo[id] = { sessions: p.sessions, avgSeconds: p.sessions ? Math.round(p.seconds / p.sessions) : 0, curve: p.n.map((x) => (p.sessions ? Math.round(x / p.sessions * 1000) / 10 : 0)) };
+          });
+          retention = { overall: { sessions: out.sessions, avgSeconds: out.sessions ? Math.round(out.seconds / out.sessions) : 0, curve: out.n.map((x) => (out.sessions ? Math.round(x / out.sessions * 1000) / 10 : 0)) }, perVideo };
+        } catch (_) { retention = null; }
         const cm = await db.prepare("SELECT comments.id AS id, comments.target_type AS type, comments.target_id AS tid, comments.text AS text, comments.created_at AS at, users.name AS name, users.avatar_color AS color FROM comments JOIN users ON users.id = comments.user_id WHERE comments.user_id != ? AND ((comments.target_type = 'video' AND comments.target_id IN (SELECT id FROM videos WHERE owner_id = ?)) OR (comments.target_type = 'reel' AND comments.target_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY comments.created_at DESC LIMIT 30").bind(u.id, u.id, u.id).all();
         return json({
           ok: true, now, followers: (fc && fc.c) || 0, watchHours: u.watch_hours || 0, reelViews62d: (rv && rv.v) || 0,
           need: { followers: 1000, watchHours: 3000, reelViews: 2500000 },
           videos: vids.results.map(v => ({ id: v.id, title: v.title, thumbnail: v.thumbnail, fileUrl: v.file_url, views: v.views || 0, likes: v.likes || 0, dislikes: v.dislikes || 0, duration: v.duration, monetized: !!v.monetized, hidden: !!v.hidden, copyrightStatus: v.copyright_status, uploadedAt: v.uploaded_at, comments: v.comments || 0, saves: v.saves || 0 })),
           reels: rls.results.map(r => ({ id: r.id, title: r.title, thumbnail: r.thumbnail, fileUrl: r.file_url, views: r.views || 0, likes: r.likes || 0, hidden: !!r.hidden, uploadedAt: r.uploaded_at, comments: r.comments || 0 })),
-          rt,
+          rt, daily, retention,
           comments: cm.results.map(c => ({ id: c.id, type: c.type, targetId: c.tid, text: c.text, at: c.at, name: c.name, color: c.color })),
         });
       } catch (_) { return err("Studio data unavailable", 500); }
+    }
+    // ================= PLATFORM routes: ads, settings, broadcast, audit log, analytics =================
+    // ----- public: which ad(s) to show in a placement. Nothing is served while the Salah guard is active. -----
+    if (method === "GET" && path === "/api/ads") {
+      try {
+        await ensurePlatformTables(db);
+        const placement = url.searchParams.get("placement") || "";
+        if (!AD_PLACEMENTS.includes(placement)) return json({ ads: [] });
+        const now = Date.now(), cfg = await getAppSettings(db), g = salahGuardState(now, cfg);
+        if (g.active) return json({ ads: [], guard: { active: true, name: g.name, untilMs: g.untilMs } });
+        const rows = await db.prepare("SELECT * FROM ads WHERE active = 1 AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
+          .bind(now, now, "%," + placement + ",%").all();
+        return json({ ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "" })) });
+      } catch (_) { return json({ ads: [] }); }
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/ads\/([^/]+)\/(impression|click)$/))) {
+      try {
+        await ensurePlatformTables(db);
+        const col = m[2] === "click" ? "clicks" : "impressions";
+        await db.prepare("UPDATE ads SET " + col + " = " + col + " + 1 WHERE id = ? AND active = 1").bind(m[1]).run();
+      } catch (_) {}
+      return json({ ok: true });
+    }
+    // ----- admin: platform settings (prayer location for the Salah guard + dashboard prayer times) -----
+    if (method === "GET" && path === "/api/admin/settings") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const cfg = await getAppSettings(db), g = salahGuardState(Date.now(), cfg);
+      return json({ ok: true, settings: cfg, methods: Object.keys(PRAYER_METHODS).map((k) => ({ key: k, name: PRAYER_METHODS[k].name })), guard: g });
+    }
+    if (method === "PUT" && path === "/api/admin/settings") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const b = await request.json().catch(() => ({}));
+      const lat = parseFloat(b.lat), lng = parseFloat(b.lng), tz = parseFloat(b.tz), gm = Math.round(parseFloat(b.guardMin));
+      if (!isFinite(lat) || lat < -90 || lat > 90) return err("Latitude must be between -90 and 90", 400);
+      if (!isFinite(lng) || lng < -180 || lng > 180) return err("Longitude must be between -180 and 180", 400);
+      if (!isFinite(tz) || tz < -12 || tz > 14) return err("Time zone must be between -12 and +14 hours", 400);
+      if (!PRAYER_METHODS[b.method]) return err("Choose a calculation method", 400);
+      if (!isFinite(gm) || gm < 1 || gm > 60) return err("Guard length must be between 1 and 60 minutes", 400);
+      const kv = { prayer_city: String(b.city || "").trim().slice(0, 60), prayer_lat: String(lat), prayer_lng: String(lng), prayer_tz: String(tz), prayer_method: b.method, prayer_asr: b.hanafi === false ? "shafi" : "hanafi", salah_guard: b.guardOn === false ? "0" : "1", jummah_guard: b.jummah === false ? "0" : "1", guard_min: String(gm) };
+      await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO app_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
+      const cfg = await getAppSettings(db);
+      return json({ ok: true, settings: cfg, guard: salahGuardState(Date.now(), cfg) });
+    }
+    // ----- admin: halal ads (banners shown on the home page, under videos and on the reels screen) -----
+    if (method === "GET" && path === "/api/admin/ads") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const rows = await db.prepare("SELECT * FROM ads ORDER BY created_at DESC LIMIT 300").all();
+      const cfg = await getAppSettings(db);
+      return json({ ok: true, ads: (rows.results || []).map(adOut), guard: salahGuardState(Date.now(), cfg), guardOn: cfg.guardOn });
+    }
+    if (method === "POST" && path === "/api/admin/ads") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const b = await request.json().catch(() => ({}));
+      const name = String(b.name || "").trim().slice(0, 80);
+      if (!name) return err("Give the ad a name", 400);
+      const type = b.type === "video" ? "video" : "image";
+      const media = String(b.mediaUrl || "").trim();
+      if (!/^https:\/\/[^\s]+$/.test(media)) return err("Upload the ad image or video first", 400);
+      let click = String(b.clickUrl || "").trim();
+      if (click && !/^https?:\/\/[^\s]+$/.test(click)) return err("The link must start with http:// or https://", 400);
+      const places = (Array.isArray(b.placements) ? b.placements : []).filter((p) => AD_PLACEMENTS.includes(p));
+      if (!places.length) return err("Choose where the ad should appear", 400);
+      const starts = b.startsAt ? Number(b.startsAt) : null, ends = b.endsAt ? Number(b.endsAt) : null;
+      if (starts && ends && ends < starts) return err("The end date is before the start date", 400);
+      const id = uid("ad");
+      await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at) VALUES (?,?,?,?,?,?,1,?,?,?)")
+        .bind(id, name, type, media, click, [...new Set(places)].join(","), starts || null, ends || null, Date.now()).run();
+      return json({ ok: true, id });
+    }
+    if ((method === "PATCH" || method === "DELETE") && (m = path.match(/^\/api\/admin\/ads\/([^/]+)$/))) {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const ad = await db.prepare("SELECT * FROM ads WHERE id = ?").bind(m[1]).first();
+      if (!ad) return err("Ad not found", 404);
+      if (method === "DELETE") { await db.prepare("DELETE FROM ads WHERE id = ?").bind(ad.id).run(); return json({ ok: true }); }
+      const b = await request.json().catch(() => ({}));
+      const sets = [], vals = [];
+      if (b.active !== undefined) { sets.push("active = ?"); vals.push(b.active ? 1 : 0); }
+      if (b.name !== undefined) { const n = String(b.name).trim().slice(0, 80); if (!n) return err("Give the ad a name", 400); sets.push("name = ?"); vals.push(n); }
+      if (b.clickUrl !== undefined) { const c = String(b.clickUrl || "").trim(); if (c && !/^https?:\/\/[^\s]+$/.test(c)) return err("The link must start with http:// or https://", 400); sets.push("click_url = ?"); vals.push(c); }
+      if (b.placements !== undefined) { const p = (Array.isArray(b.placements) ? b.placements : []).filter((x) => AD_PLACEMENTS.includes(x)); if (!p.length) return err("Choose where the ad should appear", 400); sets.push("placements = ?"); vals.push([...new Set(p)].join(",")); }
+      if (b.startsAt !== undefined) { sets.push("starts_at = ?"); vals.push(b.startsAt ? Number(b.startsAt) : null); }
+      if (b.endsAt !== undefined) { sets.push("ends_at = ?"); vals.push(b.endsAt ? Number(b.endsAt) : null); }
+      if (!sets.length) return err("Nothing to change", 400);
+      await db.prepare("UPDATE ads SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, ad.id).run();
+      return json({ ok: true });
+    }
+    // ----- admin: send an in-app notification to a group of users (shows in their bell) -----
+    if (method === "POST" && path === "/api/admin/broadcast") {
+      const u = await adminUser(request, env);
+      if (!u) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const b = await request.json().catch(() => ({}));
+      const title = String(b.title || "").trim().slice(0, 80), message = String(b.message || "").trim().slice(0, 300);
+      if (!title || !message) return err("Write a title and a message", 400);
+      const where = { all: "", creators: " AND (id IN (SELECT owner_id FROM videos) OR id IN (SELECT owner_id FROM reels))", monetized: " AND monetization_enabled = 1", admins: " AND role = 'admin'" }[b.audience];
+      if (where === undefined) return err("Choose who should receive it", 400);
+      const r = await db.prepare("INSERT INTO notifications (id, user_id, type, title, message) SELECT 'bc_' || lower(hex(randomblob(8))), id, 'info', ?, ? FROM users WHERE role != 'guest' AND suspended = 0" + where).bind(title, message).run();
+      const sent = (r.meta && r.meta.changes) || 0;
+      await db.prepare("INSERT INTO broadcasts (id, admin_id, title, message, audience, sent_count, created_at) VALUES (?,?,?,?,?,?,?)").bind(uid("bc"), u.id, title, message, b.audience, sent, Date.now()).run();
+      return json({ ok: true, sent });
+    }
+    if (method === "GET" && path === "/api/admin/broadcasts") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const rows = await db.prepare("SELECT * FROM broadcasts ORDER BY created_at DESC LIMIT 50").all();
+      return json({ ok: true, broadcasts: (rows.results || []).map((x) => ({ id: x.id, title: x.title, message: x.message, audience: x.audience, sent: x.sent_count, createdAt: x.created_at })) });
+    }
+    // ----- admin: who did what -----
+    if (method === "GET" && path === "/api/admin/audit") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const rows = await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 300").all();
+      return json({ ok: true, entries: (rows.results || []).map((x) => ({ id: x.id, ts: x.ts, admin: x.admin_name || "Admin", action: x.action, method: x.method, path: x.path })) });
+    }
+    // ----- admin: platform analytics (real counts only) -----
+    if (method === "GET" && path === "/api/admin/analytics") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      await ensurePlatformTables(db);
+      const n = url.searchParams.get("days") === "90" ? 90 : url.searchParams.get("days") === "7" ? 7 : 30;
+      const now = Date.now(), days = lastDays(n, now), ix = {};
+      days.forEach((d, i) => { ix[d] = i; });
+      const zero = () => new Array(n).fill(0);
+      const out = { days, viewsVideos: zero(), viewsReels: zero(), signups: zero(), uploads: zero(), sadaqahPaise: zero(), firstViewDay: null, hasSignups: false };
+      try {
+        await ensureViewTables(db);
+        const r = await db.prepare("SELECT day, kind, SUM(views) AS n FROM view_daily WHERE day >= ? GROUP BY day, kind").bind(days[0]).all();
+        (r.results || []).forEach((x) => { const i = ix[x.day]; if (i !== undefined) out[x.kind === "r" ? "viewsReels" : "viewsVideos"][i] += x.n; });
+        const f = await db.prepare("SELECT MIN(day) AS d FROM view_daily").first(); out.firstViewDay = f && f.d ? f.d : null;
+      } catch (_) {}
+      try {
+        const r = await db.prepare("SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS n FROM users WHERE role != 'guest' AND created_at IS NOT NULL AND substr(created_at, 1, 10) >= ? GROUP BY d").bind(days[0]).all();
+        (r.results || []).forEach((x) => { const i = ix[x.d]; if (i !== undefined) out.signups[i] += x.n; });
+        out.hasSignups = true;
+      } catch (_) {}
+      try {
+        for (const t of ["videos", "reels"]) {
+          const r = await db.prepare("SELECT substr(uploaded_at, 1, 10) AS d, COUNT(*) AS n FROM " + t + " WHERE uploaded_at IS NOT NULL AND substr(uploaded_at, 1, 10) >= ? GROUP BY d").bind(days[0]).all();
+          (r.results || []).forEach((x) => { const i = ix[x.d]; if (i !== undefined) out.uploads[i] += x.n; });
+        }
+      } catch (_) {}
+      try {
+        await ensureSadaqahTables(db);
+        const r = await db.prepare("SELECT date(resolved_at / 1000 + 19800, 'unixepoch') AS d, SUM(amount_paise) AS n FROM sadaqah_donations WHERE status = 'received' AND resolved_at > ? GROUP BY d").bind(now - n * 86400000 - 86400000).all();
+        (r.results || []).forEach((x) => { const i = ix[x.d]; if (i !== undefined) out.sadaqahPaise[i] += x.n; });
+      } catch (_) {}
+      try {
+        const c = await db.prepare("SELECT (SELECT COUNT(*) FROM users WHERE role != 'guest') AS users, (SELECT COUNT(*) FROM videos) AS videos, (SELECT COUNT(*) FROM reels) AS reels, (SELECT COALESCE(SUM(views),0) FROM videos) AS vviews, (SELECT COALESCE(SUM(views),0) FROM reels) AS rviews").first();
+        out.totals = { users: c.users, videos: c.videos, reels: c.reels, videoViews: c.vviews, reelViews: c.rviews };
+      } catch (_) { out.totals = null; }
+      try { const tv = await db.prepare("SELECT v.id AS id, v.title AS title, u.name AS channel, v.views AS views FROM videos v LEFT JOIN users u ON u.id = v.owner_id WHERE v.hidden = 0 AND v.removed = 0 ORDER BY v.views DESC LIMIT 5").all(); out.topVideos = tv.results || []; } catch (_) { out.topVideos = []; }
+      try { const tr = await db.prepare("SELECT r.id AS id, r.title AS title, u.name AS channel, r.views AS views FROM reels r LEFT JOIN users u ON u.id = r.owner_id WHERE r.hidden = 0 ORDER BY r.views DESC LIMIT 5").all(); out.topReels = tr.results || []; } catch (_) { out.topReels = []; }
+      try { const tc = await db.prepare("SELECT u.id AS id, u.name AS name, SUM(v.views) AS views, COUNT(*) AS videos FROM videos v JOIN users u ON u.id = v.owner_id WHERE v.hidden = 0 AND v.removed = 0 GROUP BY u.id ORDER BY views DESC LIMIT 5").all(); out.topCreators = tc.results || []; } catch (_) { out.topCreators = []; }
+      try {
+      } catch (_) {}
+      try { const a = await db.prepare("SELECT COALESCE(SUM(impressions),0) AS i, COALESCE(SUM(clicks),0) AS c FROM ads").first(); out.ads = { impressions: a.i, clicks: a.c }; } catch (_) {}
+      return json({ ok: true, ...out });
+    }
+    // ================= CREATOR ANALYTICS routes =================
+    // ----- viewer's app reports which 10% parts of a video were really watched (feeds Audience Retention in Studio) -----
+    if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/retention$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return json({ ok: true, counted: false });
+      try {
+        const b = await request.json().catch(() => ({}));
+        const segs = Array.isArray(b.segs) && b.segs.length === 10 ? b.segs.map((x) => (x ? 1 : 0)) : null;
+        if (!segs || !segs.some((x) => x)) return json({ ok: true, counted: false });
+        const v = await db.prepare("SELECT id, owner_id, duration, removed FROM videos WHERE id = ?").bind(m[1]).first();
+        if (!v || v.removed || v.owner_id === u.id) return json({ ok: true, counted: false });
+        await ensureRetentionTables(db);
+        const now = Date.now();
+        const recent = await db.prepare("SELECT COUNT(*) AS n FROM retention_seen WHERE viewer = ? AND ts > ?").bind(u.id, now - 3600000).first();
+        if (recent && recent.n >= 60) return json({ ok: true, counted: false });
+        const seen = await db.prepare("INSERT INTO retention_seen (viewer, video_id, ts) VALUES (?, ?, ?) ON CONFLICT(viewer, video_id) DO UPDATE SET ts = excluded.ts WHERE retention_seen.ts < ?").bind(u.id, v.id, now, now - 6 * 3600000).run();
+        if (!seen.meta || seen.meta.changes !== 1) return json({ ok: true, counted: false });
+        const dur = parseDurSec(v.duration);
+        let secs = Math.round(Number(b.seconds) || 0);
+        secs = Math.max(0, Math.min(secs, dur ? Math.round(dur * 2) : 7200));
+        const stmts = [db.prepare("INSERT INTO video_watch_stats (video_id, sessions, seconds) VALUES (?, 1, ?) ON CONFLICT(video_id) DO UPDATE SET sessions = sessions + 1, seconds = seconds + excluded.seconds").bind(v.id, secs)];
+        segs.forEach((on, i) => { if (on) stmts.push(db.prepare("INSERT INTO video_retention (video_id, bucket, n) VALUES (?, ?, 1) ON CONFLICT(video_id, bucket) DO UPDATE SET n = n + 1").bind(v.id, i)); });
+        await db.batch(stmts);
+        if (Math.random() < 0.02) { try { await db.prepare("DELETE FROM retention_seen WHERE ts < ?").bind(now - 7 * 86400000).run(); } catch (_) {} }
+        return json({ ok: true, counted: true });
+      } catch (_) { return json({ ok: true, counted: false }); }
+    }
+    // ----- creator: daily views of ONE video/reel for the last 90 days -----
+    if (method === "GET" && (m = path.match(/^\/api\/me\/content-daily\/(v|r)\/([^/]+)$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (u.role === "guest") return err("Sign in to use Studio", 403);
+      try {
+        await ensureViewTables(db);
+        const own = await db.prepare("SELECT id FROM " + (m[1] === "v" ? "videos" : "reels") + " WHERE id = ? AND owner_id = ?").bind(m[2], u.id).first();
+        if (!own) return err("Not found", 404);
+        const now = Date.now(), days = lastDays(90, now);
+        const rows = await db.prepare("SELECT day, views FROM view_daily WHERE kind = ? AND content_id = ? AND day >= ?").bind(m[1], m[2], days[0]).all();
+        const map = {};
+        (rows.results || []).forEach((r) => { map[r.day] = r.views; });
+        return json({ ok: true, days, views: days.map((d) => map[d] || 0) });
+      } catch (_) { return err("Analytics unavailable", 500); }
+    }
+    // ================= SADAQAH routes =================
+    // ----- donor: tap Sadaqah under a video (creates a reference for the UPI note; the amount is entered in the UPI app) -----
+    if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/sadaqah\/start$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return err("Please sign in to give sadaqah", 401);
+      if (u.suspended) return err("This account cannot give sadaqah", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      const S = await getSadaqahSettings(db);
+      if (!S.upiId) return err("Sadaqah is not available yet. Please try again later.", 503);
+      const v = await db.prepare("SELECT id, owner_id, hidden, removed FROM videos WHERE id = ?").bind(m[1]).first();
+      if (!v) return err("Video not found", 404);
+      if (v.removed || v.hidden) return err("This video cannot receive sadaqah", 400);
+      if (v.owner_id === u.id) return err("You cannot give sadaqah on your own video", 400);
+      const recent = await db.prepare("SELECT COUNT(*) AS n FROM sadaqah_donations WHERE donor_id = ? AND created_at > ?").bind(u.id, Date.now() - 3600000).first();
+      if (recent && recent.n >= 20) return err("Too many attempts. Please try again in a while.", 429);
+      let ref = "";
+      const id = uid("sd");
+      for (let i = 0; i < 5 && !ref; i++) {
+        const r = sadaqahRef();
+        try {
+          await db.prepare("INSERT INTO sadaqah_donations (id, ref, video_id, creator_id, donor_id, donor_name, status, created_at) VALUES (?,?,?,?,?,?,'initiated',?)")
+            .bind(id, r, v.id, v.owner_id, u.id, u.name || "Guest", Date.now()).run();
+          ref = r;
+        } catch (_) { ref = ""; }
+      }
+      if (!ref) return err("Could not start sadaqah. Please try again.", 500);
+      if (Math.random() < 0.05) { try { await db.prepare("DELETE FROM sadaqah_donations WHERE status = 'initiated' AND created_at < ?").bind(Date.now() - 7 * 86400000).run(); } catch (_) {} }
+      return json({ ok: true, ref, upiId: S.upiId, payeeName: S.payeeName });
+    }
+    // ----- donor: "I sent this much" (the admin still has to confirm it against the UPI statement) -----
+    if (method === "POST" && (m = path.match(/^\/api\/sadaqah\/([A-Za-z0-9]+)\/claim$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return err("Please sign in", 401);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      const b = await request.json().catch(() => ({}));
+      const paise = parseRupeesToPaise(b.amount);
+      if (!paise || paise < 100 || paise > SADAQAH_MAX_CLAIM_PAISE) return err("Enter the amount you sent, between \u20B91 and \u20B9" + (SADAQAH_MAX_CLAIM_PAISE / 100), 400);
+      const utr = String(b.utr || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 30);
+      const d = await db.prepare("SELECT id, status, donor_id FROM sadaqah_donations WHERE ref = ?").bind(m[1].toUpperCase()).first();
+      if (!d || d.donor_id !== u.id) return err("Not found", 404);
+      if (d.status !== "initiated" && d.status !== "claimed") return err("This sadaqah was already processed", 409);
+      await db.prepare("UPDATE sadaqah_donations SET status = 'claimed', claimed_paise = ?, utr = ?, claimed_at = ?, donor_name = ? WHERE id = ? AND status IN ('initiated', 'claimed')")
+        .bind(paise, utr, Date.now(), u.name || "Guest", d.id).run();
+      return json({ ok: true, amountPaise: paise });
+    }
+    // ----- creator: own sadaqah numbers for Studio (donor names are never shown to creators) -----
+    if (method === "GET" && path === "/api/me/sadaqah") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (u.role === "guest") return err("Sign in to see sadaqah", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah data unavailable", 503); }
+      const S = await getSadaqahSettings(db), bal = await sadaqahBalance(db, u.id);
+      const vids = await db.prepare(
+        "SELECT d.video_id AS video_id, v.title AS title, SUM(CASE WHEN d.status = 'received' THEN d.amount_paise ELSE 0 END) AS received, SUM(CASE WHEN d.status = 'received' THEN 1 ELSE 0 END) AS cnt, " +
+        "SUM(CASE WHEN d.status = 'claimed' THEN d.claimed_paise ELSE 0 END) AS awaiting FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id " +
+        "WHERE d.creator_id = ? AND d.status IN ('received', 'claimed') GROUP BY d.video_id ORDER BY received DESC, awaiting DESC LIMIT 200").bind(u.id).all();
+      const recent = await db.prepare(
+        "SELECT d.amount_paise, d.resolved_at, v.title AS title FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id WHERE d.creator_id = ? AND d.status = 'received' ORDER BY d.resolved_at DESC LIMIT 20").bind(u.id).all();
+      const pend = await db.prepare("SELECT id, amount_paise, created_at FROM sadaqah_requests WHERE creator_id = ? AND status = 'Pending' LIMIT 1").bind(u.id).first();
+      const hist = await db.prepare("SELECT id, amount_paise, status, created_at, resolved_at, note FROM sadaqah_requests WHERE creator_id = ? AND status != 'Pending' ORDER BY created_at DESC LIMIT 10").bind(u.id).all();
+      return json({
+        ok: true, enabled: !!S.upiId, unlockPaise: S.unlockPaise, minRequestPaise: S.minRequestPaise, ...bal, unlocked: bal.availablePaise >= S.unlockPaise,
+        hasPayoutInfo: !!(u.payout_method && u.payout_account_number),
+        payoutInfo: u.payout_method ? { method: u.payout_method, accountName: u.payout_account_name, accountNumber: u.payout_account_number, routingCode: u.payout_routing_code } : null,
+        pending: pend ? { id: pend.id, amountPaise: pend.amount_paise, createdAt: pend.created_at } : null,
+        videos: (vids.results || []).map((x) => ({ videoId: x.video_id, title: x.title || "Deleted video", receivedPaise: x.received || 0, count: x.cnt || 0, awaitingPaise: x.awaiting || 0 })),
+        recent: (recent.results || []).map((x) => ({ amountPaise: x.amount_paise, at: x.resolved_at, title: x.title || "Deleted video" })),
+        requests: (hist.results || []).map((x) => ({ id: x.id, amountPaise: x.amount_paise, status: x.status, createdAt: x.created_at, resolvedAt: x.resolved_at, note: x.note || "" })),
+      });
+    }
+    // ----- creator: request a withdrawal of sadaqah (full or custom amount; needs the unlock limit + payout details) -----
+    if (method === "POST" && path === "/api/me/sadaqah/withdraw") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Not signed in", 401);
+      if (u.role === "guest") return err("Sign in to withdraw", 403);
+      if (u.suspended) return err("Suspended accounts cannot withdraw", 403);
+      if (!u.payout_method || !u.payout_account_number) return err("Add your account / UPI details first", 400);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      const S = await getSadaqahSettings(db), bal = await sadaqahBalance(db, u.id);
+      if (bal.pendingPaise > 0) return err("You already have a withdrawal request pending", 409);
+      if (bal.availablePaise < S.unlockPaise) return err("Withdrawals open when your available sadaqah reaches " + rs2(S.unlockPaise), 400);
+      const b = await request.json().catch(() => ({}));
+      const paise = b.full === true || b.amount == null || b.amount === "" ? bal.availablePaise : parseRupeesToPaise(b.amount);
+      if (!paise || paise < S.minRequestPaise) return err("The smallest withdrawal is " + rs2(S.minRequestPaise), 400);
+      if (paise > bal.availablePaise) return err("You only have " + rs2(bal.availablePaise) + " available", 400);
+      const id = uid("sr");
+      let res;
+      try {
+        res = await db.prepare(
+          "INSERT INTO sadaqah_requests (id, creator_id, amount_paise, method, account_name, account_number, routing_code, status, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'Pending', ? " +
+          "WHERE COALESCE((SELECT SUM(amount_paise) FROM sadaqah_donations WHERE creator_id = ? AND status = 'received'), 0) - COALESCE((SELECT SUM(amount_paise) FROM sadaqah_requests WHERE creator_id = ? AND status IN ('Paid', 'Pending')), 0) >= ?")
+          .bind(id, u.id, paise, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now(), u.id, u.id, paise).run();
+      } catch (_) { return err("You already have a withdrawal request pending", 409); }
+      if (!res || !res.meta || res.meta.changes !== 1) return err("Your available sadaqah changed. Please refresh and try again.", 409);
+      return json({ ok: true, id, amountPaise: paise });
+    }
+    // ----- admin: everything about sadaqah (settings, awaiting confirmation, history, per creator, per video, withdrawal requests) -----
+    if (method === "GET" && path === "/api/admin/sadaqah") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const S = await getSadaqahSettings(db);
+      const T = await db.prepare("SELECT COALESCE(SUM(CASE WHEN status = 'received' THEN amount_paise END), 0) AS received, COUNT(CASE WHEN status = 'received' THEN 1 END) AS receivedCount, COALESCE(SUM(CASE WHEN status = 'claimed' THEN claimed_paise END), 0) AS awaiting, COUNT(CASE WHEN status = 'claimed' THEN 1 END) AS awaitingCount FROM sadaqah_donations").first();
+      const R = await db.prepare("SELECT COALESCE(SUM(CASE WHEN status = 'Paid' THEN amount_paise END), 0) AS paid, COALESCE(SUM(CASE WHEN status = 'Pending' THEN amount_paise END), 0) AS pend, COUNT(CASE WHEN status = 'Pending' THEN 1 END) AS pendCount FROM sadaqah_requests").first();
+      const base = "SELECT d.*, v.title AS vtitle, cu.name AS creator_name FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id LEFT JOIN users cu ON cu.id = d.creator_id ";
+      const awaiting = await db.prepare(base + "WHERE d.status = 'claimed' ORDER BY d.claimed_at ASC LIMIT 300").all();
+      const unclaimed = await db.prepare(base + "WHERE d.status = 'initiated' AND d.created_at > ? ORDER BY d.created_at DESC LIMIT 50").bind(Date.now() - 3 * 86400000).all();
+      const history = await db.prepare(base + "WHERE d.status IN ('received', 'rejected') ORDER BY d.resolved_at DESC LIMIT 150").all();
+      const cr = await db.prepare("SELECT cu.id AS id, cu.name AS name, cu.email AS email, COALESCE(SUM(CASE WHEN d.status = 'received' THEN d.amount_paise END), 0) AS received, COUNT(CASE WHEN d.status = 'received' THEN 1 END) AS cnt FROM sadaqah_donations d JOIN users cu ON cu.id = d.creator_id GROUP BY cu.id ORDER BY received DESC LIMIT 300").all();
+      const rq = await db.prepare("SELECT creator_id, COALESCE(SUM(CASE WHEN status = 'Paid' THEN amount_paise END), 0) AS paid, COALESCE(SUM(CASE WHEN status = 'Pending' THEN amount_paise END), 0) AS pend FROM sadaqah_requests GROUP BY creator_id").all();
+      const rqMap = {};
+      (rq.results || []).forEach((x) => { rqMap[x.creator_id] = x; });
+      const pv = await db.prepare("SELECT d.video_id AS video_id, v.title AS title, cu.name AS creator, SUM(d.amount_paise) AS received, COUNT(*) AS cnt FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id LEFT JOIN users cu ON cu.id = d.creator_id WHERE d.status = 'received' GROUP BY d.video_id ORDER BY received DESC LIMIT 100").all();
+      const reqBase = "SELECT w.*, users.name AS user_name, users.email AS user_email FROM sadaqah_requests w LEFT JOIN users ON users.id = w.creator_id ";
+      const pend = await db.prepare(reqBase + "WHERE w.status = 'Pending' ORDER BY w.created_at ASC").all();
+      const done = await db.prepare(reqBase + "WHERE w.status != 'Pending' ORDER BY w.resolved_at DESC LIMIT 25").all();
+      const reqOut = (w) => ({ id: w.id, creatorId: w.creator_id, name: w.user_name || "Deleted user", email: w.user_email || "", amountPaise: w.amount_paise, status: w.status, createdAt: w.created_at, resolvedAt: w.resolved_at, note: w.note || "",
+        payoutInfo: w.method ? { method: w.method, accountName: w.account_name, accountNumber: w.account_number, routingCode: w.routing_code } : null });
+      const received = T.received || 0, paid = R.paid || 0, pending = R.pend || 0;
+      return json({
+        ok: true, settings: S,
+        totals: { receivedPaise: received, receivedCount: T.receivedCount || 0, paidPaise: paid, pendingRequestPaise: pending, pendingRequestCount: R.pendCount || 0, heldPaise: Math.max(0, received - paid), awaitingPaise: T.awaiting || 0, awaitingCount: T.awaitingCount || 0 },
+        awaiting: (awaiting.results || []).map(sadaqahDonationOut), unclaimed: (unclaimed.results || []).map(sadaqahDonationOut), history: (history.results || []).map(sadaqahDonationOut),
+        creators: (cr.results || []).map((x) => { const q = rqMap[x.id] || {}; const pd = q.paid || 0, pn = q.pend || 0; return { id: x.id, name: x.name, email: x.email, receivedPaise: x.received || 0, count: x.cnt || 0, paidPaise: pd, pendingPaise: pn, availablePaise: Math.max(0, (x.received || 0) - pd - pn) }; }),
+        videos: (pv.results || []).map((x) => ({ videoId: x.video_id, title: x.title || "Deleted video", creator: x.creator || "", receivedPaise: x.received || 0, count: x.cnt || 0 })),
+        requests: (pend.results || []).map(reqOut), recentRequests: (done.results || []).map(reqOut),
+      });
+    }
+    // ----- admin: UPI id the donors pay + the withdrawal limit -----
+    if (method === "PUT" && path === "/api/admin/sadaqah/settings") {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const b = await request.json().catch(() => ({}));
+      const upiId = String(b.upiId == null ? "" : b.upiId).trim();
+      if (upiId && !/^[A-Za-z0-9._\-]{2,64}@[A-Za-z0-9._\-]{2,32}$/.test(upiId)) return err("Enter a valid UPI ID like name@bank", 400);
+      const payeeName = String(b.payeeName == null ? "" : b.payeeName).trim().slice(0, 60) || "NoorTube Sadaqah";
+      const unlock = parseRupeesToPaise(b.unlockRupees);
+      if (!unlock || unlock < SADAQAH_MIN_REQUEST_PAISE || unlock > 100000000) return err("The withdrawal limit must be between \u20B9100 and \u20B910,00,000", 400);
+      await db.batch([
+        db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('upi_id', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(upiId),
+        db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('payee_name', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(payeeName),
+        db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('unlock_paise', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(String(unlock)),
+      ]);
+      return json({ ok: true, settings: await getSadaqahSettings(db) });
+    }
+    // ----- admin: the money really arrived in your UPI -> count it for the creator (amount can be corrected to what you actually received) -----
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/donations\/([^/]+)\/confirm$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const d = await db.prepare("SELECT d.*, v.title AS vtitle FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id WHERE d.id = ?").bind(m[1]).first();
+      if (!d) return err("Not found", 404);
+      if (d.status !== "claimed" && d.status !== "initiated") return err("This sadaqah was already handled", 409);
+      const b = await request.json().catch(() => ({}));
+      const paise = b.amount != null && b.amount !== "" ? parseRupeesToPaise(b.amount) : d.claimed_paise;
+      if (!paise || paise < 100 || paise > SADAQAH_MAX_CLAIM_PAISE) return err("Enter the amount you received", 400);
+      const r = await db.prepare("UPDATE sadaqah_donations SET status = 'received', amount_paise = ?, resolved_at = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(paise, Date.now(), d.id).run();
+      if (!r.meta || r.meta.changes !== 1) return err("This sadaqah was already handled", 409);
+      try { await addNotification(db, d.creator_id, "info", "Sadaqah received", "You received " + rs2(paise) + " sadaqah on \"" + (d.vtitle || "your video") + "\". Open Studio > Sadaqah to see it."); } catch (_) {}
+      if (d.donor_id) { try { await addNotification(db, d.donor_id, "info", "Sadaqah received", "Your sadaqah of " + rs2(paise) + " was received. JazakAllahu khayran."); } catch (_) {} }
+      return json({ ok: true, amountPaise: paise });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/donations\/([^/]+)\/reject$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const b = await request.json().catch(() => ({}));
+      const note = String(b.note || "").trim().slice(0, 300);
+      const d = await db.prepare("SELECT * FROM sadaqah_donations WHERE id = ?").bind(m[1]).first();
+      if (!d) return err("Not found", 404);
+      const r = await db.prepare("UPDATE sadaqah_donations SET status = 'rejected', resolved_at = ?, note = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(Date.now(), note, d.id).run();
+      if (!r.meta || r.meta.changes !== 1) return err("This sadaqah was already handled", 409);
+      if (d.donor_id && d.claimed_paise) { try { await addNotification(db, d.donor_id, "info", "Sadaqah not found", "We could not find your sadaqah of " + rs2(d.claimed_paise) + " in our account." + (note ? " " + note : "")); } catch (_) {} }
+      return json({ ok: true });
+    }
+    // ----- admin: creator's sadaqah withdrawal: after paying them, mark Paid (their available balance drops by that amount) -----
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/requests\/([^/]+)\/mark-paid$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const w = await db.prepare("SELECT * FROM sadaqah_requests WHERE id = ?").bind(m[1]).first();
+      if (!w) return err("Request not found", 404);
+      const r = await db.prepare("UPDATE sadaqah_requests SET status = 'Paid', resolved_at = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), w.id).run();
+      if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
+      try { await addNotification(db, w.creator_id, "info", "Sadaqah withdrawal paid", "Your sadaqah withdrawal of " + rs2(w.amount_paise) + " has been paid."); } catch (_) {}
+      return json({ ok: true, paidPaise: w.amount_paise });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/requests\/([^/]+)\/reject$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      const b = await request.json().catch(() => ({}));
+      const note = String(b.note || "").trim().slice(0, 300);
+      const w = await db.prepare("SELECT * FROM sadaqah_requests WHERE id = ?").bind(m[1]).first();
+      if (!w) return err("Request not found", 404);
+      const r = await db.prepare("UPDATE sadaqah_requests SET status = 'Rejected', resolved_at = ?, note = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), note, w.id).run();
+      if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
+      try { await addNotification(db, w.creator_id, "info", "Sadaqah withdrawal not approved", "Your sadaqah withdrawal request of " + rs2(w.amount_paise) + " was not approved." + (note ? " Reason: " + note : " Please check your account / UPI details and request again.")); } catch (_) {}
+      return json({ ok: true });
     }
     // ----- creator: request a withdrawal of the full unpaid balance (needs minimum + payout details) -----
     if (method === "POST" && path === "/api/me/withdraw") {
@@ -1017,6 +1856,7 @@ async function handleRequest(request, env) {
           db.prepare("DELETE FROM payout_records WHERE user_id = ?").bind(t), db.prepare("DELETE FROM withdraw_requests WHERE user_id = ?").bind(t),
           db.prepare("DELETE FROM users WHERE id = ?").bind(t),
         ];
+        await purgeSadaqah(db, t);
         await db.batch(dels);
       }
       if (body.action === "delete") return json({ ok: true, deleted: !!old });
@@ -1181,6 +2021,7 @@ async function handleRequest(request, env) {
       if (!u || u.role !== "admin") return err("Not allowed", 403);
       const targetId = m[1];
       if (targetId === u.id) return err("Use your own account settings to delete your own account", 400);
+      await purgeSadaqah(db, targetId);
       await db.batch([
         db.prepare("DELETE FROM comments WHERE user_id = ?").bind(targetId),
         db.prepare("DELETE FROM video_likes WHERE user_id = ?").bind(targetId),
@@ -1337,12 +2178,15 @@ async function handleRequest(request, env) {
     }
 
     // ---------- VIDEOS ----------
-    if (method === "GET" && path === "/api/videos") {
-      const rows = await db.prepare(
-        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.removed = 0 AND videos.hidden = 0 ORDER BY videos.uploaded_at DESC LIMIT 200"
-      ).all();
-      return json({ videos: rows.results.map(videoOut) });
+    if (method === "GET" && (m = path.match(/^\/api\/(videos|reels)\/([^/]+)\/related$/))) {
+      const kind = m[1] === "videos" ? "v" : "r";
+      let me = null;
+      try { me = await currentUser(request, env); } catch (_) {}
+      const items = await rkRelated(db, kind, m[2], me && me.role !== "guest" ? me.id : null, rkLimit(url, 20));
+      if (!items) return err("Not found", 404);
+      return json({ [m[1]]: items.map((it) => (kind === "v" ? videoOut : reelOut)(it.row)) });
     }
+    if (method === "GET" && path === "/api/videos") return await feedResponse(db, request, env, url, "v");
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)$/))) {
       const v = await db.prepare(
         "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.id = ?"
@@ -1462,12 +2306,7 @@ async function handleRequest(request, env) {
     }
 
     // ---------- REELS ----------
-    if (method === "GET" && path === "/api/reels") {
-      const rows = await db.prepare(
-        "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id WHERE reels.hidden = 0 ORDER BY reels.uploaded_at DESC LIMIT 200"
-      ).all();
-      return json({ reels: rows.results.map(reelOut) });
-    }
+    if (method === "GET" && path === "/api/reels") return await feedResponse(db, request, env, url, "r");
     if (method === "POST" && path === "/api/reels") {
       const u = await currentUser(request, env);
       if (!u) return err("Sign in required", 401);
