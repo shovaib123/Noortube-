@@ -1452,7 +1452,7 @@ V['l-settings']=()=>pageH('Settings','Where you are decides the prayer times sho
     <div class="row wrap"><button type="button" class="btn pri" data-act="l-st-save" ${LIVE.busy==='stsave'?'disabled':''}>${LIVE.busy==='stsave'?'Saving…':'Save settings'}</button></div>`});
 
 /* ---- Halal ads ---- */
-const PL_NAME={home:'Home banner',watch:'Under videos',reels:'Reels',preroll:'Video start (pre-roll)',midroll:'Video middle (mid-roll)'};
+const PL_NAME={home:'Home banner',watch:'Under videos',reels:'Reels (full screen, after every 7 reels)',preroll:'Video start (pre-roll)',midroll:'Video middle (mid-roll)'};
 const vidAdFields=a=>`<div class="stack" style="background:var(--surface-2);padding:12px;border-radius:12px"><b class="sm">Video ad settings</b><div class="sm muted">Use these only for a video (MP4) ad. Tick “Video start” to play it before the video, and/or “Video middle” to play it during the video.</div>${field('Video middle: play after (seconds)',`<input class="inp" type="number" name="midAfter" min="5" max="3600" value="${a&&a.midAfter||30}">`,'For example 30 means the ad plays 30 seconds after the video starts. Very short videos skip it.')}<label class="row" style="gap:8px"><input type="checkbox" name="skip" ${(!a||a.skipAfter)?'checked':''} style="width:18px;height:18px">Let viewers skip this ad (Skip button after 5 seconds)</label></div>`;
 const adStatus=a=>{const n=Date.now();return!a.active?chip('Paused','gray','pause'):a.startsAt&&a.startsAt>n?chip('Scheduled','amber','clock'):a.endsAt&&a.endsAt<n?chip('Ended','gray'):chip('Live','green','check')};
 const dateOnly=ms=>ms?new Date(ms).toLocaleDateString():'Always';
@@ -1505,6 +1505,37 @@ const adUpload=async file=>{
   const res=await fetch(tk.uploadUrl,{method:'PUT',headers:{'X-Upload-Token':tk.token,'X-Upload-Expiry':String(tk.expiry),'Content-Type':file.type||'application/octet-stream'},body:file});
   let d={};try{d=await res.json()}catch(e){}
   if(!res.ok)throw new Error(d.error||'Upload failed ('+res.status+')');return d.url};
+/* ===== Compress to fit: any image or video is made small enough before it is uploaded ===== */
+const adLoadImg=file=>new Promise((res,rej)=>{const u=URL.createObjectURL(file),im=new Image;im.onload=()=>{URL.revokeObjectURL(u);res(im)};im.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('image'))};im.src=u});
+const adCompressImage=async file=>{
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type))return file;
+  try{const im=await adLoadImg(file),W=im.naturalWidth,H=im.naturalHeight,MAXB=600*1024;
+    if(Math.max(W,H)<=1600&&file.size<=MAXB)return file;
+    let sc=Math.min(1,1600/Math.max(W,H)),blob=null;
+    for(let t=0;t<4;t++){const w=Math.max(1,Math.round(W*sc)),h=Math.max(1,Math.round(H*sc)),c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,w,h);g.drawImage(im,0,0,w,h);
+      let q=.85;blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));
+      while(blob&&blob.size>MAXB&&q>.45){q-=.1;blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q))}
+      if(blob&&blob.size<=MAXB)break;sc*=.75}
+    if(!blob||blob.size>=file.size)return file;
+    return new File([blob],(file.name||'ad').replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg'})}catch(e){return file}};
+const adCompressVideo=file=>new Promise(resolve=>{
+  if(file.size<=10*1024*1024||!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){resolve(file);return}
+  const url=URL.createObjectURL(file),vid=document.createElement('video');vid.src=url;vid.playsInline=true;vid.preload='auto';
+  const done=f=>{try{URL.revokeObjectURL(url)}catch(e){}resolve(f)};
+  vid.onerror=()=>done(file);
+  vid.onloadedmetadata=()=>{try{
+    const sc=Math.min(1,854/Math.max(vid.videoWidth,vid.videoHeight)),tw=Math.max(2,Math.round(vid.videoWidth*sc/2)*2),th=Math.max(2,Math.round(vid.videoHeight*sc/2)*2);
+    const cv=document.createElement('canvas');cv.width=tw;cv.height=th;const cx=cv.getContext('2d'),stream=cv.captureStream(30);
+    try{const ac=new(window.AudioContext||window.webkitAudioContext),src=ac.createMediaElementSource(vid),dest=ac.createMediaStreamDestination();src.connect(dest);dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t))}catch(e){}
+    const mt=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm',rec=new MediaRecorder(stream,{mimeType:mt,videoBitsPerSecond:1200000}),chunks=[];
+    rec.ondataavailable=e=>{e.data&&e.data.size&&chunks.push(e.data)};
+    rec.onstop=()=>{const b=new Blob(chunks,{type:'video/webm'});b.size>0&&b.size<file.size?done(new File([b],(file.name||'ad').replace(/\.[^.]+$/,'')+'.webm',{type:'video/webm'})):done(file)};
+    let raf;const draw=()=>{if(vid.ended)return;cx.drawImage(vid,0,0,tw,th);raf=requestAnimationFrame(draw)};
+    vid.onended=()=>{cancelAnimationFrame(raf);try{rec.stop()}catch(e){done(file)}};
+    rec.start();draw();
+    vid.play().catch(()=>{vid.muted=true;vid.play().catch(()=>{try{rec.stop()}catch(e){}done(file)})});
+    setTimeout(()=>{if(vid.ended)return;cancelAnimationFrame(raf);try{rec.stop()}catch(e){done(file)}},10*60*1000);
+  }catch(e){done(file)}}});
 const plChecks=sel=>Object.keys(PL_NAME).map(k=>`<label class="row" style="gap:8px"><input type="checkbox" name="pl" value="${k}" ${sel.includes(k)?'checked':''} style="width:18px;height:18px">${PL_NAME[k]}</label>`).join('');
 const dateMs=(s,end)=>s?new Date(s+(end?'T23:59:59':'T00:00:00')).getTime():null;
 Object.assign(ACT,{
@@ -1520,7 +1551,8 @@ Object.assign(ACT,{
    modal({title:'Send notification',ok:'Send now',body:`<p>Send <b>“${esc(f.title.trim())}”</b> to <b>${who}</b>? It cannot be taken back.</p>`,
      onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people');LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
  'l-ad-add':()=>{modal({title:'Upload new ad',ok:'Upload ad',body:`<div class="stack">${field('Ad name (only you see this)','<input class="inp" name="name" maxlength="80" placeholder="e.g. Ramadan banner">')}
-   ${field('Image or video','<input class="inp" type="file" name="file" accept="image/*,video/mp4,video/webm">','The whole image is shown, nothing is cropped. Wide or square images look best. Videos should be short.')}
+   ${field('Image or video','<input class="inp" type="file" name="file" accept="image/*,video/mp4,video/webm">','Shown full width and 235 px tall. Wide images fit completely; very tall images are trimmed at the top and bottom. Videos should be short.')}
+   <div><label class="row" style="gap:8px"><input type="checkbox" name="compress" checked style="width:18px;height:18px"><b class="sm">Compress to fit (recommended)</b></label><div class="sm muted" style="margin-top:4px">Makes the file smaller so it loads fast and always fits. A video takes about as long as the video to compress. Turn it off to upload the original file.</div></div>
    ${field('Link when tapped (optional)','<input class="inp" name="click" placeholder="https://…" autocapitalize="none">')}
    <div><span class="b sm">Show it on</span><div class="stack" style="margin-top:6px">${plChecks(['home'])}</div></div>
    ${vidAdFields(null)}
@@ -1528,10 +1560,12 @@ Object.assign(ACT,{
    onOk:f=>{const name=(f.get('name')||'').trim(),file=f.get('file'),click=(f.get('click')||'').trim(),pls=f.getAll('pl');
      if(!name)return'Give the ad a name.';if(!file||!file.size)return'Choose an image or video file.';
      const isImg=/^image\//.test(file.type),isVid=/^video\//.test(file.type);if(!isImg&&!isVid)return'Only image or video files can be used.';
-     if(file.size>30*1024*1024)return'Keep ad files under 30 MB.';if(click&&!/^https?:\/\//.test(click))return'The link must start with http:// or https://';if(!pls.length)return'Choose where the ad should appear.';
+     const compress=!!f.get('compress');if(file.size>(compress?200:30)*1024*1024)return compress?'This file is larger than 200 MB. Please use a smaller file.':'Keep ad files under 30 MB, or turn on “Compress to fit”.';if(click&&!/^https?:\/\//.test(click))return'The link must start with http:// or https://';if(!pls.length)return'Choose where the ad should appear.';
      if((pls.includes('preroll')||pls.includes('midroll'))&&!isVid)return'Video start and Video middle need a video file (MP4). Choose a video, or untick them.';
-     (async()=>{LIVE.busy='adnew';render();toast('Uploading ad…');
-       try{const url=await adUpload(file);await api('/api/admin/ads',{method:'POST',body:JSON.stringify({name,type:isVid?'video':'image',mediaUrl:url,clickUrl:click,placements:pls,midAfter:+f.get('midAfter')||30,skip:!!f.get('skip'),startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)})});toast('Ad is ready')}
+     (async()=>{LIVE.busy='adnew';render();toast(compress?'Compressing… please wait':'Uploading ad…');
+       try{let up=file;if(compress){up=isVid?await adCompressVideo(file):await adCompressImage(file);toast('Uploading ad…')}
+         if(up.size>30*1024*1024)throw new Error('Still over 30 MB after compressing. Please use a shorter video.');
+         const url=await adUpload(up);await api('/api/admin/ads',{method:'POST',body:JSON.stringify({name,type:isVid?'video':'image',mediaUrl:url,clickUrl:click,placements:pls,midAfter:+f.get('midAfter')||30,skip:!!f.get('skip'),startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)})});toast('Ad is ready')}
        catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
  'l-ad-edit':el=>{const a=adFiles().find(x=>x.id===el.dataset.id);if(!a)return;
    modal({title:'Edit ad',ok:'Save changes',body:`<div class="stack">${field('Ad name',`<input class="inp" name="name" maxlength="80" value="${esc(a.name)}">`)}${field('Link when tapped',`<input class="inp" name="click" value="${esc(a.clickUrl)}" placeholder="https://…" autocapitalize="none">`)}
