@@ -516,8 +516,8 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Sadaqah','heart'],['l-sadreq','Sadaqah withdrawals','wallet'],['l-ads','Halal ads','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
-const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():0;
+const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Sadaqah','heart'],['l-sadreq','Sadaqah withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
+const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():id==='l-camp'?campAwaiting():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
 const V={};
@@ -1143,7 +1143,7 @@ V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.dem
 const lerr=e=>toast((e&&e.message)||'Action failed');
 Object.assign(ACT,{
  'l-refresh-all':()=>{LIVE.folStarted=false;refreshAll();toast('Refreshing…')},
- 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
+ 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;LIVE.cf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
  'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
  'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
    const done=()=>{LIVE.cp=k;render();setTimeout(()=>{if(LIVE.cp===k){LIVE.cp=null;render()}},1800)};
@@ -1201,7 +1201,8 @@ Object.assign(ACT,{
 document.addEventListener('input',e=>{const el=e.target;
   if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
   else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}
-  else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}});
+  else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}
+  else if(el.dataset&&el.dataset.cf&&LIVE.cf){LIVE.cf[el.dataset.cf]=el.type==='checkbox'?el.checked:el.value}});
 window.addEventListener('nt-me',()=>{paintMe();render()});
 /* ---- Dashboard (real data) ---- */
 const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback','sad','settings'];
@@ -1410,6 +1411,63 @@ SRC.notify=()=>api('/api/admin/broadcasts').then(r=>r.broadcasts);
 SRC.audit=()=>api('/api/admin/audit').then(r=>r.entries);
 [7,30,90].forEach(n=>{SRC['an'+n]=()=>api('/api/admin/analytics?days='+n)});
 LIVE.anDays=30;LIVE.stf=null;
+
+/* ============ Ad campaigns: creators buy ads from Studio, you check the payment here ============ */
+SRC.camps=()=>api('/api/admin/campaigns');
+SRC.campset=()=>api('/api/admin/campaign-settings').then(r=>r.settings);
+PAGE_KEYS['l-camp']=['camps'];PAGE_KEYS['l-campset']=['campset'];
+const campAwaiting=()=>{const d=dData('camps');return d&&d.totals?d.totals.awaiting:0};
+const CAMP_PL={home:'Home banner',watch:'Under videos',reels:'Reels (full screen)',preroll:'Video start',midroll:'Video middle'};
+const CAMP_PAY={upi:'UPI (GPay / PhonePe / Paytm)',razorpay:'Razorpay',bank:'Bank transfer',intl:'Other country'};
+const campStatus=s=>({draft:chip('Waiting for payment','gray'),submitted:chip('Verify payment','amber'),live:chip('Live','green','check'),ended:chip('Ended','gray'),rejected:chip('Rejected','rose','x'),cancelled:chip('Cancelled','gray')}[s]||chip(s,'gray'));
+const campRun=async(id,path,body,okMsg)=>{LIVE.busy=id;render();try{await api(path,{method:'POST',body:JSON.stringify(body||{})});toast(okMsg)}catch(e){lerr(e)}finally{LIVE.busy=null;load('camps',true);render()}};
+V['l-camp']=()=>{
+  if(!UI.camptab)UI.camptab='submitted';
+  return pageH('Ad campaigns','Creators buy ads from Studio. Check that the money reached your account, then confirm to start the ad.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button><a class="btn" href="#/l-campset">${ic('sliders','sm')}Payment settings</a>`)+
+  gate(['camps'],D=>{
+    const list=D.campaigns||[],T=D.totals||{},f=t=>t==='finished'?list.filter(c=>['ended','rejected','cancelled'].includes(c.status)):list.filter(c=>c.status===t);
+    const cur=f(UI.camptab);
+    const card=c=>{const busy=LIVE.busy===c.id,media=c.type==='video'?`<video src="${esc(c.mediaUrl)}" controls muted playsinline preload="metadata" style="width:100%;max-height:180px;border-radius:10px;background:#000"></video>`:`<img src="${esc(c.mediaUrl)}" alt="" style="width:100%;max-height:180px;object-fit:contain;border-radius:10px;background:var(--surface-2)">`;
+      const open=c.status==='submitted'||c.status==='draft';
+      return `<div class="card pad" style="margin-bottom:12px"><div class="row between wrap" style="align-items:flex-start;gap:10px"><div style="min-width:0"><div class="b">${esc(c.name)}</div><div class="sm muted" style="word-break:break-all">${esc(c.ownerName)} · ${esc(c.ownerEmail)}</div><div class="sm muted">Reference ${esc(c.ref)} · created ${esc(when(c.createdAt))}</div></div><div class="right">${campStatus(c.status)}<div class="b" style="font-size:20px;margin-top:4px">${rp(c.amountPaise)}</div><div class="sm muted">${c.days} days</div></div></div>
+      <div style="margin-top:12px">${media}</div>
+      <div class="row wrap" style="gap:6px;margin-top:10px">${c.placements.map(p=>chip(CAMP_PL[p]||p,'blue')).join('')}${c.type==='video'&&c.placements.includes('midroll')?chip('mid-roll at '+c.midAfter+'s','gray'):''}${c.skip?chip('skippable','gray'):''}</div>
+      ${c.clickUrl?`<div class="sm" style="margin-top:8px;word-break:break-all">Link: <a href="${esc(c.clickUrl)}" target="_blank" rel="noopener noreferrer">${esc(c.clickUrl)}</a></div>`:''}
+      ${c.payMethod?`<div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;margin-top:10px"><div class="sm muted">Paid by ${esc(CAMP_PAY[c.payMethod]||c.payMethod)}${c.payerName?' · '+esc(c.payerName):''}</div><div class="b" style="word-break:break-all">${esc(c.payRef)}</div><div class="sm muted">Sent ${esc(when(c.submittedAt))}</div></div>`:(c.status==='draft'?'<div class="sm muted" style="margin-top:10px">The creator has not paid yet.</div>':'')}
+      ${c.status==='live'||c.status==='ended'?`<div class="sm" style="margin-top:10px">${esc(when(c.startAt))} → ${esc(when(c.endAt))} · <b>${(c.impressions||0).toLocaleString()}</b> views · <b>${(c.clicks||0).toLocaleString()}</b> clicks</div>`:''}
+      ${c.status==='rejected'?`<div class="sm dn" style="margin-top:10px">Reason: ${esc(c.rejectReason)}</div>`:''}
+      <div class="row wrap" style="margin-top:12px">${open?`<button type="button" class="btn pri sm" data-act="l-camp-confirm" data-id="${esc(c.id)}" ${busy?'disabled':''}>${busy?'Please wait…':'Payment received: start ad'}</button><button type="button" class="btn sm danger" data-act="l-camp-reject" data-id="${esc(c.id)}" ${busy?'disabled':''}>Reject</button>`:''}${c.status==='live'?`<button type="button" class="btn sm danger" data-act="l-camp-end" data-id="${esc(c.id)}" ${busy?'disabled':''}>End now</button>`:''}</div></div>`};
+    return `<div class="kpis">${kpi('Money from campaigns',rp(T.earnedPaise))}${kpi('Verify payment',T.awaiting||0)}${kpi('Live now',T.live||0)}${kpi('All campaigns',T.all||0)}</div><div style="height:12px"></div>`+
+      tabs('camptab',[['submitted','Verify payment',f('submitted').length],['live','Live',f('live').length],['draft','Waiting for payment',f('draft').length],['finished','Finished',f('finished').length]])+
+      (cur.length?cur.map(card).join(''):`<div class="card pad">${empty('Nothing here','Campaigns will appear here when creators book them from Studio.')}</div>`)})};
+const campFind=id=>{const D=dData('camps');return D&&(D.campaigns||[]).find(c=>c.id===id)};
+Object.assign(ACT,{
+ 'l-camp-confirm':el=>{const c=campFind(el.dataset.id);if(!c)return;modal({title:'Payment received?',ok:'Yes, start the ad',body:`<p>Check your ${esc(CAMP_PAY[c.payMethod]||'payment')} account first. Did <b>${rp(c.amountPaise)}</b> reach you${c.payRef?' (reference <b>'+esc(c.payRef)+'</b>)':''}?</p><p class="sm muted" style="margin-top:8px">The ad will start right now and run for ${c.days} days. The creator gets a message.</p>`,onOk:()=>{campRun(c.id,'/api/admin/campaigns/'+c.id+'/confirm',{},'Ad is live: '+c.name)}})},
+ 'l-camp-reject':el=>{const c=campFind(el.dataset.id);if(!c)return;modal({title:'Reject this campaign',ok:'Reject',danger:true,body:`<p class="sm muted" style="margin-bottom:10px">The creator will see your reason. If they already paid, send the money back yourself.</p>${field('Reason','<input class="inp" name="reason" maxlength="200" placeholder="e.g. This ad is not allowed">')}`,onOk:f=>{campRun(c.id,'/api/admin/campaigns/'+c.id+'/reject',{reason:((f&&f.get&&f.get('reason'))||'').trim()},'Campaign rejected')}})},
+ 'l-camp-end':el=>{const c=campFind(el.dataset.id);if(!c)return;modal({title:'End this campaign now?',ok:'End now',danger:true,body:`<p>The ad <b>${esc(c.name)}</b> will stop showing right away. This cannot be undone.</p>`,onOk:()=>{campRun(c.id,'/api/admin/campaigns/'+c.id+'/end',{},'Campaign ended')}})},
+ 'l-cf-save':async()=>{const F=LIVE.cf;if(!F)return;
+   const prices={};['home','watch','reels','preroll','midroll'].forEach(k=>{prices[k]=F['p_'+k]});
+   LIVE.busy='cf';render();
+   try{await api('/api/admin/campaign-settings',{method:'PUT',body:JSON.stringify({enabled:!!F.enabled,upiId:F.upiId,payee:F.payee,razorpayLink:F.razorpayLink,bankHolder:F.bankHolder,bankAccount:F.bankAccount,bankIfsc:F.bankIfsc,bankName:F.bankName,intlLink:F.intlLink,intlText:F.intlText,usdRate:F.usdRate,prices})});
+     LIVE.cf=null;toast('Ad payment settings saved')}catch(e){lerr(e)}finally{LIVE.busy=null;load('campset',true);render()}}
+});
+V['l-campset']=()=>pageH('Ad payment settings','Where advertisers send money to you, and how much each ad place costs.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['campset'],S0=>{
+    if(!LIVE.cf)LIVE.cf={enabled:!!S0.enabled,upiId:S0.upiId||'',payee:S0.payee||'',razorpayLink:S0.razorpayLink||'',bankHolder:S0.bankHolder||'',bankAccount:S0.bankAccount||'',bankIfsc:S0.bankIfsc||'',bankName:S0.bankName||'',intlLink:S0.intlLink||'',intlText:S0.intlText||'',usdRate:S0.usdRate?String(S0.usdRate):'',
+      p_home:S0.prices.home?String(S0.prices.home):'',p_watch:S0.prices.watch?String(S0.prices.watch):'',p_reels:S0.prices.reels?String(S0.prices.reels):'',p_preroll:S0.prices.preroll?String(S0.prices.preroll):'',p_midroll:S0.prices.midroll?String(S0.prices.midroll):''};
+    const F=LIVE.cf,inp=(k,label,ph,hint,type)=>field(label,`<input class="inp" data-cf="${k}" data-keep="cf-${k}" ${type?`type="${type}" inputmode="decimal" step="0.01" min="0"`:''} value="${esc(F[k]||'')}" placeholder="${esc(ph||'')}" autocomplete="off">`,hint),
+      why=[];if(!S0.enabled)why.push('the switch is off');if(!Object.values(S0.prices).some(x=>x>0))why.push('no price is set');if(!Object.values(S0.methods).some(Boolean))why.push('no way to pay is added');
+    return `<div class="card pad" style="margin-bottom:14px;border-color:${S0.ready?'var(--green,#16a34a)':'var(--amber)'}"><div class="b">${S0.ready?'Campaigns are OPEN for creators':'Campaigns are CLOSED for creators'}</div><div class="sm muted">${S0.ready?'Creators can book ads from Studio > Halal Ads.':'Not open yet because '+why.join(', ')+'. Fill the sections below and save.'}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><label class="row" style="gap:8px"><input type="checkbox" data-cf="enabled" ${F.enabled?'checked':''} style="width:18px;height:18px"><b>Let creators book ad campaigns</b></label><div class="sm muted" style="margin-top:6px">Turn this on only after you add a way to pay and set the prices.</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>India: UPI</h3><p class="sm muted" style="margin:4px 0 8px">Works with GPay, PhonePe, Paytm and every UPI app. Money comes straight to this UPI ID.</p><div class="grid g2">${inp('upiId','Your UPI ID','name@bank')}${inp('payee','Name shown to the payer','NoorTube Ads')}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Razorpay</h3><p class="sm muted" style="margin:4px 0 8px">Cards, netbanking and wallets (and international cards if your Razorpay account allows them). In your Razorpay dashboard create a <b>Payment Page</b> or <b>Payment Link</b> where the payer can type the amount, then paste its https link here.</p>${inp('razorpayLink','Razorpay payment link','https://rzp.io/l/yourname')}</div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Bank account</h3><p class="sm muted" style="margin:4px 0 8px">For NEFT / IMPS / RTGS transfers.</p><div class="grid g2">${inp('bankHolder','Account holder name','')}${inp('bankName','Bank name','')}${inp('bankAccount','Account number','')}${inp('bankIfsc','IFSC code','HDFC0001234')}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Other countries</h3><p class="sm muted" style="margin:4px 0 8px">For advertisers outside India: a PayPal.me, Wise or Stripe link, and/or your instructions (for example international bank details).</p>${inp('intlLink','Payment link','https://paypal.me/yourname')}${field('Instructions (optional)',`<textarea class="inp" rows="3" data-cf="intlText" data-keep="cf-intlText" maxlength="600" placeholder="Example: Send to PayPal yourname@email.com and write the reference in the note.">${esc(F.intlText||'')}</textarea>`)}${inp('usdRate','Dollar rate: 1 USD = ₹','85','Used to show the price in dollars to creators from other countries. Leave empty to hide dollars.','number')}</div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Price per day (₹)</h3><p class="sm muted" style="margin:4px 0 8px">What a creator pays for one day in each place. Enter 0 (or leave empty) to not offer that place.</p><div class="grid g2">${inp('p_home','Home banner','100','','number')}${inp('p_watch','Under videos','80','','number')}${inp('p_reels','Reels (full screen)','150','','number')}${inp('p_preroll','Video start (before the video)','300','','number')}${inp('p_midroll','Video middle','200','','number')}</div></div>
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-cf-save" ${LIVE.busy==='cf'?'disabled':''}>${LIVE.busy==='cf'?'Saving…':'Save settings'}</button></div>`});
+setTimeout(()=>{try{load('camps',true)}catch(e){}},2500);
+window.addEventListener('hashchange',()=>{try{if(route()==='l-camp')load('camps',true)}catch(e){}});
+
 PAGE_KEYS['l-ads']=['ads','settings'];PAGE_KEYS['l-notify']=['notify'];PAGE_KEYS['l-settings']=['settings'];PAGE_KEYS['l-audit']=['audit'];
 Object.defineProperty(PAGE_KEYS,'l-analytics',{get:()=>['an'+LIVE.anDays],enumerable:true,configurable:true});
 const hm12=h=>{const m=Math.round(h*60)%1440,hh=Math.floor(m/60),mm=m%60;return{t:`${((hh+11)%12)+1}:${String(mm).padStart(2,'0')}`,ap:hh>=12?'PM':'AM'}};
@@ -1460,8 +1518,9 @@ V['l-ads']=()=>pageH('Halal ads','Upload banners or video ads and choose where t
   gate(['ads','settings'],(A,SD)=>{const cfg=SD.settings,now=Date.now(),g=salahGuardState(now,cfg),nx=nextPrayerOf(cfg,now),list=A.ads.filter(a=>UI.tab==='all'||(UI.tab==='paused'?!a.active:a.placements.includes(UI.tab)));
     const live=A.ads.filter(a=>a.active),imp=sum(A.ads.map(a=>a.impressions)),clk=sum(A.ads.map(a=>a.clicks));
     const html=g.active?`<b>Paused for ${esc(g.name)}</b> until ${new Date(g.untilMs).toLocaleTimeString('en',{hour:'numeric',minute:'2-digit'})}. No ads are being served right now.`:!cfg.guardOn?'<b>Salah guard is off.</b> Ads run during prayer times.':`<b>Ads are running.</b> Next pause: ${esc(nx.n)} at ${hm12(nx.h).t} ${hm12(nx.h).ap}, in ${cd(nx.t-now)}.`;
+    const reelCard=`<div class="card pad" style="margin:14px 0"><div class="row wrap" style="gap:8px;align-items:center"><span class="b sm">Reels: show a full-screen ad after every</span><input class="inp" id="reelEvery" type="number" inputmode="numeric" min="1" max="50" value="${A.reelEvery||7}" style="width:84px" aria-label="Reels between ads"><span class="sm">reels</span><button type="button" class="btn" data-act="l-reel-every">Save</button></div><div class="sm muted" style="margin-top:6px">The ad appears only after a viewer has swiped through this many reels. If you have fewer reels than this number, no ad is shown. Use a small number (like 2 or 3) to test.</div></div>`;
     return stBox({active:g.active,html})+`<div class="kpis">${kpi('Live ads',live.length)}${kpi('Impressions',imp.toLocaleString())}${kpi('Clicks',clk.toLocaleString())}${kpi('CTR',imp?(clk/imp*100).toFixed(2)+'%':'—')}</div>`+
-    tabs('tab',[['all','All',A.ads.length],['home','Home banner',A.ads.filter(a=>a.placements.includes('home')).length],['watch','Under videos',A.ads.filter(a=>a.placements.includes('watch')).length],['reels','Reels',A.ads.filter(a=>a.placements.includes('reels')).length],['preroll','Video start',A.ads.filter(a=>a.placements.includes('preroll')).length],['midroll','Video middle',A.ads.filter(a=>a.placements.includes('midroll')).length],['paused','Paused',A.ads.filter(a=>!a.active).length]])+
+    reelCard+tabs('tab',[['all','All',A.ads.length],['home','Home banner',A.ads.filter(a=>a.placements.includes('home')).length],['watch','Under videos',A.ads.filter(a=>a.placements.includes('watch')).length],['reels','Reels',A.ads.filter(a=>a.placements.includes('reels')).length],['preroll','Video start',A.ads.filter(a=>a.placements.includes('preroll')).length],['midroll','Video middle',A.ads.filter(a=>a.placements.includes('midroll')).length],['paused','Paused',A.ads.filter(a=>!a.active).length]])+
     `<div class="card"><div class="tbl-wrap"><table style="min-width:820px"><thead><tr><th>Ad</th><th>Where</th><th>Performance</th><th>Schedule</th><th>Status</th><th class="right">Actions</th></tr></thead><tbody>${list.length?list.map(a=>`<tr>
       <td><div class="row">${a.type==='image'?`<img src="${esc(a.mediaUrl)}" alt="" style="width:64px;height:36px;object-fit:cover;border-radius:8px;flex:none" onerror="this.style.visibility='hidden'">`:`<span class="thumb" style="width:64px;height:36px;border-radius:8px">${ic('play','sm')}</span>`}<div style="min-width:0"><div class="b">${esc(a.name)}</div><div class="sm muted">${a.type==='video'?'Video':'Image'}${a.clickUrl?' · has link':''}</div></div></div></td>
       <td><div class="row wrap" style="gap:4px">${a.placements.map(p=>chip(PL_NAME[p]||p,'green')).join('')}</div></td>
@@ -1550,6 +1609,8 @@ Object.assign(ACT,{
    const who={all:'everyone',creators:'all creators',monetized:'monetized channels',admins:'admins'}[f.audience];
    modal({title:'Send notification',ok:'Send now',body:`<p>Send <b>“${esc(f.title.trim())}”</b> to <b>${who}</b>? It cannot be taken back.</p>`,
      onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people');LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
+ 'l-reel-every':async()=>{const el=document.getElementById('reelEvery'),n=parseInt(el&&el.value,10);if(!(n>=1&&n<=50)){toast('Enter a number from 1 to 50');return}
+   try{await api('/api/admin/ads-settings',{method:'PUT',body:JSON.stringify({reelEvery:n})});toast('Saved: ad after every '+n+' reels');load('ads',true);render()}catch(e){lerr(e)}},
  'l-ad-add':()=>{modal({title:'Upload new ad',ok:'Upload ad',body:`<div class="stack">${field('Ad name (only you see this)','<input class="inp" name="name" maxlength="80" placeholder="e.g. Ramadan banner">')}
    ${field('Image or video','<input class="inp" type="file" name="file" accept="image/*,video/mp4,video/webm">','Shown full width and 235 px tall. Wide images fit completely; very tall images are trimmed at the top and bottom. Videos should be short.')}
    <div><label class="row" style="gap:8px"><input type="checkbox" name="compress" checked style="width:18px;height:18px"><b class="sm">Compress to fit (recommended)</b></label><div class="sm muted" style="margin-top:4px">Makes the file smaller so it loads fast and always fits. A video takes about as long as the video to compress. Turn it off to upload the original file.</div></div>

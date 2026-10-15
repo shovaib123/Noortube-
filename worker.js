@@ -339,7 +339,7 @@ const AUDIT_LABELS = [
   [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/reject$/, "Marked a sadaqah payment as not received"], [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/mark-paid$/, "Marked a sadaqah withdrawal as paid"],
   [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/reject$/, "Rejected a sadaqah withdrawal"], [/^POST \/api\/admin\/ads$/, "Created an ad"], [/^PATCH \/api\/admin\/ads\/[^/]+$/, "Edited / paused an ad"],
   [/^DELETE \/api\/admin\/ads\/[^/]+$/, "Deleted an ad"], [/^POST \/api\/admin\/broadcast$/, "Sent a notification to users"], [/^PUT \/api\/admin\/settings$/, "Changed platform settings"],
-  [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^PUT \/api\/admin\/auto-scan$/, "Turned the hourly duplicate auto-scan on / off"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
+  [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^PUT \/api\/admin\/auto-scan$/, "Turned the hourly duplicate auto-scan on / off"], [/^POST \/api\/admin\/campaigns\/[^/]+\/confirm$/, "Confirmed an ad campaign payment and started the ad"], [/^POST \/api\/admin\/campaigns\/[^/]+\/reject$/, "Rejected an ad campaign"], [/^POST \/api\/admin\/campaigns\/[^/]+\/end$/, "Ended an ad campaign"], [/^PUT \/api\/admin\/campaign-settings$/, "Changed the ad campaign payment settings and prices"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
 ];
 function auditLabel(method, path) {
   const key = method + " " + path;
@@ -770,6 +770,43 @@ async function sendMail(env, to, subject, html, text) {
   return false;
 }
 
+// ================= AD CAMPAIGNS: creators buy ads in Studio, the admin checks the payment and starts them =================
+// Nothing is open to creators until the admin turns it on, adds at least one way to pay and sets the prices.
+let campReady = false;
+async function ensureCampTables(db) {
+  if (campReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, ref TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, media_url TEXT NOT NULL, click_url TEXT, placements TEXT NOT NULL, days INTEGER NOT NULL, mid_after INTEGER, skip INTEGER NOT NULL DEFAULT 0, amount_paise INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'draft', pay_method TEXT, pay_ref TEXT, payer_name TEXT, reject_reason TEXT, ad_id TEXT, created_at INTEGER NOT NULL, submitted_at INTEGER, resolved_at INTEGER, start_at INTEGER, end_at INTEGER)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS ad_pay_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)").run();
+  campReady = true;
+}
+const CAMP_DAYS = [3, 7, 14, 30];
+const CAMP_PRICE_KEYS = ["home", "watch", "reels", "preroll", "midroll"];
+async function getCampSettings(db) {
+  await ensureCampTables(db);
+  const rows = await db.prepare("SELECT k, v FROM ad_pay_settings").all();
+  const m = {};
+  (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+  let prices = {};
+  try { prices = JSON.parse(m.prices || "{}"); } catch (_) {}
+  const P = {};
+  CAMP_PRICE_KEYS.forEach((k) => { const n = Number(prices[k]); P[k] = isFinite(n) && n > 0 && n <= 1000000 ? Math.round(n * 100) / 100 : 0; });
+  const s = (k, n) => String(m[k] || "").trim().slice(0, n || 200), usd = Number(m.usd_rate);
+  const out = { enabled: m.enabled === "1", upiId: s("upi_id", 80), payee: s("payee", 60), razorpayLink: s("razorpay_link", 300), bankHolder: s("bank_holder", 80), bankAccount: s("bank_account", 40), bankIfsc: s("bank_ifsc", 20), bankName: s("bank_name", 80), intlLink: s("intl_link", 300), intlText: s("intl_text", 600), usdRate: isFinite(usd) && usd > 0 ? usd : 0, prices: P };
+  out.methods = { upi: !!out.upiId, razorpay: /^https:\/\//i.test(out.razorpayLink), bank: !!(out.bankAccount && out.bankIfsc), intl: !!(out.intlText || /^https:\/\//i.test(out.intlLink)) };
+  out.ready = out.enabled && CAMP_PRICE_KEYS.some((k) => P[k] > 0) && Object.values(out.methods).some(Boolean);
+  return out;
+}
+const campRef = () => "NTC" + Array.from(crypto.getRandomValues(new Uint8Array(8))).map((x) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[x % 32]).join("");
+function campOut(c) {
+  const now = Date.now();
+  let status = c.status;
+  if (status === "live" && c.end_at && now > c.end_at) status = "ended";
+  return { id: c.id, ref: c.ref, name: c.name, type: c.type, mediaUrl: c.media_url, clickUrl: c.click_url || "", placements: String(c.placements || "").split(",").filter(Boolean), days: c.days, midAfter: c.mid_after || 30, skip: !!c.skip, amountPaise: c.amount_paise,
+    status, payMethod: c.pay_method || "", payRef: c.pay_ref || "", payerName: c.payer_name || "", rejectReason: c.reject_reason || "", createdAt: c.created_at, submittedAt: c.submitted_at || null, resolvedAt: c.resolved_at || null, startAt: c.start_at || null, endAt: c.end_at || null,
+    impressions: c.impressions || 0, clicks: c.clicks || 0 };
+}
+const CAMP_SELECT = "SELECT c.*, a.impressions AS impressions, a.clicks AS clicks FROM ad_campaigns c LEFT JOIN ads a ON a.id = c.ad_id ";
+
 // ===== Duplicate scan (shared by the admin button and the hourly auto-scan) =====
 async function runDuplicateScan(db, env, apply) {
       // 1) read the storage checksum of older uploads that do not have one yet (small batches, repeat the scan until "remaining" is 0)
@@ -817,6 +854,15 @@ async function runDuplicateScan(db, env, apply) {
         }
       }
       return { ok: true, scannedNow: scanned, remaining, duplicates: list, removed: removedCount, applied: apply };
+}
+// ===== Reels: show one full-screen ad after every N reels (admin sets N, default 7) =====
+async function getReelAdEvery(db) {
+  try {
+    await ensureAutoToolsTable(db);
+    const r = await db.prepare("SELECT v FROM auto_tools WHERE k = 'reel_ad_every'").first();
+    const n = r ? parseInt(r.v, 10) : 7;
+    return n >= 1 && n <= 50 ? n : 7;
+  } catch (_) { return 7; }
 }
 // ===== Hourly auto-scan switch (default OFF; the admin turns it on in Tools) =====
 async function ensureAutoToolsTable(db) {
@@ -1359,6 +1405,163 @@ async function handleRequest(request, env) {
       await db.prepare("DELETE FROM notifications WHERE user_id = ?").bind(u.id).run();
       return json({ ok: true });
     }
+    // ----- AD CAMPAIGNS (creators) -----
+    if (method === "GET" && path === "/api/campaigns/info") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      try {
+        const C = await getCampSettings(db);
+        return json({ ok: true, enabled: C.enabled, ready: C.ready, prices: C.prices, durations: CAMP_DAYS, usdRate: C.usdRate, methods: C.methods,
+          pay: { upiId: C.upiId, payee: C.payee || "NoorTube", razorpayLink: C.razorpayLink, bankHolder: C.bankHolder, bankAccount: C.bankAccount, bankIfsc: C.bankIfsc, bankName: C.bankName, intlLink: C.intlLink, intlText: C.intlText } });
+      } catch (_) { return err("Ad campaigns are temporarily unavailable", 503); }
+    }
+    if (method === "GET" && path === "/api/me/campaigns") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      try {
+        await ensurePlatformTables(db); await ensureCampTables(db);
+        const r = await db.prepare(CAMP_SELECT + "WHERE c.owner_id = ? ORDER BY c.created_at DESC LIMIT 100").bind(u.id).all();
+        return json({ ok: true, campaigns: (r.results || []).map(campOut) });
+      } catch (_) { return err("Could not load your campaigns", 500); }
+    }
+    if (method === "POST" && path === "/api/me/campaigns") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      if (u.role === "guest") return err("Please sign in with a real account", 403);
+      if (u.suspended) return err("Your account is suspended", 403);
+      const b = await request.json().catch(() => ({}));
+      try {
+        await ensurePlatformTables(db);
+        const C = await getCampSettings(db);
+        if (!C.ready) return err("Ad campaigns are not open yet", 403);
+        const name = String(b.name || "").trim().slice(0, 80);
+        if (!name) return err("Give your campaign a name", 400);
+        const type = b.type === "video" ? "video" : b.type === "image" ? "image" : "";
+        if (!type) return err("Choose an image or a video", 400);
+        const media = String(b.mediaUrl || "").trim();
+        if (!media.startsWith(url.origin + "/file/")) return err("Please upload your image or video first", 400);
+        const click = String(b.clickUrl || "").trim().slice(0, 500);
+        if (click && !/^https?:\/\//i.test(click)) return err("The link must start with http:// or https://", 400);
+        const places = [...new Set((Array.isArray(b.placements) ? b.placements : []).filter((x) => CAMP_PRICE_KEYS.includes(x) && C.prices[x] > 0))];
+        if (!places.length) return err("Choose where your ad should appear", 400);
+        if (isVideoSlot(places) && type !== "video") return err("Video start and Video middle need a video file", 400);
+        const days = Math.round(Number(b.days));
+        if (!CAMP_DAYS.includes(days)) return err("Choose how many days", 400);
+        const open = await db.prepare("SELECT COUNT(*) AS n FROM ad_campaigns WHERE owner_id = ? AND status IN ('draft', 'submitted')").bind(u.id).first();
+        if ((open && open.n || 0) >= 5) return err("You already have 5 campaigns waiting. Finish or cancel one first.", 400);
+        const perDay = places.reduce((s, k) => s + C.prices[k], 0), amount = Math.round(perDay * days * 100);
+        if (!(amount > 0)) return err("Could not work out the price", 400);
+        const id = uid("camp"), ref = campRef(), midAfter = Math.max(5, Math.min(3600, Math.round(Number(b.midAfter) || 30)));
+        await db.prepare("INSERT INTO ad_campaigns (id, ref, owner_id, name, type, media_url, click_url, placements, days, mid_after, skip, amount_paise, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'draft', ?)")
+          .bind(id, ref, u.id, name, type, media, click || null, places.join(","), days, midAfter, b.skip ? 1 : 0, amount, Date.now()).run();
+        const row = await db.prepare(CAMP_SELECT + "WHERE c.id = ?").bind(id).first();
+        return json({ ok: true, campaign: campOut(row) });
+      } catch (_) { return err("Could not create the campaign", 500); }
+    }
+    {
+      const m2 = path.match(/^\/api\/me\/campaigns\/([^/]+)\/(submit|cancel)$/);
+      if (method === "POST" && m2) {
+        const u = await currentUser(request, env);
+        if (!u) return err("Sign in required", 401);
+        try {
+          await ensureCampTables(db);
+          const c = await db.prepare("SELECT * FROM ad_campaigns WHERE id = ? AND owner_id = ?").bind(m2[1], u.id).first();
+          if (!c) return err("Campaign not found", 404);
+          if (c.status !== "draft") return err("This campaign was already sent or finished", 409);
+          if (m2[2] === "cancel") {
+            await db.prepare("UPDATE ad_campaigns SET status = 'cancelled', resolved_at = ? WHERE id = ? AND status = 'draft'").bind(Date.now(), c.id).run();
+            return json({ ok: true });
+          }
+          const b = await request.json().catch(() => ({}));
+          const C = await getCampSettings(db), pm = String(b.method || "");
+          if (!["upi", "razorpay", "bank", "intl"].includes(pm) || !C.methods[pm]) return err("Choose how you paid", 400);
+          const refText = String(b.reference || "").trim().slice(0, 80);
+          if (refText.length < 4) return err("Enter the payment reference or transaction ID", 400);
+          const r = await db.prepare("UPDATE ad_campaigns SET status = 'submitted', pay_method = ?, pay_ref = ?, payer_name = ?, submitted_at = ? WHERE id = ? AND status = 'draft'")
+            .bind(pm, refText, String(b.payerName || "").trim().slice(0, 60) || null, Date.now(), c.id).run();
+          if (!r.meta || r.meta.changes !== 1) return err("This campaign was already sent", 409);
+          return json({ ok: true });
+        } catch (_) { return err("Could not save", 500); }
+      }
+    }
+    // ----- AD CAMPAIGNS (admin) -----
+    if (method === "GET" && path === "/api/admin/campaigns") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      try {
+        await ensurePlatformTables(db); await ensureCampTables(db);
+        const r = await db.prepare("SELECT c.*, a.impressions AS impressions, a.clicks AS clicks, u.name AS owner_name, u.email AS owner_email FROM ad_campaigns c LEFT JOIN ads a ON a.id = c.ad_id LEFT JOIN users u ON u.id = c.owner_id ORDER BY c.created_at DESC LIMIT 500").all();
+        const list = (r.results || []).map((c) => ({ ...campOut(c), ownerName: c.owner_name || "Deleted user", ownerEmail: c.owner_email || "" }));
+        const earned = (r.results || []).filter((c) => c.status === "live" || c.status === "ended").reduce((s, c) => s + (c.amount_paise || 0), 0);
+        return json({ ok: true, campaigns: list, totals: { earnedPaise: earned, awaiting: list.filter((c) => c.status === "submitted").length, live: list.filter((c) => c.status === "live").length, all: list.length } });
+      } catch (_) { return err("Could not load campaigns", 500); }
+    }
+    {
+      const m3 = path.match(/^\/api\/admin\/campaigns\/([^/]+)\/(confirm|reject|end)$/);
+      if (method === "POST" && m3) {
+        if (!(await adminUser(request, env))) return err("Not allowed", 403);
+        try {
+          await ensurePlatformTables(db); await ensureCampTables(db);
+          const c = await db.prepare("SELECT * FROM ad_campaigns WHERE id = ?").bind(m3[1]).first();
+          if (!c) return err("Campaign not found", 404);
+          const now = Date.now();
+          if (m3[2] === "confirm") {
+            if (c.status !== "submitted" && c.status !== "draft") return err("This campaign was already handled", 409);
+            const places = String(c.placements || "").split(",").filter(Boolean), end = now + c.days * 86400000, adId = uid("ad");
+            if (isVideoSlot(places) && c.type !== "video") return err("Video start / middle need a video file", 400);
+            if (await ensureAdVideoCols(db)) {
+              await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at, mid_after, skip_after) VALUES (?,?,?,?,?,?,1,?,?,?,?,?)")
+                .bind(adId, "Campaign: " + c.name, c.type, c.media_url, c.click_url || "", places.join(","), now, end, now, c.mid_after || 30, c.skip ? 5 : 0).run();
+            } else {
+              if (isVideoSlot(places)) return err("The server could not prepare video ads yet. Please try again.", 500);
+              await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at) VALUES (?,?,?,?,?,?,1,?,?,?)")
+                .bind(adId, "Campaign: " + c.name, c.type, c.media_url, c.click_url || "", places.join(","), now, end, now).run();
+            }
+            const r = await db.prepare("UPDATE ad_campaigns SET status = 'live', ad_id = ?, start_at = ?, end_at = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(adId, now, end, now, c.id).run();
+            if (!r.meta || r.meta.changes !== 1) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("This campaign was already handled", 409); }
+            try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live for " + c.days + " days. You can see its views and clicks in Studio > Halal Ads."); } catch (_) {}
+            return json({ ok: true });
+          }
+          if (m3[2] === "reject") {
+            if (c.status !== "submitted" && c.status !== "draft") return err("This campaign was already handled", 409);
+            const b = await request.json().catch(() => ({}));
+            const reason = String((b && b.reason) || "").trim().slice(0, 200) || "It did not meet the ad rules.";
+            const r = await db.prepare("UPDATE ad_campaigns SET status = 'rejected', reject_reason = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(reason, now, c.id).run();
+            if (!r.meta || r.meta.changes !== 1) return err("This campaign was already handled", 409);
+            try { await addNotification(db, c.owner_id, "warning", "Ad campaign not accepted", "Your campaign \"" + c.name + "\" was not accepted. Reason: " + reason + (/[.!?]$/.test(reason) ? "" : ".") + " If you already paid, contact us with your reference " + c.ref + "."); } catch (_) {}
+            return json({ ok: true });
+          }
+          if (c.status !== "live") return err("Only a live campaign can be ended", 409);
+          await db.prepare("UPDATE ad_campaigns SET status = 'ended', end_at = ?, resolved_at = ? WHERE id = ? AND status = 'live'").bind(now, now, c.id).run();
+          if (c.ad_id) await db.prepare("UPDATE ads SET active = 0, ends_at = ? WHERE id = ?").bind(now, c.ad_id).run();
+          try { await addNotification(db, c.owner_id, "info", "Ad campaign ended", "Your campaign \"" + c.name + "\" has ended."); } catch (_) {}
+          return json({ ok: true });
+        } catch (_) { return err("Could not save", 500); }
+      }
+    }
+    if ((method === "GET" || method === "PUT") && path === "/api/admin/campaign-settings") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      try {
+        if (method === "PUT") {
+          const b = await request.json().catch(() => ({}));
+          const str = (k, n) => String(b[k] == null ? "" : b[k]).trim().slice(0, n);
+          const upi = str("upiId", 80), rz = str("razorpayLink", 300), il = str("intlLink", 300), usd = b.usdRate === "" || b.usdRate == null ? 0 : Number(b.usdRate);
+          if (upi && !/^[a-zA-Z0-9._-]{2,}@[a-zA-Z][a-zA-Z0-9.-]{1,}$/.test(upi)) return err("The UPI ID does not look right (example: name@bank)", 400);
+          if (rz && !/^https:\/\//i.test(rz)) return err("The Razorpay link must start with https://", 400);
+          if (il && !/^https:\/\//i.test(il)) return err("The international payment link must start with https://", 400);
+          if (!isFinite(usd) || usd < 0 || usd > 1000) return err("The dollar rate is not valid", 400);
+          const src = (b.prices && typeof b.prices === "object") ? b.prices : {}, P = {};
+          for (const k of CAMP_PRICE_KEYS) {
+            const n = src[k] === "" || src[k] == null ? 0 : Number(src[k]);
+            if (!isFinite(n) || n < 0 || n > 1000000) return err("A price is not valid. Use a number like 100 (0 means not offered).", 400);
+            P[k] = Math.round(n * 100) / 100;
+          }
+          await ensureCampTables(db);
+          const kv = { enabled: b.enabled === true ? "1" : "0", upi_id: upi, payee: str("payee", 60), razorpay_link: rz, bank_holder: str("bankHolder", 80), bank_account: str("bankAccount", 40), bank_ifsc: str("bankIfsc", 20), bank_name: str("bankName", 80), intl_link: il, intl_text: str("intlText", 600), usd_rate: String(usd), prices: JSON.stringify(P) };
+          await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO ad_pay_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
+        }
+        return json({ ok: true, settings: await getCampSettings(db) });
+      } catch (_) { return err("Could not save the settings", 500); }
+    }
     // ----- email verification (needed before monetization) -----
     if (method === "GET" && path === "/api/me/email-status") {
       const u = await currentUser(request, env);
@@ -1595,7 +1798,7 @@ async function handleRequest(request, env) {
         const vOnly = (placement === "preroll" || placement === "midroll") ? " AND type = 'video'" : "";
         const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
           .bind(now, now, "%," + placement + ",%").all();
-        return json({ ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })) });
+        return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })) });
       } catch (_) { return json({ ads: [] }); }
     }
     if (method === "POST" && (m = path.match(/^\/api\/ads\/([^/]+)\/(impression|click)$/))) {
@@ -1634,7 +1837,15 @@ async function handleRequest(request, env) {
       await ensurePlatformTables(db);
       const rows = await db.prepare("SELECT * FROM ads ORDER BY created_at DESC LIMIT 300").all();
       const cfg = await getAppSettings(db);
-      return json({ ok: true, ads: (rows.results || []).map(adOut), guard: salahGuardState(Date.now(), cfg), guardOn: cfg.guardOn });
+      return json({ ok: true, ads: (rows.results || []).map(adOut), guard: salahGuardState(Date.now(), cfg), guardOn: cfg.guardOn, reelEvery: await getReelAdEvery(db) });
+    }
+    if (method === "PUT" && path === "/api/admin/ads-settings") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      const b = await request.json().catch(() => ({}));
+      const n = Math.round(Number(b.reelEvery));
+      if (!(n >= 1 && n <= 50)) return err("Enter a number from 1 to 50", 400);
+      try { await ensureAutoToolsTable(db); await setAutoTool(db, "reel_ad_every", n); } catch (_) { return err("Could not save", 500); }
+      return json({ ok: true, reelEvery: n });
     }
     if (method === "POST" && path === "/api/admin/ads") {
       if (!(await adminUser(request, env))) return err("Not allowed", 403);
