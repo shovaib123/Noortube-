@@ -200,6 +200,40 @@ async function recordLoginFailure(db, ip, email) {
   } catch (_) {}
 }
 
+// ---------- USER BLOCKS (Google Play UGC: users must be able to block other users) ----------
+let userBlocksReady = false;
+async function ensureUserBlocks(db) {
+  if (userBlocksReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS user_blocks (blocker_id TEXT NOT NULL, blocked_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (blocker_id, blocked_id))").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON user_blocks (blocker_id)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON user_blocks (blocked_id)").run();
+  userBlocksReady = true;
+}
+async function isBlocked(db, blockerId, blockedId) {
+  if (!blockerId || !blockedId || blockerId === blockedId) return false;
+  try {
+    await ensureUserBlocks(db);
+    const r = await db.prepare("SELECT 1 FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?").bind(blockerId, blockedId).first();
+    return !!r;
+  } catch (_) { return false; }
+}
+async function blockedIdsFor(db, userId) {
+  try {
+    await ensureUserBlocks(db);
+    const rows = await db.prepare("SELECT blocked_id FROM user_blocks WHERE blocker_id = ?").bind(userId).all();
+    return new Set((rows.results || []).map((r) => r.blocked_id));
+  } catch (_) { return new Set(); }
+}
+
+// ---------- PASSWORD RESET (Forgot password on login) ----------
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+let passwordResetReady = false;
+async function ensurePasswordReset(db) {
+  if (passwordResetReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS password_resets (email TEXT PRIMARY KEY, user_id TEXT NOT NULL, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL, hour_start INTEGER NOT NULL DEFAULT 0, hour_count INTEGER NOT NULL DEFAULT 0)").run();
+  passwordResetReady = true;
+}
+
 // ---------- CREATOR PAYOUTS (rates, creator share, "mark as paid" records) ----------
 // Everything is counted in whole cents. Creators only ever receive THEIR share; platform numbers stay admin-only.
 const PAYOUT_LIMITS = { vrpm: [0.10, 0.70], rrpm: [0.01, 0.03] }; // allowed $ per 1,000 views. Raise later as the app grows.
@@ -339,7 +373,7 @@ const AUDIT_LABELS = [
   [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/reject$/, "Marked a sadaqah payment as not received"], [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/mark-paid$/, "Marked a sadaqah withdrawal as paid"],
   [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/reject$/, "Rejected a sadaqah withdrawal"], [/^POST \/api\/admin\/ads$/, "Created an ad"], [/^PATCH \/api\/admin\/ads\/[^/]+$/, "Edited / paused an ad"],
   [/^DELETE \/api\/admin\/ads\/[^/]+$/, "Deleted an ad"], [/^POST \/api\/admin\/broadcast$/, "Sent a notification to users"], [/^PUT \/api\/admin\/settings$/, "Changed platform settings"],
-  [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^PUT \/api\/admin\/auto-scan$/, "Turned the hourly duplicate auto-scan on / off"], [/^POST \/api\/admin\/campaigns\/[^/]+\/confirm$/, "Confirmed an ad campaign payment and started the ad"], [/^POST \/api\/admin\/campaigns\/[^/]+\/reject$/, "Rejected an ad campaign"], [/^POST \/api\/admin\/campaigns\/[^/]+\/end$/, "Ended an ad campaign"], [/^PUT \/api\/admin\/campaign-settings$/, "Changed the ad campaign payment settings and prices"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
+  [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^PUT \/api\/admin\/auto-scan$/, "Turned the hourly duplicate auto-scan on / off"], [/^POST \/api\/admin\/campaigns\/[^/]+\/confirm$/, "Confirmed an ad campaign payment and started the ad"], [/^POST \/api\/admin\/campaigns\/[^/]+\/reject$/, "Rejected an ad campaign"], [/^POST \/api\/admin\/campaigns\/[^/]+\/end$/, "Ended an ad campaign"], [/^PUT \/api\/admin\/campaign-settings$/, "Changed the ad campaign payment settings and prices"], [/^PUT \/api\/admin\/adsense$/, "Changed the Google AdSense settings"], [/^PUT \/api\/admin\/admob$/, "Changed the Google AdMob settings"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
 ];
 function auditLabel(method, path) {
   const key = method + " " + path;
@@ -366,6 +400,7 @@ function adOut(a) {
     midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 };
 }
 
+const _adHit = new Map(); // short-lived memory of recent ad impressions/clicks (anti-spam)
 // ================= FEED RANKING ("viral algorithm") =================
 // base score   = popularity x quality x velocity x freshness x evergreen x safety        (same for everyone, cached ~30 s)
 // For You      = base x personal (follows, interests, already-watched) x tiny steady jitter, then creator diversity + "new video" trial slots
@@ -795,6 +830,33 @@ async function getCampSettings(db) {
   out.methods = { upi: !!out.upiId, razorpay: /^https:\/\//i.test(out.razorpayLink), bank: !!(out.bankAccount && out.bankIfsc), intl: !!(out.intlText || /^https:\/\//i.test(out.intlLink)) };
   out.ready = out.enabled && CAMP_PRICE_KEYS.some((k) => P[k] > 0) && Object.values(out.methods).some(Boolean);
   return out;
+}
+// ===== Google AdSense (web ads). Off until the admin turns it on and adds the publisher ID from the AdSense account =====
+async function getAdsenseCfg(db) {
+  try {
+    await ensureCampTables(db);
+    const rows = await db.prepare("SELECT k, v FROM ad_pay_settings WHERE k LIKE 'adsense_%'").all();
+    const m = {};
+    (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+    const client = /^ca-pub-\d{10,20}$/.test(m.adsense_client || "") ? m.adsense_client : "";
+    const slot = (k) => (/^\d{6,20}$/.test(m[k] || "") ? m[k] : "");
+    return { switchOn: m.adsense_enabled === "1", enabled: m.adsense_enabled === "1" && !!client, client, slots: { home: slot("adsense_slot_home"), watch: slot("adsense_slot_watch") } };
+  } catch (_) { return { switchOn: false, enabled: false, client: "", slots: { home: "", watch: "" } }; }
+}
+// ===== Google AdMob (the Android app from the Play Store). The web app calls it through the native shell. Test mode is ON until the admin turns it off =====
+async function getAdmobCfg(db) {
+  try {
+    await ensureCampTables(db);
+    const rows = await db.prepare("SELECT k, v FROM ad_pay_settings WHERE k LIKE 'admob_%'").all();
+    const m = {};
+    (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+    const unit = (k) => (/^ca-app-pub-\d{16}\/\d{10}$/.test(m[k] || "") ? m[k] : "");
+    const appId = /^ca-app-pub-\d{16}~\d{10}$/.test(m.admob_app_id || "") ? m.admob_app_id : "";
+    const num = (k, d, lo, hi) => { const n = parseInt(m[k], 10); return n >= lo && n <= hi ? n : d; };
+    const out = { switchOn: m.admob_enabled === "1", test: m.admob_test !== "0", appId, banner: unit("admob_banner"), interstitial: unit("admob_interstitial"), everyVideos: num("admob_every_videos", 3, 1, 20), everyReels: num("admob_every_reels", 7, 2, 50), minGapMin: num("admob_min_gap_min", 4, 1, 60) };
+    out.enabled = out.switchOn && (!!out.banner || !!out.interstitial || out.test);
+    return out;
+  } catch (_) { return { switchOn: false, enabled: false, test: true, appId: "", banner: "", interstitial: "", everyVideos: 3, everyReels: 7, minGapMin: 4 }; }
 }
 const campRef = () => "NTC" + Array.from(crypto.getRandomValues(new Uint8Array(8))).map((x) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[x % 32]).join("");
 function campOut(c) {
@@ -1321,6 +1383,59 @@ async function handleRequest(request, env) {
       if (token) await db.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
       return json({ ok: true });
     }
+    // ----- Forgot password: send 6-digit code to email (same mail stack as verification) -----
+    if (method === "POST" && path === "/api/auth/forgot-password") {
+      const b = await request.json().catch(() => ({}));
+      const email = String((b && b.email) || "").toLowerCase().trim().slice(0, 254);
+      const okMsg = { ok: true, message: "If an account exists for that email, a reset code has been sent. Check your inbox." };
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return json(okMsg);
+      if (!mailConfigured(env)) return err("Password reset is not set up yet. Contact support at noortube09@gmail.com.", 503);
+      try { await ensurePasswordReset(db); } catch (_) { return err("Password reset is temporarily unavailable. Try again later.", 503); }
+      const user = await db.prepare("SELECT id, name, email, role FROM users WHERE email = ?").bind(email).first();
+      if (!user || user.role === "guest") return json(okMsg);
+      const now = Date.now();
+      const cur = await db.prepare("SELECT sent_at, hour_start, hour_count FROM password_resets WHERE email = ?").bind(email).first();
+      let hourStart = now, hourCount = 1;
+      if (cur) {
+        if (now - cur.sent_at < 60000) return err("Please wait a minute before requesting another code.", 429);
+        if (now - cur.hour_start < 3600000) {
+          hourStart = cur.hour_start; hourCount = (cur.hour_count || 0) + 1;
+          if (hourCount > 5) return err("Too many reset requests. Please try again in an hour.", 429);
+        }
+      }
+      const buf = new Uint32Array(1); crypto.getRandomValues(buf);
+      const code = String(buf[0] % 1000000).padStart(6, "0");
+      const sent = await sendMail(env, email, "NoorTube password reset code: " + code,
+        "<div style=\"font-family:Arial,sans-serif;font-size:15px;color:#111\"><p>Assalamu alaikum " + String(user.name || "").replace(/[<>&\"]/g, "") + ",</p><p>Your NoorTube password reset code is:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:6px\">" + code + "</p><p>This code works for 15 minutes. If you did not request a reset, you can ignore this email — your password will stay the same.</p></div>",
+        "Your NoorTube password reset code is " + code + ". It works for 15 minutes. If you did not request a reset, ignore this email.");
+      if (!sent) return err("Could not send the email. Please try again in a moment.", 502);
+      await db.prepare("INSERT INTO password_resets (email, user_id, code_hash, expires_at, attempts, sent_at, hour_start, hour_count) VALUES (?,?,?,?,0,?,?,?) ON CONFLICT(email) DO UPDATE SET user_id = excluded.user_id, code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at, hour_start = excluded.hour_start, hour_count = excluded.hour_count")
+        .bind(email, user.id, await sha256Hex(user.id + ":reset:" + code), now + RESET_WINDOW_MS, now, hourStart, hourCount).run();
+      return json(okMsg);
+    }
+    if (method === "POST" && path === "/api/auth/reset-password") {
+      const b = await request.json().catch(() => ({}));
+      const email = String((b && b.email) || "").toLowerCase().trim().slice(0, 254);
+      const code = String((b && b.code) || "").trim();
+      const password = String((b && b.password) || "");
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return err("Enter a valid email address");
+      if (!/^\d{6}$/.test(code)) return err("Enter the 6-digit code from the email");
+      if (password.length < 6 || password.length > 200) return err("Password must be at least 6 characters");
+      try { await ensurePasswordReset(db); } catch (_) { return err("Password reset is temporarily unavailable. Try again later.", 503); }
+      const row = await db.prepare("SELECT user_id, code_hash, expires_at, attempts FROM password_resets WHERE email = ?").bind(email).first();
+      if (!row) return err("Ask for a new reset code first.");
+      if (Date.now() > row.expires_at) return err("This code has expired. Request a new one.");
+      if ((row.attempts || 0) >= 5) return err("Too many wrong tries. Request a new code.", 429);
+      if ((await sha256Hex(row.user_id + ":reset:" + code)) !== row.code_hash) {
+        await db.prepare("UPDATE password_resets SET attempts = attempts + 1 WHERE email = ?").bind(email).run();
+        return err("Wrong code. Please check and try again.");
+      }
+      const { hash, salt } = await hashPassword(password);
+      await db.prepare("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?").bind(hash, salt, row.user_id).run();
+      await db.prepare("DELETE FROM password_resets WHERE email = ?").bind(email).run();
+      try { await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(row.user_id).run(); } catch (_) {}
+      return json({ ok: true, message: "Password updated. You can sign in with your new password." });
+    }
     if (method === "GET" && path === "/api/me") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
@@ -1329,6 +1444,27 @@ async function handleRequest(request, env) {
     if (method === "DELETE" && path === "/api/me") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
+      // 1) remember the uploaded files so they can be removed from storage too
+      const fileKeys = [];
+      try {
+        for (const t of ["videos", "reels", "statuses"]) {
+          const r = await db.prepare("SELECT file_url FROM " + t + " WHERE owner_id = ?").bind(u.id).all();
+          (r.results || []).forEach((x) => { const f = String(x.file_url || ""); if (f.startsWith(url.origin + "/file/")) fileKeys.push(decodeURIComponent(f.slice((url.origin + "/file/").length))); });
+        }
+        try { await ensureCampTables(db); const c = await db.prepare("SELECT media_url FROM ad_campaigns WHERE owner_id = ?").bind(u.id).all(); (c.results || []).forEach((x) => { const f = String(x.media_url || ""); if (f.startsWith(url.origin + "/file/")) fileKeys.push(decodeURIComponent(f.slice((url.origin + "/file/").length))); }); } catch (_) {}
+      } catch (_) {}
+      // 2) money-related and ad records: stop ads, remove personal details, keep only what accounting needs
+      const soft = async (sql, ...args) => { try { await db.prepare(sql).bind(...args).run(); } catch (_) {} };
+      await soft("UPDATE ads SET active = 0 WHERE id IN (SELECT ad_id FROM ad_campaigns WHERE owner_id = ? AND ad_id IS NOT NULL)", u.id);
+      await soft("DELETE FROM ad_campaigns WHERE owner_id = ? AND status IN ('draft', 'cancelled', 'rejected')", u.id);
+      await soft("UPDATE ad_campaigns SET owner_id = 'deleted', name = '(deleted)', media_url = '', click_url = NULL, payer_name = NULL WHERE owner_id = ?", u.id);
+      await soft("DELETE FROM email_verified WHERE user_id = ?", u.id);
+      await soft("DELETE FROM email_codes WHERE user_id = ?", u.id);
+      await soft("DELETE FROM password_resets WHERE user_id = ?", u.id);
+      await soft("DELETE FROM user_blocks WHERE blocker_id = ? OR blocked_id = ?", u.id, u.id);
+      await soft("UPDATE sadaqah_requests SET account_name = NULL, account_number = NULL, routing_code = NULL WHERE creator_id = ?", u.id);
+      await soft("UPDATE sadaqah_donations SET donor_id = NULL, donor_name = 'Deleted user' WHERE donor_id = ?", u.id);
+      await soft("DELETE FROM reports WHERE reporter_id = ?", u.id);
       await db.batch([
         db.prepare("DELETE FROM comments WHERE user_id = ?").bind(u.id),
         db.prepare("DELETE FROM video_likes WHERE user_id = ?").bind(u.id),
@@ -1343,6 +1479,8 @@ async function handleRequest(request, env) {
         db.prepare("DELETE FROM statuses WHERE owner_id = ?").bind(u.id),
         db.prepare("DELETE FROM users WHERE id = ?").bind(u.id),
       ]);
+      // 3) remove the uploaded files from storage (a failure here never blocks the deletion)
+      for (const k of [...new Set(fileKeys)]) { try { await env.NOOR_BUCKET.delete(k); } catch (_) {} }
       return json({ ok: true });
     }
     if (method === "POST" && path === "/api/me/change-password") {
@@ -1404,6 +1542,59 @@ async function handleRequest(request, env) {
       if (!u) return err("Not signed in", 401);
       await db.prepare("DELETE FROM notifications WHERE user_id = ?").bind(u.id).run();
       return json({ ok: true });
+    }
+    // ----- Google AdSense: public settings (nothing while the Salah guard is active) + ads.txt + admin settings -----
+    if (method === "GET" && path === "/api/ads/config") {
+      try {
+        await ensurePlatformTables(db);
+        const A = await getAdsenseCfg(db), g = salahGuardState(Date.now(), await getAppSettings(db));
+        const M = await getAdmobCfg(db);
+        return json({ adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
+      } catch (_) { return json({ adsense: { enabled: false }, admob: { enabled: false } }); }
+    }
+    if (method === "GET" && path === "/ads.txt") {
+      const A = await getAdsenseCfg(db);
+      const body = A.client ? "google.com, pub-" + A.client.replace("ca-pub-", "") + ", DIRECT, f08c47fec0942fa0\n" : "";
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+    }
+    if (method === "GET" && path === "/app-ads.txt") {
+      const M = await getAdmobCfg(db);
+      const body = M.appId ? "google.com, pub-" + M.appId.slice("ca-app-pub-".length, "ca-app-pub-".length + 16) + ", DIRECT, f08c47fec0942fa0\n" : "";
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+    }
+    if ((method === "GET" || method === "PUT") && path === "/api/admin/admob") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      try {
+        if (method === "PUT") {
+          const b = await request.json().catch(() => ({}));
+          const s = (k) => String(b[k] == null ? "" : b[k]).trim();
+          const appId = s("appId"), banner = s("banner"), inter = s("interstitial");
+          if (appId && !/^ca-app-pub-\d{16}~\d{10}$/.test(appId)) return err("The App ID should look like ca-app-pub-1234567890123456~1234567890", 400);
+          if ((banner && !/^ca-app-pub-\d{16}\/\d{10}$/.test(banner)) || (inter && !/^ca-app-pub-\d{16}\/\d{10}$/.test(inter))) return err("An ad unit ID should look like ca-app-pub-1234567890123456/1234567890", 400);
+          const iv = (k, d, lo, hi) => { const n = b[k] === "" || b[k] == null ? d : Math.round(Number(b[k])); return n >= lo && n <= hi ? n : null; };
+          const ev = iv("everyVideos", 3, 1, 20), er = iv("everyReels", 7, 2, 50), mg = iv("minGapMin", 4, 1, 60);
+          if (ev === null || er === null || mg === null) return err("Check the numbers: videos 1-20, reels 2-50, minutes 1-60", 400);
+          await ensureCampTables(db);
+          const kv = { admob_enabled: b.enabled === true ? "1" : "0", admob_test: b.test === false ? "0" : "1", admob_app_id: appId, admob_banner: banner, admob_interstitial: inter, admob_every_videos: String(ev), admob_every_reels: String(er), admob_min_gap_min: String(mg) };
+          await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO ad_pay_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
+        }
+        return json({ ok: true, settings: await getAdmobCfg(db) });
+      } catch (_) { return err("Could not save", 500); }
+    }
+    if ((method === "GET" || method === "PUT") && path === "/api/admin/adsense") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      try {
+        if (method === "PUT") {
+          const b = await request.json().catch(() => ({}));
+          const client = String(b.client == null ? "" : b.client).trim(), sh = String(b.slotHome == null ? "" : b.slotHome).trim(), sw = String(b.slotWatch == null ? "" : b.slotWatch).trim();
+          if (client && !/^ca-pub-\d{10,20}$/.test(client)) return err("The Publisher ID should look like ca-pub-1234567890123456", 400);
+          if ((sh && !/^\d{6,20}$/.test(sh)) || (sw && !/^\d{6,20}$/.test(sw))) return err("An ad slot ID is only numbers (for example 1234567890)", 400);
+          await ensureCampTables(db);
+          const kv = { adsense_enabled: b.enabled === true ? "1" : "0", adsense_client: client, adsense_slot_home: sh, adsense_slot_watch: sw };
+          await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO ad_pay_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
+        }
+        return json({ ok: true, settings: await getAdsenseCfg(db) });
+      } catch (_) { return err("Could not save", 500); }
     }
     // ----- AD CAMPAIGNS (creators) -----
     if (method === "GET" && path === "/api/campaigns/info") {
@@ -1787,6 +1978,61 @@ async function handleRequest(request, env) {
       } catch (_) { return err("Studio data unavailable", 500); }
     }
     // ================= PLATFORM routes: ads, settings, broadcast, audit log, analytics =================
+    // ----- public: prayer times for THIS device (optional ?lat=&lng=&tz=) or platform default -----
+    if (method === "GET" && path === "/api/prayer") {
+      try {
+        await ensurePlatformTables(db);
+        const base = await getAppSettings(db);
+        const qLat = parseFloat(url.searchParams.get("lat"));
+        const qLng = parseFloat(url.searchParams.get("lng"));
+        const qTz = parseFloat(url.searchParams.get("tz"));
+        const useUser = isFinite(qLat) && isFinite(qLng) && Math.abs(qLat) <= 90 && Math.abs(qLng) <= 180;
+        const cfg = {
+          city: useUser ? (String(url.searchParams.get("city") || "").trim().slice(0, 60) || "Your location") : base.city,
+          lat: useUser ? qLat : base.lat,
+          lng: useUser ? qLng : base.lng,
+          tz: useUser && isFinite(qTz) && Math.abs(qTz) <= 14 ? qTz : (useUser ? -new Date().getTimezoneOffset() / 60 : base.tz),
+          method: PRAYER_METHODS[url.searchParams.get("method")] ? url.searchParams.get("method") : base.method,
+          hanafi: url.searchParams.get("hanafi") === "0" || url.searchParams.get("hanafi") === "false" ? false : base.hanafi,
+          guardOn: base.guardOn,
+          jummah: base.jummah,
+          guardMin: base.guardMin,
+        };
+        const now = Date.now();
+        const g = salahGuardState(now, cfg);
+        const T = computePrayerTimes(now, cfg.lat, cfg.lng, cfg.tz, cfg.method, cfg.hanafi);
+        const local = new Date(now + cfg.tz * 3600000);
+        const startOfDay = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - cfg.tz * 3600000;
+        const fmt = (h) => {
+          if (!isFinite(h)) return null;
+          const m = Math.round(((h % 24) + 24) % 24 * 60), hh = Math.floor(m / 60) % 24, mm = m % 60;
+          return String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
+        };
+        const times = {};
+        for (const [k, name] of PRAYER_ORDER) {
+          const h = T[k];
+          if (!isFinite(h)) continue;
+          const startMs = startOfDay + h * 3600000;
+          times[k] = { name, startMs, hm: fmt(h) };
+        }
+        return json({
+          ok: true,
+          city: cfg.city,
+          lat: cfg.lat,
+          lng: cfg.lng,
+          tz: cfg.tz,
+          method: cfg.method,
+          source: useUser ? "device" : "platform",
+          guardOn: cfg.guardOn,
+          guardMin: cfg.guardMin,
+          guard: g.active ? { active: true, name: g.name, untilMs: g.untilMs } : { active: false },
+          times,
+          serverNow: now,
+        });
+      } catch (_) {
+        return json({ ok: false, times: {}, guard: { active: false }, guardOn: false });
+      }
+    }
     // ----- public: which ad(s) to show in a placement. Nothing is served while the Salah guard is active. -----
     if (method === "GET" && path === "/api/ads") {
       try {
@@ -1802,6 +2048,12 @@ async function handleRequest(request, env) {
       } catch (_) { return json({ ads: [] }); }
     }
     if (method === "POST" && (m = path.match(/^\/api\/ads\/([^/]+)\/(impression|click)$/))) {
+      try {
+        const hk = (request.headers.get("CF-Connecting-IP") || "x") + "|" + m[1] + "|" + m[2], tNow = Date.now(), tLast = _adHit.get(hk);
+        if (tLast && tNow - tLast < 15000) return json({ ok: true });
+        _adHit.set(hk, tNow);
+        if (_adHit.size > 5000) { for (const [k, t] of _adHit) if (tNow - t > 15000) _adHit.delete(k); if (_adHit.size > 5000) _adHit.clear(); }
+      } catch (_) {}
       try {
         await ensurePlatformTables(db);
         const col = m[2] === "click" ? "clicks" : "impressions";
@@ -1968,8 +2220,6 @@ async function handleRequest(request, env) {
       try { const tv = await db.prepare("SELECT v.id AS id, v.title AS title, u.name AS channel, v.views AS views FROM videos v LEFT JOIN users u ON u.id = v.owner_id WHERE v.hidden = 0 AND v.removed = 0 ORDER BY v.views DESC LIMIT 5").all(); out.topVideos = tv.results || []; } catch (_) { out.topVideos = []; }
       try { const tr = await db.prepare("SELECT r.id AS id, r.title AS title, u.name AS channel, r.views AS views FROM reels r LEFT JOIN users u ON u.id = r.owner_id WHERE r.hidden = 0 ORDER BY r.views DESC LIMIT 5").all(); out.topReels = tr.results || []; } catch (_) { out.topReels = []; }
       try { const tc = await db.prepare("SELECT u.id AS id, u.name AS name, SUM(v.views) AS views, COUNT(*) AS videos FROM videos v JOIN users u ON u.id = v.owner_id WHERE v.hidden = 0 AND v.removed = 0 GROUP BY u.id ORDER BY views DESC LIMIT 5").all(); out.topCreators = tc.results || []; } catch (_) { out.topCreators = []; }
-      try {
-      } catch (_) {}
       try { const a = await db.prepare("SELECT COALESCE(SUM(impressions),0) AS i, COALESCE(SUM(clicks),0) AS c FROM ads").first(); out.ads = { impressions: a.i, clicks: a.c }; } catch (_) {}
       return json({ ok: true, ...out });
     }
@@ -2588,7 +2838,7 @@ async function handleRequest(request, env) {
       return json({ ok: true });
     }
 
-    // ---------- REPORTS ----------
+    // ---------- REPORTS + BLOCK (Google Play UGC: report content/users + block users) ----------
     await db.prepare(`CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
       target_type TEXT NOT NULL,
@@ -2615,6 +2865,67 @@ async function handleRequest(request, env) {
         .bind(id, targetType, targetId, u.id, reason).run();
       return json({ ok: true, id });
     }
+    if (method === "POST" && (m = path.match(/^\/api\/comments\/([^/]+)\/report$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return err("Sign in required", 401);
+      const b = await request.json().catch(() => ({}));
+      const reason = (b.reason || "").trim();
+      if (!reason) return err("Reason is required");
+      const c = await db.prepare("SELECT id, user_id FROM comments WHERE id = ?").bind(m[1]).first();
+      if (!c) return err("Comment not found", 404);
+      if (c.user_id === u.id) return err("You cannot report your own comment");
+      const id = uid("rp");
+      await db.prepare("INSERT INTO reports (id, target_type, target_id, reporter_id, reason, status) VALUES (?,?,?,?,?,'open')")
+        .bind(id, "comment", m[1], u.id, reason).run();
+      return json({ ok: true, id });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/users\/([^/]+)\/report$/))) {
+      const u = await currentUserOrGuest(request, env);
+      if (!u) return err("Sign in required", 401);
+      if (m[1] === u.id) return err("You cannot report yourself");
+      const b = await request.json().catch(() => ({}));
+      const reason = (b.reason || "").trim();
+      if (!reason) return err("Reason is required");
+      const target = await db.prepare("SELECT id, role FROM users WHERE id = ?").bind(m[1]).first();
+      if (!target || target.role === "guest") return err("User not found", 404);
+      const id = uid("rp");
+      await db.prepare("INSERT INTO reports (id, target_type, target_id, reporter_id, reason, status) VALUES (?,?,?,?,?,'open')")
+        .bind(id, "user", m[1], u.id, reason).run();
+      return json({ ok: true, id });
+    }
+    if (method === "POST" && (m = path.match(/^\/api\/users\/([^/]+)\/block$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      if (u.role === "guest") return err("Please sign in with a real account to block users", 403);
+      if (m[1] === u.id) return err("You cannot block yourself");
+      const target = await db.prepare("SELECT id, role FROM users WHERE id = ?").bind(m[1]).first();
+      if (!target || target.role === "guest") return err("User not found", 404);
+      await ensureUserBlocks(db);
+      await db.prepare("INSERT INTO user_blocks (blocker_id, blocked_id, created_at) VALUES (?,?,?) ON CONFLICT(blocker_id, blocked_id) DO NOTHING")
+        .bind(u.id, m[1], Date.now()).run();
+      return json({ ok: true, blocked: true });
+    }
+    if (method === "DELETE" && (m = path.match(/^\/api\/users\/([^/]+)\/block$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      await ensureUserBlocks(db);
+      await db.prepare("DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?").bind(u.id, m[1]).run();
+      return json({ ok: true, blocked: false });
+    }
+    if (method === "GET" && path === "/api/me/blocked") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      await ensureUserBlocks(db);
+      const rows = await db.prepare(
+        "SELECT user_blocks.blocked_id AS id, users.name, users.avatar_color, user_blocks.created_at FROM user_blocks JOIN users ON users.id = user_blocks.blocked_id WHERE user_blocks.blocker_id = ? ORDER BY user_blocks.created_at DESC LIMIT 200"
+      ).bind(u.id).all();
+      return json({ blocked: (rows.results || []).map((r) => ({ id: r.id, name: r.name, avatarColor: r.avatar_color, blockedAt: r.created_at })) });
+    }
+    if (method === "GET" && (m = path.match(/^\/api\/users\/([^/]+)\/block-status$/))) {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      return json({ blocked: await isBlocked(db, u.id, m[1]) });
+    }
     if (method === "GET" && path === "/api/admin/reports") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
@@ -2622,6 +2933,8 @@ async function handleRequest(request, env) {
         SELECT reports.*,
           CASE WHEN reports.target_type = 'video' THEN (SELECT title FROM videos WHERE id = reports.target_id)
                WHEN reports.target_type = 'reel' THEN (SELECT title FROM reels WHERE id = reports.target_id)
+               WHEN reports.target_type = 'comment' THEN (SELECT substr(text, 1, 80) FROM comments WHERE id = reports.target_id)
+               WHEN reports.target_type = 'user' THEN (SELECT name FROM users WHERE id = reports.target_id)
                ELSE NULL END as target_title,
           CASE WHEN reports.target_type = 'video' THEN (SELECT hidden FROM videos WHERE id = reports.target_id)
                WHEN reports.target_type = 'reel' THEN (SELECT hidden FROM reels WHERE id = reports.target_id)
@@ -2700,6 +3013,14 @@ async function handleRequest(request, env) {
         const d2 = await findDuplicateOwner(db, { fingerprint: vFp, etag: vEtag, ownerId: u.id });
         if (d2) { removed = 1; monetized = 0; copyrightStatus = "claimed"; dupOwnerName = d2.ownerName; vDupOf = d2.id; }
       }
+      if (removed && !b.acceptDuplicate) {
+        return json({
+          error: "This video was already uploaded by another creator" + (dupOwnerName ? (' ("' + dupOwnerName + '")') : "") + ". Uploading it will give you a copyright strike.",
+          duplicate: true,
+          originalOwner: dupOwnerName || "another creator",
+          originalId: vDupOf || null,
+        }, 409);
+      }
       const id = uid("v");
       await db.prepare(
         `INSERT INTO videos (id, owner_id, title, description, tags, category, mix_category, source_type, youtube_id, file_url, thumbnail, duration, trim_start, trim_end, monetized, copyright_status, removed, content_hash)
@@ -2776,7 +3097,10 @@ async function handleRequest(request, env) {
       const rows = await db.prepare(
         "SELECT comments.*, users.name as user_name, users.avatar_color as user_avatar_color FROM comments JOIN users ON users.id = comments.user_id WHERE target_type = 'video' AND target_id = ? ORDER BY comments.created_at DESC"
       ).bind(m[1]).all();
-      return json({ comments: rows.results.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
+      const meV = await currentUser(request, env);
+      const blockedV = meV ? await blockedIdsFor(db, meV.id) : new Set();
+      const listV = (rows.results || []).filter((c) => !blockedV.has(c.user_id));
+      return json({ comments: listV.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/comments$/))) {
       const u = await currentUserOrGuest(request, env);
@@ -2802,6 +3126,14 @@ async function handleRequest(request, env) {
       const rEtag = rReady ? await storedFileEtag(env, b.fileUrl) : null;
       let rDup = null;
       if (rReady && (rFp || rEtag)) rDup = await findDuplicateOwner(db, { fingerprint: rFp, etag: rEtag, ownerId: u.id });
+      if (rDup && !b.acceptDuplicate) {
+        return json({
+          error: "This reel was already uploaded by another creator" + (rDup.ownerName ? (' ("' + rDup.ownerName + '")') : "") + ". Uploading it will give you a copyright strike.",
+          duplicate: true,
+          originalOwner: rDup.ownerName || "another creator",
+          originalId: rDup.id || null,
+        }, 409);
+      }
       const id = uid("r");
       await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end, mix_category) VALUES (?,?,?,?,?,?,?,?,?)")
         .bind(id, u.id, b.title, JSON.stringify(b.tags || []), b.fileUrl || null, b.thumbnail || null, b.trimStart ?? null, b.trimEnd ?? null, b.mixCategory || null).run();
@@ -2840,7 +3172,10 @@ async function handleRequest(request, env) {
       const rows = await db.prepare(
         "SELECT comments.*, users.name as user_name, users.avatar_color as user_avatar_color FROM comments JOIN users ON users.id = comments.user_id WHERE target_type = 'reel' AND target_id = ? ORDER BY comments.created_at DESC"
       ).bind(m[1]).all();
-      return json({ comments: rows.results.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
+      const meR = await currentUser(request, env);
+      const blockedR = meR ? await blockedIdsFor(db, meR.id) : new Set();
+      const listR = (rows.results || []).filter((c) => !blockedR.has(c.user_id));
+      return json({ comments: listR.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/comments$/))) {
       const u = await currentUserOrGuest(request, env);
