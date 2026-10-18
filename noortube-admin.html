@@ -516,7 +516,7 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Sadaqah','heart'],['l-sadreq','Sadaqah withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
+const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Sadaqah','heart'],['l-sadreq','Sadaqah withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],['l-adsense','Google AdSense (website)','mega'],['l-admob','Google AdMob (Play Store app)','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
 const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():id==='l-camp'?campAwaiting():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
@@ -1143,7 +1143,7 @@ V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.dem
 const lerr=e=>toast((e&&e.message)||'Action failed');
 Object.assign(ACT,{
  'l-refresh-all':()=>{LIVE.folStarted=false;refreshAll();toast('Refreshing…')},
- 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;LIVE.cf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
+ 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;LIVE.cf=null;LIVE.asf=null;LIVE.amf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
  'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
  'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
    const done=()=>{LIVE.cp=k;render();setTimeout(()=>{if(LIVE.cp===k){LIVE.cp=null;render()}},1800)};
@@ -1202,7 +1202,9 @@ document.addEventListener('input',e=>{const el=e.target;
   if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
   else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}
   else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}
-  else if(el.dataset&&el.dataset.cf&&LIVE.cf){LIVE.cf[el.dataset.cf]=el.type==='checkbox'?el.checked:el.value}});
+  else if(el.dataset&&el.dataset.cf&&LIVE.cf){LIVE.cf[el.dataset.cf]=el.type==='checkbox'?el.checked:el.value}
+  else if(el.dataset&&el.dataset.asf&&LIVE.asf){LIVE.asf[el.dataset.asf]=el.type==='checkbox'?el.checked:el.value}
+  else if(el.dataset&&el.dataset.amf&&LIVE.amf){LIVE.amf[el.dataset.amf]=el.type==='checkbox'?el.checked:el.value}});
 window.addEventListener('nt-me',()=>{paintMe();render()});
 /* ---- Dashboard (real data) ---- */
 const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback','sad','settings'];
@@ -1465,6 +1467,41 @@ V['l-campset']=()=>pageH('Ad payment settings','Where advertisers send money to 
     <div class="card pad" style="margin-bottom:14px"><h3>Other countries</h3><p class="sm muted" style="margin:4px 0 8px">For advertisers outside India: a PayPal.me, Wise or Stripe link, and/or your instructions (for example international bank details).</p>${inp('intlLink','Payment link','https://paypal.me/yourname')}${field('Instructions (optional)',`<textarea class="inp" rows="3" data-cf="intlText" data-keep="cf-intlText" maxlength="600" placeholder="Example: Send to PayPal yourname@email.com and write the reference in the note.">${esc(F.intlText||'')}</textarea>`)}${inp('usdRate','Dollar rate: 1 USD = ₹','85','Used to show the price in dollars to creators from other countries. Leave empty to hide dollars.','number')}</div>
     <div class="card pad" style="margin-bottom:14px"><h3>Price per day (₹)</h3><p class="sm muted" style="margin:4px 0 8px">What a creator pays for one day in each place. Enter 0 (or leave empty) to not offer that place.</p><div class="grid g2">${inp('p_home','Home banner','100','','number')}${inp('p_watch','Under videos','80','','number')}${inp('p_reels','Reels (full screen)','150','','number')}${inp('p_preroll','Video start (before the video)','300','','number')}${inp('p_midroll','Video middle','200','','number')}</div></div>
     <div class="row wrap"><button type="button" class="btn pri" data-act="l-cf-save" ${LIVE.busy==='cf'?'disabled':''}>${LIVE.busy==='cf'?'Saving…':'Save settings'}</button></div>`});
+SRC.admob=()=>api('/api/admin/admob').then(r=>r.settings);
+PAGE_KEYS['l-admob']=['admob'];
+Object.assign(ACT,{'l-amf-save':async()=>{const F=LIVE.amf;if(!F)return;LIVE.busy='amf';render();
+  try{await api('/api/admin/admob',{method:'PUT',body:JSON.stringify({enabled:!!F.enabled,test:!!F.test,appId:F.appId,banner:F.banner,interstitial:F.interstitial,everyVideos:F.everyVideos,everyReels:F.everyReels,minGapMin:F.minGapMin})});LIVE.amf=null;toast('Google AdMob settings saved')}
+  catch(e){lerr(e)}finally{LIVE.busy=null;load('admob',true);render()}}});
+V['l-admob']=()=>pageH('Google AdMob','Ads inside the NoorTube Android app (Play Store). In a browser these do nothing.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['admob'],S0=>{
+    if(!LIVE.amf)LIVE.amf={enabled:!!S0.switchOn,test:S0.test!==false,appId:S0.appId||'',banner:S0.banner||'',interstitial:S0.interstitial||'',everyVideos:String(S0.everyVideos||3),everyReels:String(S0.everyReels||7),minGapMin:String(S0.minGapMin||4)};
+    const F=LIVE.amf,inp=(k,label,ph,hint,type)=>field(label,`<input class="inp" data-amf="${k}" data-keep="amf-${k}" ${type?'type="number" inputmode="numeric"':''} value="${esc(F[k]||'')}" placeholder="${esc(ph)}" autocomplete="off">`,hint),
+      pub=S0.appId?S0.appId.slice(11,27):'',adsLine=pub?'google.com, pub-'+pub+', DIRECT, f08c47fec0942fa0':'';
+    return `<div class="card pad" style="margin-bottom:14px"><div class="b">${S0.enabled?(S0.test?'AdMob is ON (TEST ads only)':'AdMob is ON (real ads)'):'AdMob is OFF'}</div><div class="sm muted" style="margin-top:4px">${S0.test?'Test mode shows Google\u2019s sample ads. This is the safe way to check everything. Clicking real ads yourself can get your AdMob account banned.':'Real ads are on. Never click your own ads.'}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Steps</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>Make an account at <b>admob.google.com</b> and add your Android app. You get an <b>App ID</b> (it has a <b>~</b>). It goes into the Android project once (see the Play Store guide).</li><li>Create two ad units: a <b>Banner</b> and an <b>Interstitial</b>. Copy their IDs (they have a <b>/</b>) here.</li><li>Keep <b>Test mode ON</b> while you build and test the app. Turn it OFF only after the app is live on Google Play.</li><li>Put the <b>app-ads.txt</b> line below on your developer website.</li><li>In AdMob turn on <b>Privacy &amp; messaging</b> so visitors in Europe see the consent message.</li></ol></div>
+    <div class="card pad" style="margin-bottom:14px"><label class="row" style="gap:8px"><input type="checkbox" data-amf="enabled" ${F.enabled?'checked':''} style="width:18px;height:18px"><b>Show AdMob ads in the Android app</b></label>
+      <label class="row" style="gap:8px;margin-top:10px"><input type="checkbox" data-amf="test" ${F.test?'checked':''} style="width:18px;height:18px"><b>Test mode (sample ads, safe)</b></label>
+      <div style="margin-top:12px">${inp('appId','App ID (for your records)','ca-app-pub-1234567890123456~1234567890','Used for the app-ads.txt line.')}${inp('banner','Banner ad unit ID','ca-app-pub-1234567890123456/1234567890','A small ad above the bottom menu.')}${inp('interstitial','Interstitial ad unit ID','ca-app-pub-1234567890123456/1234567890','A full-screen ad shown between videos or reels.')}</div>
+      <div class="grid g2">${inp('everyVideos','Full-screen ad after every … videos','3','','n')}${inp('everyReels','Full-screen ad after every … reels','7','','n')}</div>${inp('minGapMin','At least … minutes between full-screen ads','4','Keeps ads from feeling too much. Google also dislikes too many.','n')}</div>
+    ${adsLine?`<div class="card pad" style="margin-bottom:14px"><h3>Your app-ads.txt line</h3><p class="sm muted" style="margin:4px 0 8px">Save this line in a file named <b>app-ads.txt</b> at the root of your developer website (the website address you give on Google Play).</p><div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;word-break:break-all"><code>${esc(adsLine)}</code></div></div>`:''}
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-amf-save" ${LIVE.busy==='amf'?'disabled':''}>${LIVE.busy==='amf'?'Saving…':'Save'}</button></div>`});
+SRC.adsense=()=>api('/api/admin/adsense').then(r=>r.settings);
+PAGE_KEYS['l-adsense']=['adsense'];
+Object.assign(ACT,{'l-asf-save':async()=>{const F=LIVE.asf;if(!F)return;LIVE.busy='asf';render();
+  try{await api('/api/admin/adsense',{method:'PUT',body:JSON.stringify({enabled:!!F.enabled,client:F.client,slotHome:F.slotHome,slotWatch:F.slotWatch})});LIVE.asf=null;toast('Google AdSense settings saved')}
+  catch(e){lerr(e)}finally{LIVE.busy=null;load('adsense',true);render()}}});
+V['l-adsense']=()=>pageH('Google AdSense','Show Google ads in NoorTube (this is the web version of AdMob).',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['adsense'],S0=>{
+    if(!LIVE.asf)LIVE.asf={enabled:!!S0.switchOn,client:S0.client||'',slotHome:S0.slots.home||'',slotWatch:S0.slots.watch||''};
+    const F=LIVE.asf,inp=(k,label,ph,hint)=>field(label,`<input class="inp" data-asf="${k}" data-keep="asf-${k}" value="${esc(F[k]||'')}" placeholder="${esc(ph)}" autocomplete="off">`,hint),
+      adsLine=S0.client?'google.com, pub-'+S0.client.replace('ca-pub-','')+', DIRECT, f08c47fec0942fa0':'';
+    return `<div class="card pad" style="margin-bottom:14px"><div class="b">${S0.enabled?'AdSense is ON':'AdSense is OFF'}</div><div class="sm muted" style="margin-top:4px">${S0.enabled?'Google ads fill the Home and Under-video spots when you have no direct ad there. Nothing shows during the Salah guard.':'Turn it on after Google approves your site and you add the IDs below.'}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>Before you start</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>AdMob works only inside an Android/iPhone app. For a website like NoorTube, Google's product is <b>AdSense</b>.</li><li>Create an account at <b>adsense.google.com</b> and add your <b>own domain</b> (a custom domain works best; free subdomains are often refused).</li><li>Put the <b>ads.txt</b> line below at the root of your site (yourdomain.com/ads.txt).</li><li>Wait for Google to approve the site. This can take days or weeks, and is not guaranteed.</li><li>In AdSense create 2 <b>display ad units</b> (one for Home, one for Under videos). Copy the <b>Publisher ID</b> and both <b>slot IDs</b> here.</li><li>In AdSense turn on <b>Privacy &amp; messaging</b> (consent message) for visitors in Europe.</li></ol></div>
+    <div class="card pad" style="margin-bottom:14px"><label class="row" style="gap:8px"><input type="checkbox" data-asf="enabled" ${F.enabled?'checked':''} style="width:18px;height:18px"><b>Show Google AdSense ads</b></label>
+      <div style="margin-top:12px">${inp('client','Publisher ID','ca-pub-1234567890123456','From your AdSense account. It starts with ca-pub-.')}</div>
+      <div class="grid g2">${inp('slotHome','Ad slot ID: Home banner','1234567890','')}${inp('slotWatch','Ad slot ID: Under videos','1234567890','')}</div></div>
+    ${adsLine?`<div class="card pad" style="margin-bottom:14px"><h3>Your ads.txt line</h3><p class="sm muted" style="margin:4px 0 8px">Save this single line in a file named <b>ads.txt</b> at the root of your website.</p><div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;word-break:break-all"><code>${esc(adsLine)}</code></div></div>`:''}
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-asf-save" ${LIVE.busy==='asf'?'disabled':''}>${LIVE.busy==='asf'?'Saving…':'Save'}</button></div>`});
 setTimeout(()=>{try{load('camps',true)}catch(e){}},2500);
 window.addEventListener('hashchange',()=>{try{if(route()==='l-camp')load('camps',true)}catch(e){}});
 
@@ -1598,9 +1635,34 @@ const adCompressVideo=file=>new Promise(resolve=>{
 const plChecks=sel=>Object.keys(PL_NAME).map(k=>`<label class="row" style="gap:8px"><input type="checkbox" name="pl" value="${k}" ${sel.includes(k)?'checked':''} style="width:18px;height:18px">${PL_NAME[k]}</label>`).join('');
 const dateMs=(s,end)=>s?new Date(s+(end?'T23:59:59':'T00:00:00')).getTime():null;
 Object.assign(ACT,{
- 'l-st-geo':()=>{const m=$('#stGeoMsg');if(!navigator.geolocation){m&&(m.textContent='This device cannot share its location.');return}
-   m&&(m.textContent='Getting location…');
-   navigator.geolocation.getCurrentPosition(p=>{LIVE.stf.lat=p.coords.latitude.toFixed(4);LIVE.stf.lng=p.coords.longitude.toFixed(4);LIVE.stf.tz=String(-new Date().getTimezoneOffset()/60);toast('Location filled in');render()},()=>{m&&(m.textContent='Could not get the location. Enter it by hand.')},{timeout:10000})},
+ 'l-st-geo':()=>{const m=$('#stGeoMsg');
+   if(!window.isSecureContext){m&&(m.textContent='Location needs HTTPS. Open Admin over https:// or enter lat/lng by hand.');return}
+   if(!navigator.geolocation){m&&(m.textContent='This device cannot share its location.');return}
+   if(!LIVE.stf)LIVE.stf=stInit();
+   m&&(m.textContent='Getting location… please allow permission');
+   navigator.geolocation.getCurrentPosition(async p=>{
+     try{
+       const lat=p.coords.latitude, lng=p.coords.longitude;
+       LIVE.stf.lat=lat.toFixed(4); LIVE.stf.lng=lng.toFixed(4);
+       LIVE.stf.tz=String(-new Date().getTimezoneOffset()/60);
+       // fill inputs if they exist (avoid full blank form while reverse-geocoding)
+       const elLat=document.querySelector('[data-st="lat"]'), elLng=document.querySelector('[data-st="lng"]'), elTz=document.querySelector('[data-st="tz"]');
+       if(elLat)elLat.value=LIVE.stf.lat; if(elLng)elLng.value=LIVE.stf.lng; if(elTz)elTz.value=LIVE.stf.tz;
+       stSync();
+       m&&(m.textContent='Location found. Resolving city name…');
+       try{
+         const r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat='+encodeURIComponent(lat)+'&lon='+encodeURIComponent(lng),{headers:{'Accept':'application/json'}});
+         if(r.ok){const d=await r.json(); const city=(d.address&&(d.address.city||d.address.town||d.address.village||d.address.state))||(d.name||''); if(city){LIVE.stf.city=String(city).slice(0,60); const elC=document.querySelector('[data-st="city"]'); if(elC)elC.value=LIVE.stf.city;}}
+       }catch(_){}
+       m&&(m.textContent='Location filled in. Review and Save.');
+       toast('Location filled in');
+       render();
+     }catch(e){m&&(m.textContent='Location found but form update failed. Try Save after checking the numbers.');}
+   },err=>{
+     const code=err&&err.code;
+     const msg=code===1?'Permission denied. Allow location for this site in browser settings, or enter lat/lng by hand.':code===2?'Location unavailable. Enter lat/lng by hand.':code===3?'Timed out. Try again or enter lat/lng by hand.':'Could not get the location. Enter it by hand.';
+     m&&(m.textContent=msg);
+   },{enableHighAccuracy:true,timeout:20000,maximumAge:60000});},
  'l-st-save':async()=>{const f=LIVE.stf,c=stCfg(f);LIVE.busy='stsave';render();
    try{await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({city:f.city,lat:c.lat,lng:c.lng,tz:c.tz,method:f.method,hanafi:c.hanafi,guardOn:f.guardOn,jummah:f.jummah,guardMin:c.guardMin})});LIVE.stf=null;toast('Settings saved')}
    catch(e){lerr(e)}finally{LIVE.busy=null;load('settings',true);render()}},
