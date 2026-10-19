@@ -456,7 +456,17 @@ function rkBase(row, kind, sig, now) {
   const base = popM * engM * velM * fresh * evergreen * safety;
   return { base, trend: base * (0.5 + momentum), ageH, views, velM, quality, h24 };
 }
+const _rkInflight = {};
 async function rkLoad(db, kind, now) {
+  const c = rankCache[kind];
+  if (c && now - c.t < RANK_TTL_MS) return c;
+  if (_rkInflight[kind]) return await _rkInflight[kind];
+  const p = rkLoadRaw(db, kind, now).finally(() => { delete _rkInflight[kind]; });
+  _rkInflight[kind] = p;
+  return await p;
+}
+async function rkLoadRaw(db, kind, now) {
+  await leanFeedSql(db);
   const c = rankCache[kind];
   if (c && now - c.t < RANK_TTL_MS) return c;
   const tbl = kind === "v" ? "videos" : "reels", sel = FEED_SQL[kind];
@@ -583,7 +593,100 @@ async function rkRelated(db, kind, seedId, userId, limit) {
 }
 const rkLimit = (url, d) => { const n = parseInt(url.searchParams.get("limit"), 10); return isFinite(n) ? Math.max(1, Math.min(200, n)) : d; };
 
+// ================= FAST FEED: memory/edge cache for signed-out visitors, small thumbnails, feed indexes =================
+let _origin = "", _ctx = null;
+const bg = (p) => { try { if (_ctx) _ctx.waitUntil(p); } catch (_) {} return p; };
+const FEED_FRESH_MS = 60000, FEED_STALE_MS = 360000; // "public, max-age=60, stale-while-revalidate=300"
+const _feedMem = new Map(), _feedBusy = new Set(), _thumbMem = new Map();
+const feedKey = (pathname, params) => pathname + "?" + [...params.entries()].map(([k, v]) => k + "=" + v).sort().join("&");
+// Thumbnails that were saved as a huge base64 "data:" string are served from a small cached /thumb URL instead,
+// so the feed JSON stays tiny. Normal http(s) thumbnails are returned unchanged.
+const tagHash = (s) => { let h = 0; for (const ch of String(s || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h.toString(36); };
+function thumbOut(kind, id, t, row) {
+  if (!_origin) return t;
+  if (row && row.thumb_inline) return _origin + "/thumb/" + kind + "/" + encodeURIComponent(id) + "?v=" + Number(row.thumb_len || 0).toString(36) + tagHash(row.thumb_tag);
+  if (typeof t !== "string" || t.length < 200 || t.slice(0, 11) !== "data:image/") return t;
+  return _origin + "/thumb/" + kind + "/" + encodeURIComponent(id) + "?v=" + t.length.toString(36) + tagHash(t.substr(59, 8));
+}
+// Feed queries used "SELECT videos.*", which dragged every base64 thumbnail (tens of KB each) out of D1 on every rebuild.
+// This swaps in the same column list without the thumbnail text (only a flag + length + tag are read). If anything fails, the old query stays.
+let _leanP = null;
+function leanFeedSql(db) {
+  if (_leanP) return _leanP;
+  _leanP = Promise.all([["v", "videos"], ["r", "reels"]].map(async ([k, tbl]) => {
+    try {
+      const info = await db.prepare("PRAGMA table_info(" + tbl + ")").all(), all = (info.results || []).map((c) => c.name);
+      const cols = all.filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n) && n !== "thumbnail");
+      if (cols.length < 5 || all.indexOf("thumbnail") < 0 || FEED_SQL[k].indexOf("SELECT " + tbl + ".*") !== 0) return;
+      const T = tbl + ".thumbnail", sel = "SELECT " + cols.map((c) => tbl + "." + c).join(", ") + ", CASE WHEN substr(" + T + ",1,11)='data:image/' THEN NULL ELSE " + T + " END AS thumbnail, (substr(" + T + ",1,11)='data:image/') AS thumb_inline, length(" + T + ") AS thumb_len, substr(" + T + ",60,8) AS thumb_tag";
+      const next = FEED_SQL[k].replace("SELECT " + tbl + ".*", sel);
+      await db.prepare(next + " ORDER BY " + tbl + ".uploaded_at DESC LIMIT 1").all(); // must work, otherwise keep the old query
+      FEED_SQL[k] = next;
+    } catch (_) {}
+  })).then(() => {});
+  return _leanP;
+}
+let feedIdxDone = false;
+async function ensureFeedIndexes(db) {
+  if (feedIdxDone) return;
+  feedIdxDone = true;
+  try {
+    let f = null;
+    try { f = await db.prepare("SELECT v FROM auto_tools WHERE k = 'feed_idx_v1'").first(); } catch (_) { try { await ensureAutoToolsTable(db); } catch (__) {} }
+    if (f) return;
+  } catch (_) {}
+  for (const q of [
+    "CREATE INDEX IF NOT EXISTS idx_videos_feed ON videos (removed, hidden, uploaded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_videos_views ON videos (removed, hidden, views)",
+    "CREATE INDEX IF NOT EXISTS idx_reels_feed ON reels (hidden, uploaded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_comments_target ON comments (target_type, target_id)",
+    "CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows (follower_id)",
+    "CREATE INDEX IF NOT EXISTS idx_watch_history_user ON watch_history (user_id)",
+  ]) { try { await db.prepare(q).run(); } catch (_) {} }
+  try { await setAutoTool(db, "feed_idx_v1", "1"); } catch (_) {}
+}
+function feedReply(body, state) {
+  return new Response(body, { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=60, stale-while-revalidate=300", "X-Feed-Cache": state, ...cors() } });
+}
+// Signed-out visitors all get the same feed, so it is built once and reused for 60 s (and served stale for up to 6 min while it
+// refreshes in the background). Signed-in visitors are never cached: their feed is personal.
+async function feedCached(db, request, env, url, kind) {
+  if (request.headers.get("Authorization")) return await feedResponse(db, request, env, url, kind);
+  const key = feedKey(url.pathname, url.searchParams), edgeReq = () => new Request(url.origin + "/__feed" + key), now = Date.now();
+  const store = async (body) => {
+    _feedMem.set(key, { t: Date.now(), body });
+    if (_feedMem.size > 40) _feedMem.delete(_feedMem.keys().next().value);
+    try { await caches.default.put(edgeReq(), new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=360", "X-Cached-At": String(Date.now()) } })); } catch (_) {}
+  };
+  const refresh = async () => {
+    if (_feedBusy.has(key)) return;
+    _feedBusy.add(key);
+    try { const r = await feedResponse(db, request, env, url, kind); if (r.status === 200) await store(await r.text()); } catch (_) {} finally { _feedBusy.delete(key); }
+  };
+  let e = _feedMem.get(key);
+  if (!e) {
+    try { const h = await caches.default.match(edgeReq()); if (h) { e = { t: Number(h.headers.get("X-Cached-At")) || 0, body: await h.text() }; _feedMem.set(key, e); } } catch (_) {}
+  }
+  if (e && e.body && now - e.t < FEED_STALE_MS) {
+    const stale = now - e.t >= FEED_FRESH_MS;
+    if (stale) bg(refresh());
+    return feedReply(e.body, stale ? "stale" : "hit");
+  }
+  const res = await feedResponse(db, request, env, url, kind);
+  if (res.status !== 200) return res;
+  const body = await res.text();
+  bg(store(body));
+  return feedReply(body, "miss");
+}
+function purgeFeedCache(origin) {
+  _feedMem.clear();
+  try {
+    for (const q of ["/api/videos?rank=1", "/api/reels?rank=1", "/api/videos?limit=24&rank=1&sort=foryou"]) bg(caches.default.delete(new Request(origin + "/__feed" + q)));
+  } catch (_) {}
+}
 async function feedResponse(db, request, env, url, kind) {
+  bg(ensureFeedIndexes(db));
+  await leanFeedSql(db);
   const key = kind === "v" ? "videos" : "reels", tbl = key, mk = kind === "v" ? videoOut : reelOut;
   const sort = (url.searchParams.get("sort") || "").toLowerCase(), wantRank = url.searchParams.get("rank") === "1";
   if (!sort && !wantRank) { // unchanged default: newest first
@@ -743,7 +846,7 @@ function videoOut(v) {
   return {
     id: v.id, ownerId: v.owner_id, title: v.title, description: v.description, tags: JSON.parse(v.tags || "[]"),
     category: v.category, mixCategory: v.mix_category, sourceType: v.source_type, youtubeId: v.youtube_id,
-    fileUrl: v.file_url, thumbnail: v.thumbnail, duration: v.duration,
+    fileUrl: v.file_url, thumbnail: thumbOut("v", v.id, v.thumbnail, v), duration: v.duration,
     trimStart: v.trim_start, trimEnd: v.trim_end,
     views: v.views, likes: v.likes, dislikes: v.dislikes, monetized: !!v.monetized,
     copyrightStatus: v.copyright_status, removed: !!v.removed, hidden: !!v.hidden, uploadedAt: v.uploaded_at, earnings: v.earnings,
@@ -754,7 +857,7 @@ function videoOut(v) {
 function reelOut(r) {
   return {
     id: r.id, ownerId: r.owner_id, title: r.title, tags: JSON.parse(r.tags || "[]"), fileUrl: r.file_url,
-    thumbnail: r.thumbnail, trimStart: r.trim_start, trimEnd: r.trim_end, views: r.views, likes: r.likes,
+    thumbnail: thumbOut("r", r.id, r.thumbnail, r), trimStart: r.trim_start, trimEnd: r.trim_end, views: r.views, likes: r.likes,
     uploadedAt: r.uploaded_at, channel: r.owner_name, channelAvatar: r.owner_avatar_color, commentCount: r.comment_count || 0,
     mixCategory: r.mix_category || null, hidden: !!r.hidden, channelMonetized: !!r.owner_monetized,
   };
@@ -959,10 +1062,12 @@ async function autoDuplicateScan(env) {
 }
 
 const WORKER = {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    try { _ctx = ctx || null; _origin = new URL(request.url).origin; } catch (_) {}
     const res = await WORKER.main(request, env);
     try {
       const m = request.method, p = new URL(request.url).pathname;
+      if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS" && res.status < 400 && (/^\/api\/(videos|reels)(\/[^/]+)?$/.test(p) || p.startsWith("/api/admin/"))) purgeFeedCache(new URL(request.url).origin);
       const mutating = m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
       const adminPath = p.startsWith("/api/admin/") || /^\/api\/(videos|reels)\/[^/]+$/.test(p);
       if (mutating && adminPath && res.status < 400) {
@@ -1063,7 +1168,7 @@ async function recordSignup(db, env, request) {
 //    - this viewer / this network is not over the hourly limit,
 //    - the content is visible. The creator's own view of their own content counts exactly ONCE, ever (never again, however long they keep watching).
 //    The ticket is signed, so it cannot be forged, edited, or reused for another video, reel or person.
-const VIEW_RULE = { v: { base: 40, longBase: 60, longFrom: 300 }, r: { base: 5, longBase: 10, longFrom: 30 } };
+const VIEW_RULE = { v: { base: 40, longBase: 45, longFrom: 300 }, r: { base: 5, longBase: 10, longFrom: 30 } };
 const VIEW_TOKEN_TTL_MS = 12 * 3600 * 1000;
 const VIEW_COOLDOWN_MS = 24 * 3600 * 1000;       // one counted view per viewer per content per 24h
 const VIEW_CAP_VIEWER_HOUR = { v: 60, r: 300 };  // counted views one viewer can make per hour
@@ -1278,6 +1383,24 @@ async function handleRequest(request, env) {
         if (stored && stored.size > MAX_UPLOAD_BYTES) { await env.NOOR_BUCKET.delete(key); return err("File is too large (max 200 MB)", 413); }
       }
       return json({ ok: true, key, url: `${url.origin}/file/${encodeURIComponent(key)}` });
+    }
+    const thumbM = method === "GET" ? path.match(/^\/thumb\/(v|r)\/([^/]+)$/) : null;
+    if (thumbM) {
+      const tmKey = thumbM[1] + "/" + thumbM[2] + "?" + (url.searchParams.get("v") || ""), tmHit = _thumbMem.get(tmKey);
+      if (tmHit) return new Response(tmHit.bytes, { headers: { ...cors(), "Content-Type": tmHit.type, "Cache-Control": "public, max-age=31536000, immutable" } });
+      let edgeKey = null;
+      try { edgeKey = new Request(url.origin + path + "?v=" + (url.searchParams.get("v") || "")); const hit = await caches.default.match(edgeKey); if (hit) return hit; } catch (_) {}
+      let row = null;
+      try { row = await env.NOOR_DB.prepare("SELECT thumbnail FROM " + (thumbM[1] === "v" ? "videos" : "reels") + " WHERE id = ?").bind(decodeURIComponent(thumbM[2])).first(); } catch (_) {}
+      const t = row && row.thumbnail, mm = typeof t === "string" ? t.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,/) : null;
+      if (!mm) return err("Not found", 404);
+      let bytes;
+      try { const bin = atob(t.slice(mm[0].length)); bytes = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k); } catch (_) { return err("Not found", 404); }
+      _thumbMem.set(tmKey, { bytes, type: mm[1] });
+      if (_thumbMem.size > 80) _thumbMem.delete(_thumbMem.keys().next().value);
+      const out = new Response(bytes, { headers: { ...cors(), "Content-Type": mm[1], "Cache-Control": "public, max-age=31536000, immutable" } });
+      if (edgeKey) bg(caches.default.put(edgeKey, out.clone()).catch(() => {}));
+      return out;
     }
     if (method === "HEAD" && path.startsWith("/file/")) {
       const key = decodeURIComponent(path.replace("/file/", ""));
@@ -2983,7 +3106,7 @@ async function handleRequest(request, env) {
       if (!items) return err("Not found", 404);
       return json({ [m[1]]: items.map((it) => (kind === "v" ? videoOut : reelOut)(it.row)) });
     }
-    if (method === "GET" && path === "/api/videos") return await feedResponse(db, request, env, url, "v");
+    if (method === "GET" && path === "/api/videos") return await feedCached(db, request, env, url, "v");
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)$/))) {
       const v = await db.prepare(
         "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='video' AND target_id=videos.id) as comment_count FROM videos JOIN users ON users.id = videos.owner_id WHERE videos.id = ?"
@@ -3114,7 +3237,7 @@ async function handleRequest(request, env) {
     }
 
     // ---------- REELS ----------
-    if (method === "GET" && path === "/api/reels") return await feedResponse(db, request, env, url, "r");
+    if (method === "GET" && path === "/api/reels") return await feedCached(db, request, env, url, "r");
     if (method === "POST" && path === "/api/reels") {
       const u = await currentUser(request, env);
       if (!u) return err("Sign in required", 401);
