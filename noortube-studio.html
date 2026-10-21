@@ -177,7 +177,7 @@
           <div class="icon-box">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 000-7.8z"/></svg>
           </div>
-          Sadaqah
+          Nazrana
         </a>
         
         <a href="javascript:void(0)" data-section="settings" class="sidebar-link flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium text-gray-500 dark:text-studio-muted">
@@ -317,7 +317,7 @@
 
       <!-- ========== SADAQAH ========== -->
       <div id="section-sadaqah" class="section-panel space-y-5">
-        <div><h2 class="font-display text-xl font-bold">Sadaqah</h2><p class="text-xs text-studio-muted mt-0.5">Sadaqah given by viewers under your videos</p></div>
+        <div><h2 class="font-display text-xl font-bold">Nazrana</h2><p class="text-xs text-studio-muted mt-0.5">Nazrana given by viewers under your videos</p></div>
         <div id="sadaqahBody" class="space-y-5"></div>
       </div>
 
@@ -957,7 +957,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
     })();
     async function loadSadaqah(force) {
       try { S.sad = await api('/api/me/sadaqah'); S.sadErr = null; }
-      catch (er) { S.sadErr = er.message || 'Could not load sadaqah'; }
+      catch (er) { S.sadErr = er.message || 'Could not load nazrana'; }
       renderSadaqah(force);
     }
     function sadFormInit() {
@@ -970,7 +970,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
       if (!force && ae && el.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return; // never wipe what the creator is typing
       const d = S.sad;
       if (!d) {
-        el.innerHTML = `<div class="${CARD} p-6 text-center text-sm text-studio-muted">${S.sadErr ? esc(S.sadErr) : 'Loading sadaqah\u2026'}${S.sadErr ? '<div class="mt-3"><button type="button" data-sdq="retry" class="px-4 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover">Retry</button></div>' : ''}</div>`;
+        el.innerHTML = `<div class="${CARD} p-6 text-center text-sm text-studio-muted">${S.sadErr ? esc(S.sadErr) : 'Loading nazrana\u2026'}${S.sadErr ? '<div class="mt-3"><button type="button" data-sdq="retry" class="px-4 py-2 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-medium hover:bg-gray-50 dark:hover:bg-studio-hover">Retry</button></div>' : ''}</div>`;
         return;
       }
       if (!S.sadForm) sadFormInit();
@@ -978,8 +978,8 @@ const adCompressVideo=file=>new Promise(resolve=>{
       const vrows = d.videos.length ? d.videos.map((v) => {
         const c = S.videos.find((x) => x.id === v.videoId);
         const th = c ? thumbEl(Object.assign({ kind: 'v' }, c), 'w-14 h-9') : '<div class="w-14 h-9 rounded-lg bg-gray-100 dark:bg-studio-hover flex items-center justify-center text-lg flex-shrink-0">\uD83C\uDFAC</div>';
-        return `<div class="flex items-center gap-3 py-3">${th}<div class="min-w-0 flex-1"><p class="text-sm font-medium truncate">${esc(v.title)}</p><p class="text-[11px] text-studio-muted">${v.count} sadaqah${v.count === 1 ? '' : 's'}${v.awaitingPaise ? ' \u00B7 ' + inr(v.awaitingPaise) + ' awaiting confirmation' : ''}</p></div><p class="text-sm font-bold text-noor-400">${inr(v.receivedPaise)}</p></div>`;
-      }).join('') : '<p class="text-sm text-studio-muted py-4 text-center">No sadaqah yet. When viewers give sadaqah under your videos, it appears here after NoorTube confirms it.</p>';
+        return `<div class="flex items-center gap-3 py-3">${th}<div class="min-w-0 flex-1"><p class="text-sm font-medium truncate">${esc(v.title)}</p><p class="text-[11px] text-studio-muted">${v.count} nazrana${v.awaitingPaise ? ' \u00B7 ' + inr(v.awaitingPaise) + ' awaiting confirmation' : ''}</p></div><p class="text-sm font-bold text-noor-400">${inr(v.receivedPaise)}</p></div>`;
+      }).join('') : '<p class="text-sm text-studio-muted py-4 text-center">No nazrana yet. When viewers give nazrana under your videos, it appears here after NoorTube confirms it.</p>';
       const recent = d.recent.length ? d.recent.map((r) => `<div class="flex items-center justify-between gap-3 py-2.5"><div class="min-w-0"><p class="text-sm truncate">${esc(r.title)}</p><p class="text-[11px] text-studio-muted">${esc(ago(new Date(r.at).toISOString()))}</p>${r.deductions && r.deductions.length ? `<p class="text-[11px] text-studio-muted">${inr(r.grossPaise)} received \u2212 ${r.deductions.map((x) => esc(x.name) + ' ' + inr(x.paise)).join(' \u2212 ')}</p>` : ''}</div><p class="text-sm font-semibold">${inr(r.amountPaise)}</p></div>`).join('') : '';
       const hist = d.requests.length ? d.requests.map((r) => `<div class="flex items-center justify-between gap-3 py-2.5"><div class="min-w-0"><p class="text-sm font-medium">${inr(r.amountPaise)} \u00B7 ${esc(r.status)}</p><p class="text-[11px] text-studio-muted">${r.status === 'Paid' && r.resolvedAt ? 'Paid on ' + esc(fmtDay(new Date(r.resolvedAt).toISOString())) : 'Requested ' + esc(fmtDay(new Date(r.createdAt).toISOString()))}${r.note ? ' \u00B7 ' + esc(r.note) : ''}</p></div></div>`).join('') : '';
       // ----- withdrawal card -----
@@ -987,7 +987,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
       if (d.pending) {
         wd = `<div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-4 text-sm"><strong>Withdrawal pending \u00B7 ${inr(d.pending.amountPaise)}</strong><p class="text-[12px] text-studio-muted mt-1">NoorTube will pay it to your account / UPI and notify you.</p></div>`;
       } else if (!d.unlocked) {
-        wd = `<div class="mb-3">${barRow('Available sadaqah', pct(d.availablePaise, d.unlockPaise), inr(d.availablePaise) + ' / ' + inr(d.unlockPaise))}</div><p class="text-[12px] text-studio-muted">Withdrawals open when your available sadaqah reaches <strong>${inr(d.unlockPaise)}</strong>. Your account / UPI option unlocks then.</p>`;
+        wd = `<div class="mb-3">${barRow('Available nazrana', pct(d.availablePaise, d.unlockPaise), inr(d.availablePaise) + ' / ' + inr(d.unlockPaise))}</div><p class="text-[12px] text-studio-muted">Withdrawals open when your available nazrana reaches <strong>${inr(d.unlockPaise)}</strong>. Your account / UPI option unlocks then.</p>`;
       } else {
         const pi = d.payoutInfo, showForm = !pi || S.sadEdit;
         const acctLabel = F.method === 'bank' ? 'Account number' : 'UPI ID';
@@ -1003,20 +1003,20 @@ const adCompressVideo=file=>new Promise(resolve=>{
         const choose = pi && !S.sadEdit ? `<div class="grid grid-cols-2 gap-2 mb-3">
             <button type="button" data-sdq="mode" data-mode="full" class="py-2.5 rounded-lg text-sm font-medium border ${!custom ? 'bg-noor-500 text-white border-noor-500' : 'border-gray-200 dark:border-studio-border hover:bg-gray-50 dark:hover:bg-studio-hover'}">Full amount</button>
             <button type="button" data-sdq="mode" data-mode="custom" class="py-2.5 rounded-lg text-sm font-medium border ${custom ? 'bg-noor-500 text-white border-noor-500' : 'border-gray-200 dark:border-studio-border hover:bg-gray-50 dark:hover:bg-studio-hover'}">Custom amount</button></div>
-          ${custom ? `<div class="mb-3"><input data-f="amount" type="number" inputmode="decimal" min="${d.minRequestPaise / 100}" max="${Math.floor(d.availablePaise / 100)}" value="${esc(F.amount)}" placeholder="Amount in \u20B9 (${inr(d.minRequestPaise)} \u2013 ${inr(d.availablePaise)})" class="${SDQ_IN}"><p class="text-[11px] text-studio-muted mt-1">The rest stays in your sadaqah balance.</p></div>` : `<p class="text-[12px] text-studio-muted mb-3">You will receive all of your available sadaqah: <strong>${inr(d.availablePaise)}</strong>${hasCuts ? ' (deductions were already taken)' : ''}</p>`}
+          ${custom ? `<div class="mb-3"><input data-f="amount" type="number" inputmode="decimal" min="${d.minRequestPaise / 100}" max="${Math.floor(d.availablePaise / 100)}" value="${esc(F.amount)}" placeholder="Amount in \u20B9 (${inr(d.minRequestPaise)} \u2013 ${inr(d.availablePaise)})" class="${SDQ_IN}"><p class="text-[11px] text-studio-muted mt-1">The rest stays in your nazrana balance.</p></div>` : `<p class="text-[12px] text-studio-muted mb-3">You will receive all of your available nazrana: <strong>${inr(d.availablePaise)}</strong>${hasCuts ? ' (deductions were already taken)' : ''}</p>`}
           <button type="button" data-sdq="req" class="w-full py-3 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition"${S.sadBusy ? ' disabled' : ''}>${S.sadBusy ? 'Sending\u2026' : 'Request withdrawal' + (custom ? '' : ' \u00B7 ' + inr(d.availablePaise))}</button>` : '';
         wd = summary + (showForm ? form : '') + choose;
       }
       const cuts = d.cuts || {}, hasCuts = (cuts.grossPaise || 0) > (cuts.netPaise || 0), nm = d.cutNames || {};
       const cutLine = (label, p) => p > 0 ? `<div class="flex items-center justify-between gap-3 py-2 text-sm"><span class="text-studio-muted">\u2212 ${esc(label)}</span><span class="font-medium">\u2212 ${inr(p)}</span></div>` : '';
-      const breakdown = hasCuts ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold">Where your sadaqah went</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">What viewers gave in total, what was cut, and what you get.</p>
+      const breakdown = hasCuts ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold">Where your nazrana went</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">What viewers gave in total, what was cut, and what you get.</p>
           <div class="divide-y divide-gray-100 dark:divide-studio-border"><div class="flex items-center justify-between gap-3 py-2 text-sm"><span>Total from viewers</span><span class="font-semibold">${inr(cuts.grossPaise)}</span></div>${cutLine(nm.tax || 'Tax', cuts.taxPaise)}${cutLine(nm.platform || 'Platform fee', cuts.platformPaise)}${cutLine(nm.other || 'Other', cuts.otherPaise)}<div class="flex items-center justify-between gap-3 py-2.5 text-sm"><span class="font-semibold">You get</span><span class="font-bold text-noor-400">${inr(cuts.netPaise)}</span></div></div>
-          <p class="text-[11px] text-studio-muted mt-2">These deductions are taken when NoorTube confirms each sadaqah, so your available balance and withdrawals are already the amount you get.${d.rules && d.rules.length ? ' Current rule: ' + d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ') + ' of each new sadaqah.' : ''}</p></div>` : (d.rules && d.rules.length ? `<div class="${CARD} p-4"><p class="text-[12px] text-studio-muted">From now on, ${d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ')} will be cut from each new sadaqah when NoorTube confirms it. You will see the full breakdown here.</p></div>` : '');
-      el.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">${statCard('Received', inr(d.receivedPaise), hasCuts ? 'After deductions' : d.receivedCount + ' sadaqah' + (d.receivedCount === 1 ? '' : 's'), 'text-noor-400')}${statCard('Available', inr(d.availablePaise), d.unlocked ? 'Ready to withdraw' : 'Opens at ' + inr(d.unlockPaise))}${statCard('Awaiting', inr(d.awaitingPaise), 'Being confirmed')}${statCard('Withdrawn', inr(d.paidPaise), d.pendingPaise ? inr(d.pendingPaise) + ' pending' : 'Paid to you')}</div>
+          <p class="text-[11px] text-studio-muted mt-2">These deductions are taken when NoorTube confirms each nazrana, so your available balance and withdrawals are already the amount you get.${d.rules && d.rules.length ? ' Current rule: ' + d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ') + ' of each new nazrana.' : ''}</p></div>` : (d.rules && d.rules.length ? `<div class="${CARD} p-4"><p class="text-[12px] text-studio-muted">From now on, ${d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ')} will be cut from each new nazrana when NoorTube confirms it. You will see the full breakdown here.</p></div>` : '');
+      el.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">${statCard('Received', inr(d.receivedPaise), hasCuts ? 'After deductions' : d.receivedCount + ' nazrana' + (d.receivedCount === 1 ? '' : 's'), 'text-noor-400')}${statCard('Available', inr(d.availablePaise), d.unlocked ? 'Ready to withdraw' : 'Opens at ' + inr(d.unlockPaise))}${statCard('Awaiting', inr(d.awaitingPaise), 'Being confirmed')}${statCard('Withdrawn', inr(d.paidPaise), d.pendingPaise ? inr(d.pendingPaise) + ' pending' : 'Paid to you')}</div>
         ${breakdown}
-        <div class="${CARD} p-5"><h3 class="text-sm font-semibold">Sadaqah per video</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">Total confirmed sadaqah on each video. Donor names are private.</p><div class="divide-y divide-gray-100 dark:divide-studio-border">${vrows}</div></div>
-        <div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Withdraw sadaqah</h3><p class="text-[12px] text-studio-muted mb-4">Sadaqah is separate from monetization. You receive it even if your channel is not monetized.</p>${wd}</div>
-        ${recent ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Recent sadaqah</h3><div class="divide-y divide-gray-100 dark:divide-studio-border">${recent}</div></div>` : ''}
+        <div class="${CARD} p-5"><h3 class="text-sm font-semibold">Nazrana per video</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">Total confirmed nazrana on each video. Donor names are private.</p><div class="divide-y divide-gray-100 dark:divide-studio-border">${vrows}</div></div>
+        <div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Withdraw nazrana</h3><p class="text-[12px] text-studio-muted mb-4">Nazrana is separate from monetization. You receive it even if your channel is not monetized.</p>${wd}</div>
+        ${recent ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Recent nazrana</h3><div class="divide-y divide-gray-100 dark:divide-studio-border">${recent}</div></div>` : ''}
         ${hist ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Withdrawal history</h3><div class="divide-y divide-gray-100 dark:divide-studio-border">${hist}</div></div>` : ''}`;
     }
     (() => {

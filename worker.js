@@ -369,9 +369,10 @@ const AUDIT_LABELS = [
   [/^PATCH \/api\/admin\/reports\/[^/]+$/, "Updated a report"], [/^POST \/api\/admin\/feedback\/[^/]+\/reply$/, "Replied to feedback"],
   [/^PUT \/api\/admin\/payout-settings$/, "Changed payout rates"], [/^POST \/api\/admin\/payouts\/[^/]+\/mark-paid$/, "Marked a creator payout as paid"],
   [/^POST \/api\/admin\/withdraw-requests\/[^/]+\/mark-paid$/, "Marked a withdrawal as paid"], [/^POST \/api\/admin\/withdraw-requests\/[^/]+\/reject$/, "Rejected a withdrawal"],
-  [/^PUT \/api\/admin\/sadaqah\/settings$/, "Changed sadaqah settings"], [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/confirm$/, "Confirmed a sadaqah payment"],
-  [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/reject$/, "Marked a sadaqah payment as not received"], [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/mark-paid$/, "Marked a sadaqah withdrawal as paid"],
-  [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/reject$/, "Rejected a sadaqah withdrawal"], [/^POST \/api\/admin\/ads$/, "Created an ad"], [/^PATCH \/api\/admin\/ads\/[^/]+$/, "Edited / paused an ad"],
+  [/^PUT \/api\/admin\/vast-settings$/, "Changed video ad network (VAST) settings"],
+  [/^PUT \/api\/admin\/sadaqah\/settings$/, "Changed nazrana settings"], [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/confirm$/, "Confirmed a nazrana payment"],
+  [/^POST \/api\/admin\/sadaqah\/donations\/[^/]+\/reject$/, "Marked a nazrana payment as not received"], [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/mark-paid$/, "Marked a nazrana withdrawal as paid"],
+  [/^POST \/api\/admin\/sadaqah\/requests\/[^/]+\/reject$/, "Rejected a nazrana withdrawal"], [/^POST \/api\/admin\/ads$/, "Created an ad"], [/^PATCH \/api\/admin\/ads\/[^/]+$/, "Edited / paused an ad"],
   [/^DELETE \/api\/admin\/ads\/[^/]+$/, "Deleted an ad"], [/^POST \/api\/admin\/broadcast$/, "Sent a notification to users"], [/^PUT \/api\/admin\/settings$/, "Changed platform settings"],
   [/^POST \/api\/admin\/scan-duplicates$/, "Ran / applied the duplicate scan"], [/^PUT \/api\/admin\/auto-scan$/, "Turned the hourly duplicate auto-scan on / off"], [/^POST \/api\/admin\/campaigns\/[^/]+\/confirm$/, "Confirmed an ad campaign payment and started the ad"], [/^POST \/api\/admin\/campaigns\/[^/]+\/reject$/, "Rejected an ad campaign"], [/^POST \/api\/admin\/campaigns\/[^/]+\/end$/, "Ended an ad campaign"], [/^PUT \/api\/admin\/campaign-settings$/, "Changed the ad campaign payment settings and prices"], [/^PUT \/api\/admin\/adsense$/, "Changed the Google AdSense settings"], [/^PUT \/api\/admin\/admob$/, "Changed the Google AdMob settings"], [/^POST \/api\/admin\/demo-account$/, "Created / deleted the demo account"],
 ];
@@ -593,6 +594,140 @@ async function rkRelated(db, kind, seedId, userId, limit) {
 }
 const rkLimit = (url, d) => { const n = parseInt(url.searchParams.get("limit"), 10); return isFinite(n) ? Math.max(1, Math.min(200, n)) : d; };
 
+// ================= HASHTAGS: unique tags, counts, autocomplete =================
+// Everything here runs in the background and swallows its own errors, so a hashtag problem can never break an upload.
+let _htReady = false, _htBackfill = false;
+const _htMem = new Map(); // suggestion cache (60 s)
+async function ensureHashtagTables(db) {
+  if (_htReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS hashtags (id INTEGER PRIMARY KEY AUTOINCREMENT, tag_name TEXT NOT NULL UNIQUE, video_count INTEGER NOT NULL DEFAULT 0, channel_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS video_hashtags (hashtag_id INTEGER NOT NULL, kind TEXT NOT NULL, content_id TEXT NOT NULL, owner_id TEXT NOT NULL, PRIMARY KEY (hashtag_id, kind, content_id))").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_vh_content ON video_hashtags (kind, content_id)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_hashtags_count ON hashtags (video_count)").run();
+  _htReady = true;
+}
+const HT_MAX = 15, HT_LEN = 50;
+// Hashtags are stored lower-case, once per video (#Naat, #naat and #NAAT are the same tag). Works for Hindi/Urdu/English letters.
+function extractHashtags(title, description, tags) {
+  const out = [], seen = new Set();
+  const add = (raw) => {
+    const t = String(raw || "").normalize("NFC").toLowerCase();
+    if (!t || t.length > HT_LEN || seen.has(t) || /^[0-9_]+$/.test(t)) return;
+    seen.add(t); out.push(t);
+  };
+  const re = /(?<![\p{L}\p{M}\p{N}_&\/])#([\p{L}\p{M}\p{N}_]{1,50})(?![\p{L}\p{M}\p{N}_])/gu;
+  for (const text of [title, description]) {
+    if (typeof text !== "string") continue;
+    let m; re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) add(m[1]);
+  }
+  if (Array.isArray(tags)) for (const t of tags) { // only tags the creator wrote with a leading #
+    if (typeof t !== "string") continue;
+    const x = t.trim();
+    if (x[0] === "#" && /^[\p{L}\p{M}\p{N}_]{1,50}$/u.test(x.slice(1))) add(x.slice(1));
+  }
+  return out.slice(0, HT_MAX);
+}
+// Live counts: only videos/reels that exist, are not removed and not hidden. Channels = distinct owners.
+async function liveHashtagCounts(db, ids) {
+  const res = new Map();
+  if (!ids.length) return res;
+  const ph = ids.map(() => "?").join(",");
+  const rows = await db.prepare(
+    "SELECT hid, COUNT(*) AS vc, COUNT(DISTINCT oid) AS cc FROM (" +
+    "SELECT vh.hashtag_id AS hid, v.owner_id AS oid FROM video_hashtags vh JOIN videos v ON vh.kind = 'v' AND v.id = vh.content_id WHERE v.removed = 0 AND v.hidden = 0 AND vh.hashtag_id IN (" + ph + ") " +
+    "UNION ALL " +
+    "SELECT vh.hashtag_id AS hid, r.owner_id AS oid FROM video_hashtags vh JOIN reels r ON vh.kind = 'r' AND r.id = vh.content_id WHERE r.hidden = 0 AND vh.hashtag_id IN (" + ph + ")" +
+    ") GROUP BY hid"
+  ).bind(...ids, ...ids).all();
+  for (const r of rows.results || []) res.set(r.hid, { vc: r.vc, cc: r.cc });
+  return res;
+}
+async function recountHashtags(db, ids) {
+  if (!ids.length) return;
+  const live = await liveHashtagCounts(db, ids), now = Date.now();
+  await db.batch(ids.map((id) => { const c = live.get(id) || { vc: 0, cc: 0 }; return db.prepare("UPDATE hashtags SET video_count = ?, channel_count = ?, updated_at = ? WHERE id = ?").bind(c.vc, c.cc, now, id); }));
+}
+async function indexHashtags(db, kind, contentId, ownerId, title, description, tags) {
+  try {
+    const list = extractHashtags(title, description, tags);
+    if (!list.length) return;
+    await ensureHashtagTables(db);
+    const now = Date.now();
+    await db.batch(list.map((t) => db.prepare("INSERT OR IGNORE INTO hashtags (tag_name, updated_at) VALUES (?, ?)").bind(t, now)));
+    const found = await db.prepare("SELECT id FROM hashtags WHERE tag_name IN (" + list.map(() => "?").join(",") + ")").bind(...list).all();
+    const ids = (found.results || []).map((r) => r.id);
+    await db.batch(ids.map((id) => db.prepare("INSERT OR IGNORE INTO video_hashtags (hashtag_id, kind, content_id, owner_id) VALUES (?, ?, ?, ?)").bind(id, kind, contentId, ownerId)));
+    await recountHashtags(db, ids);
+    _htMem.clear();
+  } catch (_) {}
+}
+async function unindexHashtags(db, kind, contentId) {
+  try {
+    await ensureHashtagTables(db);
+    const rows = await db.prepare("SELECT hashtag_id FROM video_hashtags WHERE kind = ? AND content_id = ?").bind(kind, contentId).all();
+    const ids = (rows.results || []).map((r) => r.hashtag_id);
+    if (!ids.length) return;
+    await db.prepare("DELETE FROM video_hashtags WHERE kind = ? AND content_id = ?").bind(kind, contentId).run();
+    await recountHashtags(db, ids);
+    _htMem.clear();
+  } catch (_) {}
+}
+// One-time fill from videos/reels that already exist (runs once, then a flag in auto_tools stops it).
+async function backfillHashtags(db) {
+  if (_htBackfill) return;
+  _htBackfill = true;
+  try {
+    await ensureHashtagTables(db);
+    let done = null;
+    try { done = await db.prepare("SELECT v FROM auto_tools WHERE k = 'hashtag_backfill_v1'").first(); } catch (_) { try { await ensureAutoToolsTable(db); } catch (__) {} }
+    if (done) return;
+    const vids = await db.prepare("SELECT id, owner_id, title, description, tags FROM videos ORDER BY uploaded_at DESC LIMIT 5000").all();
+    const rls = await db.prepare("SELECT id, owner_id, title, tags FROM reels ORDER BY uploaded_at DESC LIMIT 5000").all();
+    const items = [];
+    const parse = (x) => { try { const a = JSON.parse(x || "[]"); return Array.isArray(a) ? a : []; } catch (_) { return []; } };
+    for (const v of vids.results || []) items.push(["v", v.id, v.owner_id, extractHashtags(v.title, v.description, parse(v.tags))]);
+    for (const r of rls.results || []) items.push(["r", r.id, r.owner_id, extractHashtags(r.title, "", parse(r.tags))]);
+    const now = Date.now(), allTags = new Set();
+    for (const it of items) for (const t of it[3]) allTags.add(t);
+    const tagList = [...allTags];
+    for (let i = 0; i < tagList.length; i += 50) await db.batch(tagList.slice(i, i + 50).map((t) => db.prepare("INSERT OR IGNORE INTO hashtags (tag_name, updated_at) VALUES (?, ?)").bind(t, now)));
+    const idOf = new Map();
+    for (let i = 0; i < tagList.length; i += 50) {
+      const part = tagList.slice(i, i + 50);
+      const f = await db.prepare("SELECT id, tag_name FROM hashtags WHERE tag_name IN (" + part.map(() => "?").join(",") + ")").bind(...part).all();
+      for (const r of f.results || []) idOf.set(r.tag_name, r.id);
+    }
+    const maps = [];
+    for (const [kind, cid, oid, tags] of items) for (const t of tags) if (idOf.has(t)) maps.push(db.prepare("INSERT OR IGNORE INTO video_hashtags (hashtag_id, kind, content_id, owner_id) VALUES (?, ?, ?, ?)").bind(idOf.get(t), kind, cid, oid));
+    for (let i = 0; i < maps.length; i += 50) await db.batch(maps.slice(i, i + 50));
+    const ids = [...idOf.values()];
+    for (let i = 0; i < ids.length; i += 40) await recountHashtags(db, ids.slice(i, i + 40));
+    await setAutoTool(db, "hashtag_backfill_v1", "1");
+    _htMem.clear();
+  } catch (_) { _htBackfill = false; }
+}
+async function hashtagSuggest(db, url) {
+  const q = String(url.searchParams.get("q") || "").normalize("NFC").toLowerCase().replace(/^#+/, "").replace(/[^\p{L}\p{M}\p{N}_]/gu, "").slice(0, HT_LEN);
+  const reply = (tags, st) => new Response(JSON.stringify({ tags }), { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=30", "X-Suggest-Cache": st, ...cors() } });
+  const hit = _htMem.get(q);
+  if (hit && Date.now() - hit.t < 60000) return reply(hit.tags, "hit");
+  let tags = [];
+  try {
+    await ensureHashtagTables(db);
+    bg(backfillHashtags(db));
+    const base = "SELECT id, tag_name FROM hashtags WHERE video_count > 0";
+    const cand = q
+      ? await db.prepare(base + " AND tag_name >= ? AND tag_name < ? ORDER BY video_count DESC, channel_count DESC, tag_name LIMIT 30").bind(q, q + "\u{10FFFF}").all()
+      : await db.prepare(base + " ORDER BY video_count DESC, channel_count DESC, tag_name LIMIT 30").all();
+    const rows = cand.results || [], live = await liveHashtagCounts(db, rows.map((r) => r.id));
+    tags = rows.map((r) => ({ tag: r.tag_name, videos: (live.get(r.id) || {}).vc || 0, channels: (live.get(r.id) || {}).cc || 0 }))
+      .filter((t) => t.videos > 0).sort((a, b) => b.videos - a.videos || b.channels - a.channels || (a.tag < b.tag ? -1 : 1)).slice(0, 10);
+  } catch (_) { return reply([], "error"); }
+  _htMem.set(q, { t: Date.now(), tags });
+  if (_htMem.size > 300) _htMem.delete(_htMem.keys().next().value);
+  return reply(tags, "miss");
+}
 // ================= FAST FEED: memory/edge cache for signed-out visitors, small thumbnails, feed indexes =================
 let _origin = "", _ctx = null;
 const bg = (p) => { try { if (_ctx) _ctx.waitUntil(p); } catch (_) {} return p; };
@@ -724,17 +859,17 @@ async function ensureRetentionTables(db) {
 function lastDays(n, now) { const out = []; for (let i = n - 1; i >= 0; i--) out.push(istDay(now - i * 86400000)); return out; }
 
 // ================= SADAQAH =================
-// Viewers give sadaqah under a video by paying the ADMIN's UPI (set in the admin panel). The app cannot see UPI payments, so:
-//   1) tapping Sadaqah creates a short reference (e.g. NT7K2QX) that goes into the UPI note,
+// Viewers give nazrana under a video by paying the ADMIN's UPI (set in the admin panel). The app cannot see UPI payments, so:
+//   1) tapping Nazrana creates a short reference (e.g. NT7K2QX) that goes into the UPI note,
 //   2) the donor then tells the app how much they sent ("claimed"),
 //   3) the admin checks the UPI statement and confirms ("received"). Only RECEIVED amounts count for the creator.
-// Money stays with the admin. A creator can request a withdrawal once their available sadaqah reaches the limit (default Rs 5000),
+// Money stays with the admin. A creator can request a withdrawal once their available nazrana reaches the limit (default Rs 5000),
 // either the full amount or a custom amount; the admin pays them by UPI/bank and taps Paid. Not linked to monetization at all.
 const SADAQAH_UNLOCK_PAISE = 500000;      // Rs 5000 available balance needed before a creator can request a withdrawal
 const SADAQAH_MIN_REQUEST_PAISE = 10000;  // smallest custom withdrawal: Rs 100
-const SADAQAH_MAX_CLAIM_PAISE = 10000000; // a donor can claim at most Rs 1,00,000 per sadaqah
+const SADAQAH_MAX_CLAIM_PAISE = 10000000; // a donor can claim at most Rs 1,00,000 per nazrana
 let sadaqahReady = false;
-// ----- deductions (tax / platform fee / other): cut from each confirmed sadaqah, the creator gets the rest -----
+// ----- deductions (tax / platform fee / other): cut from each confirmed nazrana, the creator gets the rest -----
 // amount_paise = what the CREATOR gets (net). gross_paise = what the admin received. The cuts are saved on each payment, so old payments never change.
 let sdDedOk = false;
 const SD_DED_DEFAULTS = [{ key: "tax", name: "Tax" }, { key: "platform", name: "Platform fee" }, { key: "other", name: "Other" }];
@@ -788,7 +923,7 @@ async function getSadaqahSettings(db) {
   const m = {};
   (rows.results || []).forEach((r) => { m[r.k] = r.v; });
   const unlock = parseInt(m.unlock_paise, 10);
-  return { upiId: m.upi_id || "", payeeName: m.payee_name || "NoorTube Sadaqah", unlockPaise: unlock >= SADAQAH_MIN_REQUEST_PAISE ? unlock : SADAQAH_UNLOCK_PAISE, minRequestPaise: SADAQAH_MIN_REQUEST_PAISE, deductions: parseDeductions(m.deductions) };
+  return { upiId: m.upi_id || "", payeeName: String(m.payee_name || "NoorTube Nazrana").replace(/sadaqah/gi, "Nazrana"), unlockPaise: unlock >= SADAQAH_MIN_REQUEST_PAISE ? unlock : SADAQAH_UNLOCK_PAISE, minRequestPaise: SADAQAH_MIN_REQUEST_PAISE, deductions: parseDeductions(m.deductions) };
 }
 async function sadaqahBalance(db, creatorId) {
   const r = await db.prepare(
@@ -801,7 +936,7 @@ async function sadaqahBalance(db, creatorId) {
   const received = r.received || 0, paid = r.paid || 0, pending = r.pending || 0;
   return { receivedPaise: received, receivedCount: r.receivedCount || 0, paidPaise: paid, pendingPaise: pending, awaitingPaise: r.awaiting || 0, availablePaise: Math.max(0, received - paid - pending) };
 }
-// Never throws. Removes a deleted creator's sadaqah rows (the account and its videos are being deleted too).
+// Never throws. Removes a deleted creator's nazrana rows (the account and its videos are being deleted too).
 async function purgeSadaqah(db, userId) {
   try {
     await ensureSadaqahTables(db);
@@ -1019,6 +1154,28 @@ async function runDuplicateScan(db, env, apply) {
         }
       }
       return { ok: true, scannedNow: scanned, remaining, duplicates: list, removed: removedCount, applied: apply };
+}
+// ===== Video ad networks (VAST tags, e.g. Muslim Ad Network). Admin pastes tag links; the app plays them only when no own ad is available. Default: all OFF. =====
+let _vastMem = null;
+function cleanVastCfg(b) {
+  b = b || {};
+  const tags = (Array.isArray(b.tags) ? b.tags : []).map((t) => String(t || "").trim()).filter(Boolean).slice(0, 3);
+  for (const t of tags) if (!/^https:\/\/[^\s<>"']{4,1990}$/i.test(t)) return { error: "Each ad tag must be a full link starting with https:// (no spaces)." };
+  const midAfter = Math.round(Number(b.midAfter === undefined ? 30 : b.midAfter)), gapSec = Math.round(Number(b.gapSec === undefined ? 180 : b.gapSec));
+  if (!(midAfter >= 10 && midAfter <= 600)) return { error: "Middle-of-video ad time must be 10 to 600 seconds." };
+  if (!(gapSec >= 0 && gapSec <= 3600)) return { error: "Gap between network ads must be 0 to 3600 seconds." };
+  return { cfg: { pre: b.pre === true, mid: b.mid === true, native: b.native === true, midAfter, gapSec, tags } };
+}
+async function getVastCfg(db) {
+  if (_vastMem && Date.now() - _vastMem.t < 30000) return _vastMem.cfg;
+  let cfg = { pre: false, mid: false, native: false, midAfter: 30, gapSec: 180, tags: [] };
+  try {
+    await ensureAutoToolsTable(db);
+    const r = await db.prepare("SELECT v FROM auto_tools WHERE k = 'vast_cfg'").first();
+    if (r) { const c = cleanVastCfg(JSON.parse(r.v)); if (c.cfg) cfg = c.cfg; }
+  } catch (_) {}
+  _vastMem = { t: Date.now(), cfg };
+  return cfg;
 }
 // ===== Reels: show one full-screen ad after every N reels (admin sets N, default 7) =====
 async function getReelAdEvery(db) {
@@ -2167,7 +2324,7 @@ async function handleRequest(request, env) {
         const vOnly = (placement === "preroll" || placement === "midroll") ? " AND type = 'video'" : "";
         const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
           .bind(now, now, "%," + placement + ",%").all();
-        return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })) });
+        return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })), vast: await (async () => { if (placement !== "preroll" && placement !== "midroll") return undefined; const v = await getVastCfg(db); return (placement === "preroll" ? v.pre : v.mid) && v.tags.length ? { tags: v.tags, midAfter: v.midAfter, gapSec: v.gapSec, native: v.native } : undefined; })() });
       } catch (_) { return json({ ads: [] }); }
     }
     if (method === "POST" && (m = path.match(/^\/api\/ads\/([^/]+)\/(impression|click)$/))) {
@@ -2212,7 +2369,16 @@ async function handleRequest(request, env) {
       await ensurePlatformTables(db);
       const rows = await db.prepare("SELECT * FROM ads ORDER BY created_at DESC LIMIT 300").all();
       const cfg = await getAppSettings(db);
-      return json({ ok: true, ads: (rows.results || []).map(adOut), guard: salahGuardState(Date.now(), cfg), guardOn: cfg.guardOn, reelEvery: await getReelAdEvery(db) });
+      return json({ ok: true, ads: (rows.results || []).map(adOut), guard: salahGuardState(Date.now(), cfg), guardOn: cfg.guardOn, reelEvery: await getReelAdEvery(db), vast: await getVastCfg(db) });
+    }
+    if (method === "PUT" && path === "/api/admin/vast-settings") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      const b = await request.json().catch(() => ({}));
+      const c = cleanVastCfg(b);
+      if (c.error) return err(c.error, 400);
+      try { await ensureAutoToolsTable(db); await setAutoTool(db, "vast_cfg", JSON.stringify(c.cfg)); } catch (_) { return err("Could not save", 500); }
+      _vastMem = null;
+      return json({ ok: true, vast: c.cfg });
     }
     if (method === "PUT" && path === "/api/admin/ads-settings") {
       if (!(await adminUser(request, env))) return err("Not allowed", 403);
@@ -2390,18 +2556,18 @@ async function handleRequest(request, env) {
       } catch (_) { return err("Analytics unavailable", 500); }
     }
     // ================= SADAQAH routes =================
-    // ----- donor: tap Sadaqah under a video (creates a reference for the UPI note; the amount is entered in the UPI app) -----
+    // ----- donor: tap Nazrana under a video (creates a reference for the UPI note; the amount is entered in the UPI app) -----
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/sadaqah\/start$/))) {
       const u = await currentUserOrGuest(request, env);
-      if (!u) return err("Please sign in to give sadaqah", 401);
-      if (u.suspended) return err("This account cannot give sadaqah", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      if (!u) return err("Please sign in to give nazrana", 401);
+      if (u.suspended) return err("This account cannot give nazrana", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana is temporarily unavailable. Try again later.", 503); }
       const S = await getSadaqahSettings(db);
-      if (!S.upiId) return err("Sadaqah is not available yet. Please try again later.", 503);
+      if (!S.upiId) return err("Nazrana is not available yet. Please try again later.", 503);
       const v = await db.prepare("SELECT id, owner_id, hidden, removed FROM videos WHERE id = ?").bind(m[1]).first();
       if (!v) return err("Video not found", 404);
-      if (v.removed || v.hidden) return err("This video cannot receive sadaqah", 400);
-      if (v.owner_id === u.id) return err("You cannot give sadaqah on your own video", 400);
+      if (v.removed || v.hidden) return err("This video cannot receive nazrana", 400);
+      if (v.owner_id === u.id) return err("You cannot give nazrana on your own video", 400);
       const recent = await db.prepare("SELECT COUNT(*) AS n FROM sadaqah_donations WHERE donor_id = ? AND created_at > ?").bind(u.id, Date.now() - 3600000).first();
       if (recent && recent.n >= 20) return err("Too many attempts. Please try again in a while.", 429);
       let ref = "";
@@ -2414,7 +2580,7 @@ async function handleRequest(request, env) {
           ref = r;
         } catch (_) { ref = ""; }
       }
-      if (!ref) return err("Could not start sadaqah. Please try again.", 500);
+      if (!ref) return err("Could not start nazrana. Please try again.", 500);
       if (Math.random() < 0.05) { try { await db.prepare("DELETE FROM sadaqah_donations WHERE status = 'initiated' AND created_at < ?").bind(Date.now() - 7 * 86400000).run(); } catch (_) {} }
       return json({ ok: true, ref, upiId: S.upiId, payeeName: S.payeeName });
     }
@@ -2422,24 +2588,24 @@ async function handleRequest(request, env) {
     if (method === "POST" && (m = path.match(/^\/api\/sadaqah\/([A-Za-z0-9]+)\/claim$/))) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Please sign in", 401);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana is temporarily unavailable. Try again later.", 503); }
       const b = await request.json().catch(() => ({}));
       const paise = parseRupeesToPaise(b.amount);
       if (!paise || paise < 100 || paise > SADAQAH_MAX_CLAIM_PAISE) return err("Enter the amount you sent, between \u20B91 and \u20B9" + (SADAQAH_MAX_CLAIM_PAISE / 100), 400);
       const utr = String(b.utr || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 30);
       const d = await db.prepare("SELECT id, status, donor_id FROM sadaqah_donations WHERE ref = ?").bind(m[1].toUpperCase()).first();
       if (!d || d.donor_id !== u.id) return err("Not found", 404);
-      if (d.status !== "initiated" && d.status !== "claimed") return err("This sadaqah was already processed", 409);
+      if (d.status !== "initiated" && d.status !== "claimed") return err("This nazrana was already processed", 409);
       await db.prepare("UPDATE sadaqah_donations SET status = 'claimed', claimed_paise = ?, utr = ?, claimed_at = ?, donor_name = ? WHERE id = ? AND status IN ('initiated', 'claimed')")
         .bind(paise, utr, Date.now(), u.name || "Guest", d.id).run();
       return json({ ok: true, amountPaise: paise });
     }
-    // ----- creator: own sadaqah numbers for Studio (donor names are never shown to creators) -----
+    // ----- creator: own nazrana numbers for Studio (donor names are never shown to creators) -----
     if (method === "GET" && path === "/api/me/sadaqah") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
-      if (u.role === "guest") return err("Sign in to see sadaqah", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah data unavailable", 503); }
+      if (u.role === "guest") return err("Sign in to see nazrana", 403);
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana data unavailable", 503); }
       const S = await getSadaqahSettings(db), bal = await sadaqahBalance(db, u.id);
       const vids = await db.prepare(
         "SELECT d.video_id AS video_id, v.title AS title, SUM(CASE WHEN d.status = 'received' THEN d.amount_paise ELSE 0 END) AS received, SUM(CASE WHEN d.status = 'received' THEN 1 ELSE 0 END) AS cnt, " +
@@ -2462,17 +2628,17 @@ async function handleRequest(request, env) {
         requests: (hist.results || []).map((x) => ({ id: x.id, amountPaise: x.amount_paise, status: x.status, createdAt: x.created_at, resolvedAt: x.resolved_at, note: x.note || "" })),
       });
     }
-    // ----- creator: request a withdrawal of sadaqah (full or custom amount; needs the unlock limit + payout details) -----
+    // ----- creator: request a withdrawal of nazrana (full or custom amount; needs the unlock limit + payout details) -----
     if (method === "POST" && path === "/api/me/sadaqah/withdraw") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
       if (u.role === "guest") return err("Sign in to withdraw", 403);
       if (u.suspended) return err("Suspended accounts cannot withdraw", 403);
       if (!u.payout_method || !u.payout_account_number) return err("Add your account / UPI details first", 400);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah is temporarily unavailable. Try again later.", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana is temporarily unavailable. Try again later.", 503); }
       const S = await getSadaqahSettings(db), bal = await sadaqahBalance(db, u.id);
       if (bal.pendingPaise > 0) return err("You already have a withdrawal request pending", 409);
-      if (bal.availablePaise < S.unlockPaise) return err("Withdrawals open when your available sadaqah reaches " + rs2(S.unlockPaise), 400);
+      if (bal.availablePaise < S.unlockPaise) return err("Withdrawals open when your available nazrana reaches " + rs2(S.unlockPaise), 400);
       const b = await request.json().catch(() => ({}));
       const paise = b.full === true || b.amount == null || b.amount === "" ? bal.availablePaise : parseRupeesToPaise(b.amount);
       if (!paise || paise < S.minRequestPaise) return err("The smallest withdrawal is " + rs2(S.minRequestPaise), 400);
@@ -2485,14 +2651,14 @@ async function handleRequest(request, env) {
           "WHERE COALESCE((SELECT SUM(amount_paise) FROM sadaqah_donations WHERE creator_id = ? AND status = 'received'), 0) - COALESCE((SELECT SUM(amount_paise) FROM sadaqah_requests WHERE creator_id = ? AND status IN ('Paid', 'Pending')), 0) >= ?")
           .bind(id, u.id, paise, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now(), u.id, u.id, paise).run();
       } catch (_) { return err("You already have a withdrawal request pending", 409); }
-      if (!res || !res.meta || res.meta.changes !== 1) return err("Your available sadaqah changed. Please refresh and try again.", 409);
+      if (!res || !res.meta || res.meta.changes !== 1) return err("Your available nazrana changed. Please refresh and try again.", 409);
       return json({ ok: true, id, amountPaise: paise });
     }
-    // ----- admin: everything about sadaqah (settings, awaiting confirmation, history, per creator, per video, withdrawal requests) -----
+    // ----- admin: everything about nazrana (settings, awaiting confirmation, history, per creator, per video, withdrawal requests) -----
     if (method === "GET" && path === "/api/admin/sadaqah") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const S = await getSadaqahSettings(db);
       const T = await db.prepare("SELECT COALESCE(SUM(CASE WHEN status = 'received' THEN " + sdGross() + " END), 0) AS received, COALESCE(SUM(CASE WHEN status = 'received' THEN amount_paise END), 0) AS net, " + sdCutCols() + " COUNT(CASE WHEN status = 'received' THEN 1 END) AS receivedCount, COALESCE(SUM(CASE WHEN status = 'claimed' THEN claimed_paise END), 0) AS awaiting, COUNT(CASE WHEN status = 'claimed' THEN 1 END) AS awaitingCount FROM sadaqah_donations").first();
       const R = await db.prepare("SELECT COALESCE(SUM(CASE WHEN status = 'Paid' THEN amount_paise END), 0) AS paid, COALESCE(SUM(CASE WHEN status = 'Pending' THEN amount_paise END), 0) AS pend, COUNT(CASE WHEN status = 'Pending' THEN 1 END) AS pendCount FROM sadaqah_requests").first();
@@ -2525,7 +2691,7 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/admin/sadaqah/export") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const type = new URL(request.url).searchParams.get("type") === "payouts" ? "payouts" : "donations";
       const rows = [];
       if (type === "payouts") {
@@ -2541,17 +2707,17 @@ async function handleRequest(request, env) {
             ok ? parseDedJson(d.deduct_json).map((x) => x.name + " " + x.pct + "% = " + rupees2(x.paise)).join("; ") : "", d.utr || "", d.note || ""]));
         });
       }
-      return new Response("\uFEFF" + rows.join("\r\n"), { status: 200, headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=\"noortube-sadaqah-" + type + ".csv\"", "Cache-Control": "no-store", ...cors() } });
+      return new Response("\uFEFF" + rows.join("\r\n"), { status: 200, headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=\"noortube-nazrana-" + type + ".csv\"", "Cache-Control": "no-store", ...cors() } });
     }
     // ----- admin: UPI id the donors pay + the withdrawal limit -----
     if (method === "PUT" && path === "/api/admin/sadaqah/settings") {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const b = await request.json().catch(() => ({}));
       const upiId = String(b.upiId == null ? "" : b.upiId).trim();
       if (upiId && !/^[A-Za-z0-9._\-]{2,64}@[A-Za-z0-9._\-]{2,32}$/.test(upiId)) return err("Enter a valid UPI ID like name@bank", 400);
-      const payeeName = String(b.payeeName == null ? "" : b.payeeName).trim().slice(0, 60) || "NoorTube Sadaqah";
+      const payeeName = String(b.payeeName == null ? "" : b.payeeName).trim().slice(0, 60) || "NoorTube Nazrana";
       const unlock = parseRupeesToPaise(b.unlockRupees);
       if (!unlock || unlock < SADAQAH_MIN_REQUEST_PAISE || unlock > 100000000) return err("The withdrawal limit must be between \u20B9100 and \u20B910,00,000", 400);
       let dedJson = null;
@@ -2583,10 +2749,10 @@ async function handleRequest(request, env) {
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/donations\/([^/]+)\/confirm$/))) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const d = await db.prepare("SELECT d.*, v.title AS vtitle FROM sadaqah_donations d LEFT JOIN videos v ON v.id = d.video_id WHERE d.id = ?").bind(m[1]).first();
       if (!d) return err("Not found", 404);
-      if (d.status !== "claimed" && d.status !== "initiated") return err("This sadaqah was already handled", 409);
+      if (d.status !== "claimed" && d.status !== "initiated") return err("This nazrana was already handled", 409);
       const b = await request.json().catch(() => ({}));
       const paise = b.amount != null && b.amount !== "" ? parseRupeesToPaise(b.amount) : d.claimed_paise;
       if (!paise || paise < 100 || paise > SADAQAH_MAX_CLAIM_PAISE) return err("Enter the amount you received", 400);
@@ -2599,29 +2765,29 @@ async function handleRequest(request, env) {
         ? await db.prepare("UPDATE sadaqah_donations SET status = 'received', amount_paise = ?, gross_paise = ?, tax_paise = ?, platform_paise = ?, other_paise = ?, deduct_json = ?, resolved_at = ? WHERE id = ? AND status IN ('claimed', 'initiated')")
             .bind(net, paise, cutOf("tax"), cutOf("platform"), cutOf("other"), JSON.stringify(parts.map((x) => ({ name: x.name, pct: x.pct, paise: x.paise }))), now, d.id).run()
         : await db.prepare("UPDATE sadaqah_donations SET status = 'received', amount_paise = ?, resolved_at = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(paise, now, d.id).run();
-      if (!r.meta || r.meta.changes !== 1) return err("This sadaqah was already handled", 409);
-      try { await addNotification(db, d.creator_id, "info", "Sadaqah received", "You received " + rs2(net) + " sadaqah on \"" + (d.vtitle || "your video") + "\"." + (parts.length ? " Total " + rs2(paise) + ", minus " + parts.map((x) => x.name + " " + rs2(x.paise)).join(", ") + "." : "") + " Open Studio > Sadaqah to see it."); } catch (_) {}
-      if (d.donor_id) { try { await addNotification(db, d.donor_id, "info", "Sadaqah received", "Your sadaqah of " + rs2(paise) + " was received. JazakAllahu khayran."); } catch (_) {} }
+      if (!r.meta || r.meta.changes !== 1) return err("This nazrana was already handled", 409);
+      try { await addNotification(db, d.creator_id, "info", "Nazrana received", "You received " + rs2(net) + " nazrana on \"" + (d.vtitle || "your video") + "\"." + (parts.length ? " Total " + rs2(paise) + ", minus " + parts.map((x) => x.name + " " + rs2(x.paise)).join(", ") + "." : "") + " Open Studio > Nazrana to see it."); } catch (_) {}
+      if (d.donor_id) { try { await addNotification(db, d.donor_id, "info", "Nazrana received", "Your nazrana of " + rs2(paise) + " was received. JazakAllahu khayran."); } catch (_) {} }
       return json({ ok: true, amountPaise: paise, netPaise: net, deductions: parts });
     }
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/donations\/([^/]+)\/reject$/))) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const b = await request.json().catch(() => ({}));
       const note = String(b.note || "").trim().slice(0, 300);
       const d = await db.prepare("SELECT * FROM sadaqah_donations WHERE id = ?").bind(m[1]).first();
       if (!d) return err("Not found", 404);
       const r = await db.prepare("UPDATE sadaqah_donations SET status = 'rejected', resolved_at = ?, note = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(Date.now(), note, d.id).run();
-      if (!r.meta || r.meta.changes !== 1) return err("This sadaqah was already handled", 409);
-      if (d.donor_id && d.claimed_paise) { try { await addNotification(db, d.donor_id, "info", "Sadaqah not found", "We could not find your sadaqah of " + rs2(d.claimed_paise) + " in our account." + (note ? " " + note : "")); } catch (_) {} }
+      if (!r.meta || r.meta.changes !== 1) return err("This nazrana was already handled", 409);
+      if (d.donor_id && d.claimed_paise) { try { await addNotification(db, d.donor_id, "info", "Nazrana not found", "We could not find your nazrana of " + rs2(d.claimed_paise) + " in our account." + (note ? " " + note : "")); } catch (_) {} }
       return json({ ok: true });
     }
-    // ----- admin: creator's sadaqah withdrawal: after paying them, mark Paid (their available balance drops by that amount) -----
+    // ----- admin: creator's nazrana withdrawal: after paying them, mark Paid (their available balance drops by that amount) -----
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/requests\/([^/]+)\/mark-paid$/))) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const w = await db.prepare("SELECT * FROM sadaqah_requests WHERE id = ?").bind(m[1]).first();
       if (!w) return err("Request not found", 404);
       const pb = await request.json().catch(() => ({}));
@@ -2632,22 +2798,22 @@ async function handleRequest(request, env) {
       try {
         const cs = await sadaqahCutSummary(db, w.creator_id), SS = await getSadaqahSettings(db), nm = (k) => (SS.deductions.find((x) => x.key === k) || {}).name || k;
         const bits = [[cs.taxPaise, nm("tax")], [cs.platformPaise, nm("platform")], [cs.otherPaise, nm("other")]].filter((x) => x[0] > 0).map((x) => x[1] + " " + rs2(x[0]));
-        if (bits.length) stmt = " Your sadaqah so far: " + rs2(cs.grossPaise) + " received, minus " + bits.join(", ") + " = " + rs2(cs.netPaise) + " credited to you.";
+        if (bits.length) stmt = " Your nazrana so far: " + rs2(cs.grossPaise) + " received, minus " + bits.join(", ") + " = " + rs2(cs.netPaise) + " credited to you.";
       } catch (_) {}
-      try { await addNotification(db, w.creator_id, "info", "Sadaqah withdrawal paid", "Your sadaqah withdrawal of " + rs2(w.amount_paise) + " has been paid." + (payRef ? " Payment reference: " + payRef + "." : "") + stmt); } catch (_) {}
+      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal paid", "Your nazrana withdrawal of " + rs2(w.amount_paise) + " has been paid." + (payRef ? " Payment reference: " + payRef + "." : "") + stmt); } catch (_) {}
       return json({ ok: true, paidPaise: w.amount_paise });
     }
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/requests\/([^/]+)\/reject$/))) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
-      try { await ensureSadaqahTables(db); } catch (_) { return err("Sadaqah tables unavailable", 503); }
+      try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana tables unavailable", 503); }
       const b = await request.json().catch(() => ({}));
       const note = String(b.note || "").trim().slice(0, 300);
       const w = await db.prepare("SELECT * FROM sadaqah_requests WHERE id = ?").bind(m[1]).first();
       if (!w) return err("Request not found", 404);
       const r = await db.prepare("UPDATE sadaqah_requests SET status = 'Rejected', resolved_at = ?, note = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), note, w.id).run();
       if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
-      try { await addNotification(db, w.creator_id, "info", "Sadaqah withdrawal not approved", "Your sadaqah withdrawal request of " + rs2(w.amount_paise) + " was not approved." + (note ? " Reason: " + note : " Please check your account / UPI details and request again.")); } catch (_) {}
+      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal not approved", "Your nazrana withdrawal request of " + rs2(w.amount_paise) + " was not approved." + (note ? " Reason: " + note : " Please check your account / UPI details and request again.")); } catch (_) {}
       return json({ ok: true });
     }
     // ----- creator: request a withdrawal of the full unpaid balance (needs minimum + payout details) -----
@@ -3106,6 +3272,7 @@ async function handleRequest(request, env) {
       if (!items) return err("Not found", 404);
       return json({ [m[1]]: items.map((it) => (kind === "v" ? videoOut : reelOut)(it.row)) });
     }
+    if (method === "GET" && path === "/api/hashtags/suggest") return await hashtagSuggest(db, url);
     if (method === "GET" && path === "/api/videos") return await feedCached(db, request, env, url, "v");
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)$/))) {
       const v = await db.prepare(
@@ -3151,6 +3318,7 @@ async function handleRequest(request, env) {
       ).bind(id, u.id, b.title, b.description || "", JSON.stringify(b.tags || []), b.category || null, b.mixCategory || null,
         b.sourceType, b.youtubeId || null, b.fileUrl || null, b.thumbnail || null, b.duration || null,
         b.trimStart ?? null, b.trimEnd ?? null, monetized, copyrightStatus, removed, b.contentHash || null).run();
+      bg(indexHashtags(db, "v", id, u.id, b.title, b.description, b.tags));
       if (vFp || vEtag) { try { await db.prepare("UPDATE videos SET fingerprint = ?, file_etag = ?, dup_of = ? WHERE id = ?").bind(vFp, vEtag, vDupOf, id).run(); } catch (_) {} }
       let suspended = false;
       if (removed) {
@@ -3176,6 +3344,7 @@ async function handleRequest(request, env) {
       if (!v) return err("Video not found", 404);
       if (v.owner_id !== u.id && u.role !== "admin") return err("Not allowed", 403);
       await db.prepare("DELETE FROM videos WHERE id = ?").bind(m[1]).run();
+      bg(unindexHashtags(db, "v", m[1]));
       return json({ ok: true });
     }
     if (method === "POST" && (m = path.match(/^\/api\/(videos|reels)\/([^/]+)\/view(-start)?$/))) {
@@ -3260,6 +3429,7 @@ async function handleRequest(request, env) {
       const id = uid("r");
       await db.prepare("INSERT INTO reels (id, owner_id, title, tags, file_url, thumbnail, trim_start, trim_end, mix_category) VALUES (?,?,?,?,?,?,?,?,?)")
         .bind(id, u.id, b.title, JSON.stringify(b.tags || []), b.fileUrl || null, b.thumbnail || null, b.trimStart ?? null, b.trimEnd ?? null, b.mixCategory || null).run();
+      bg(indexHashtags(db, "r", id, u.id, b.title, "", b.tags));
       if (rFp || rEtag) { try { await db.prepare("UPDATE reels SET fingerprint = ?, file_etag = ?, dup_of = ? WHERE id = ?").bind(rFp, rEtag, rDup ? rDup.id : null, id).run(); } catch (_) {} }
       let rSuspended = false;
       if (rDup) { // a copy of another creator's reel: hidden right away + strike, same policy as videos
@@ -3275,6 +3445,7 @@ async function handleRequest(request, env) {
       if (!rl) return err("Reel not found", 404);
       if (rl.owner_id !== u.id && u.role !== "admin") return err("Not allowed", 403);
       await db.prepare("DELETE FROM reels WHERE id = ?").bind(m[1]).run();
+      bg(unindexHashtags(db, "r", m[1]));
       return json({ ok: true });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/like$/))) {
