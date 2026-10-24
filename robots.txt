@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /noortube-admin.html
+
+Sitemap: https://noortube.pages.dev/sitemap.xml

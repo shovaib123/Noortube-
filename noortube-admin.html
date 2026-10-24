@@ -516,7 +516,7 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Nazrana','heart'],['l-sadreq','Nazrana withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],['l-adsense','Google AdSense (website)','mega'],['l-admob','Google AdMob (Play Store app)','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
+const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Nazrana','heart'],['l-sadreq','Nazrana withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],['l-man','Muslim Ad Network','mega'],['l-adsense','Google AdSense (website)','mega'],['l-admob','Google AdMob (Play Store app)','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
 const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():id==='l-camp'?campAwaiting():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
@@ -979,7 +979,7 @@ const liveKpis=()=>{const u=get('users'),v=get('pvideos'),r=get('preels'),s=get(
 const liveHead=(t,sub,extra='')=>pageH(t,sub,`${extra}<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+liveKpis();
 const avatarOf=(name,color,sz)=>`<span class="avatar" style="width:${sz||30}px;height:${sz||30}px;background:${esc(color||'#0b6b50')};color:#fff">${esc(initials(name||'?'))}</span>`;
 const reqBadge=()=>{const r=LIVE.d.reqs;return r&&r.st==='ok'?r.data.length:0};
-const thr=()=>({min:{minFollowers:1000,minWatchHours:3000,minReelViews2Months:2500000}});
+const thr=()=>({min:{minFollowers:1000,minWatchHours:3000,minReelViews2Months:1000000}});
 
 /* ---- User stats ---- */
 const loadFollowers=()=>{
@@ -1143,7 +1143,7 @@ V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.dem
 const lerr=e=>toast((e&&e.message)||'Action failed');
 Object.assign(ACT,{
  'l-refresh-all':()=>{LIVE.folStarted=false;refreshAll();toast('Refreshing…')},
- 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;LIVE.cf=null;LIVE.asf=null;LIVE.amf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
+ 'l-refresh':()=>{LIVE.folStarted=false;LIVE.pf=null;LIVE.sdf=null;LIVE.stf=null;LIVE.cf=null;LIVE.asf=null;LIVE.amf=null;LIVE.mnf=null;(PAGE_KEYS[route()]||[]).forEach(k=>load(k,true));toast('Refreshing…')},
  'l-retry':el=>{(el.dataset.keys||'').split(',').filter(Boolean).forEach(k=>load(k))},
  'l-copy':el=>{const k=el.dataset.k,text=LIVE.cpMap[k];if(text==null)return;
    const done=()=>{LIVE.cp=k;render();setTimeout(()=>{if(LIVE.cp===k){LIVE.cp=null;render()}},1800)};
@@ -1204,7 +1204,8 @@ document.addEventListener('input',e=>{const el=e.target;
   else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}
   else if(el.dataset&&el.dataset.cf&&LIVE.cf){LIVE.cf[el.dataset.cf]=el.type==='checkbox'?el.checked:el.value}
   else if(el.dataset&&el.dataset.asf&&LIVE.asf){LIVE.asf[el.dataset.asf]=el.type==='checkbox'?el.checked:el.value}
-  else if(el.dataset&&el.dataset.amf&&LIVE.amf){LIVE.amf[el.dataset.amf]=el.type==='checkbox'?el.checked:el.value}});
+  else if(el.dataset&&el.dataset.amf&&LIVE.amf){LIVE.amf[el.dataset.amf]=el.type==='checkbox'?el.checked:el.value}
+  else if(el.dataset&&el.dataset.man&&LIVE.mnf){LIVE.mnf[el.dataset.man]=el.type==='checkbox'?el.checked:el.value}});
 window.addEventListener('nt-me',()=>{paintMe();render()});
 /* ---- Dashboard (real data) ---- */
 const DKEYS=['users','pvideos','preels','pstatus','payouts','reqs','reports','feedback','sad','settings'];
@@ -1485,6 +1486,27 @@ V['l-admob']=()=>pageH('Google AdMob','Ads inside the NoorTube Android app (Play
       <div class="grid g2">${inp('everyVideos','Full-screen ad after every … videos','3','','n')}${inp('everyReels','Full-screen ad after every … reels','7','','n')}</div>${inp('minGapMin','At least … minutes between full-screen ads','4','Keeps ads from feeling too much. Google also dislikes too many.','n')}</div>
     ${adsLine?`<div class="card pad" style="margin-bottom:14px"><h3>Your app-ads.txt line</h3><p class="sm muted" style="margin:4px 0 8px">Save this line in a file named <b>app-ads.txt</b> at the root of your developer website (the website address you give on Google Play).</p><div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;word-break:break-all"><code>${esc(adsLine)}</code></div></div>`:''}
     <div class="row wrap"><button type="button" class="btn pri" data-act="l-amf-save" ${LIVE.busy==='amf'?'disabled':''}>${LIVE.busy==='amf'?'Saving…':'Save'}</button></div>`});
+SRC.man=()=>api('/api/admin/man').then(r=>r.settings);
+PAGE_KEYS['l-man']=['man'];
+Object.assign(ACT,{'l-man-save':async()=>{const F=LIVE.mnf;if(!F)return;LIVE.busy='man';render();
+  try{await api('/api/admin/man',{method:'PUT',body:JSON.stringify({enabled:!!F.enabled,app:!!F.app,home:F.home,watch:F.watch,heightHome:F.heightHome,heightWatch:F.heightWatch,notes:F.notes})});LIVE.mnf=null;toast('Muslim Ad Network settings saved')}
+  catch(e){lerr(e)}finally{LIVE.busy=null;load('man',true);render()}}});
+V['l-man']=()=>pageH('Muslim Ad Network','Halal display banner ads from the Muslim Ad Network (MAN). All its ads are checked to be halal.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['man'],S0=>{
+    if(!LIVE.mnf)LIVE.mnf={enabled:!!S0.switchOn,app:!!S0.app,home:S0.home||'',watch:S0.watch||'',heightHome:String(S0.heightHome||100),heightWatch:String(S0.heightWatch||100),notes:S0.notes||''};
+    const F=LIVE.mnf,ta=(k,label,ph,hint,rows)=>field(label,`<textarea class="inp" rows="${rows||5}" data-man="${k}" data-keep="man-${k}" placeholder="${esc(ph)}" spellcheck="false" autocomplete="off" style="font-family:monospace;font-size:12px">${esc(F[k]||'')}</textarea>`,hint),
+      num=(k,label,hint)=>field(label,`<input class="inp" type="number" inputmode="numeric" min="30" max="600" data-man="${k}" data-keep="man-${k}" value="${esc(F[k]||'')}" autocomplete="off">`,hint);
+    return `<div class="card pad" style="margin-bottom:14px"><div class="b">${S0.enabled?'Muslim Ad Network is ON':'Muslim Ad Network is OFF'}</div><div class="sm muted" style="margin-top:4px">${S0.enabled?'MAN banners fill the Home and Under-video spots when you have no direct ad there. Nothing shows during the Salah guard.':'Turn it on after you paste the banner code from your MAN account below.'}</div></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>What MAN told us (by email)</h3><ul class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li><b>Banner (display) ads:</b> this page. <b>Video ads:</b> not available yet (MAN is working on it), so pre-roll and mid-roll cannot use MAN for now.</li><li><b>Minimum payout:</b> $50 USD.</li><li><b>Ad content:</b> prohibited categories are not allowed on their network. All ads are vetted to be halal.</li><li><b>Revenue share:</b> 50/50, with both CPM and CPC campaigns. Average final publisher eCPM is around <b>$1.87 and up</b>.</li></ul><p class="sm muted" style="margin:8px 0 0">This is what MAN wrote to us. Rates can change, so check your MAN account for the latest numbers.</p></div>
+    <div class="card pad" style="margin-bottom:14px"><h3>How to set it up</h3><ol class="sm muted" style="margin:6px 0 0 18px;line-height:1.7"><li>In your MAN account, create a <b>banner ad unit</b> and copy its <b>ad code</b>.</li><li>Paste it below: one code for the <b>Home</b> spot and one for the <b>Under videos</b> spot. You can use the same code in both, or fill only one.</li><li>Set the <b>height</b> of the banner (for example 50, 90 or 250 pixels, as your ad unit size).</li><li>Tick <b>Show Muslim Ad Network ads</b> and press Save.</li></ol><p class="sm muted" style="margin:8px 0 0">Order on the site: your own paid campaigns first, then Muslim Ad Network. If MAN shows nothing, the website falls back to Google AdSense (if it is on) and the Android app falls back to the Google AdMob banner. Full-screen (interstitial) ads between videos are AdMob only. Ask MAN if they need an <b>ads.txt</b> line from you.</p></div>
+    <div class="card pad" style="margin-bottom:14px"><label class="row" style="gap:8px"><input type="checkbox" data-man="enabled" ${F.enabled?'checked':''} style="width:18px;height:18px"><b>Show Muslim Ad Network ads</b></label>
+      <div style="margin-top:12px">${ta('home','Banner code: Home','Paste the MAN banner code here','Shown on the Home page.')}</div>
+      <div style="max-width:220px">${num('heightHome','Home banner height (px)','30 to 600')}</div>
+      <div style="margin-top:12px">${ta('watch','Banner code: Under videos','Paste the MAN banner code here','Shown under the video on the watch page.')}</div>
+      <div style="max-width:220px">${num('heightWatch','Under-video banner height (px)','30 to 600')}</div>
+      <label class="row" style="gap:8px;margin-top:14px"><input type="checkbox" data-man="app" ${F.app?'checked':''} style="width:18px;height:18px"><span>Also show inside the Android app <span class="muted sm">(leave off until MAN confirms their banners are allowed in apps)</span></span></label></div>
+    <div class="card pad" style="margin-bottom:14px">${ta('notes','My notes (only admins see this)','MAN account email, publisher ID, payout details, contact person...','Not shown on the site.',4)}</div>
+    <div class="row wrap"><button type="button" class="btn pri" data-act="l-man-save" ${LIVE.busy==='man'?'disabled':''}>${LIVE.busy==='man'?'Saving…':'Save'}</button></div>`});
 SRC.adsense=()=>api('/api/admin/adsense').then(r=>r.settings);
 PAGE_KEYS['l-adsense']=['adsense'];
 Object.assign(ACT,{'l-asf-save':async()=>{const F=LIVE.asf;if(!F)return;LIVE.busy='asf';render();
@@ -1579,7 +1601,7 @@ V['l-ads']=()=>pageH('Halal ads','Upload banners or video ads and choose where t
 /* ---- Push notifications (in-app bell) ---- */
 V['l-notify']=()=>pageH('Push notifications','Send a message that appears in the bell of the people you choose.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
   gate(['notify'],H=>{const f=LIVE.nf||(LIVE.nf={title:'',message:'',audience:'all'});
-    return`<div class="card pad" style="margin-bottom:14px"><h3>New message</h3><p class="sm muted" style="margin:4px 0 12px">It shows in each person’s notification bell inside NoorTube. Phone lock-screen push alerts are not part of this yet.</p>
+    return`<div class="card pad" style="margin-bottom:14px"><h3>New message</h3><p class="sm muted" style="margin:4px 0 12px">It shows in each person’s notification bell inside NoorTube. When phone push (Firebase) is set up, Android app users also get it on their phone lock screen.</p>
       <div class="stack">${field('Title',`<input class="inp" data-nf="title" data-keep="nf-t" value="${esc(f.title)}" maxlength="80" placeholder="e.g. Eid Mubarak" aria-label="Title">`)}
       ${field('Message',`<textarea class="inp" rows="3" data-nf="message" data-keep="nf-m" maxlength="300" placeholder="Write the message people will read" aria-label="Message">${esc(f.message)}</textarea>`)}
       ${field('Send to',`<select class="inp" data-nf="audience" aria-label="Audience"><option value="all" ${f.audience==='all'?'selected':''}>Everyone</option><option value="creators" ${f.audience==='creators'?'selected':''}>Creators (people with uploads)</option><option value="monetized" ${f.audience==='monetized'?'selected':''}>Monetized channels</option><option value="admins" ${f.audience==='admins'?'selected':''}>Admins only</option></select>`)}</div>
@@ -1681,7 +1703,7 @@ Object.assign(ACT,{
  'l-nf-send':()=>{const f=LIVE.nf;if(!f||!f.title.trim()||!f.message.trim()){toast('Write a title and a message');return}
    const who={all:'everyone',creators:'all creators',monetized:'monetized channels',admins:'admins'}[f.audience];
    modal({title:'Send notification',ok:'Send now',body:`<p>Send <b>“${esc(f.title.trim())}”</b> to <b>${who}</b>? It cannot be taken back.</p>`,
-     onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people');LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
+     onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people'+(r.push&&r.push.configured?' · phone push sent':''));LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
  'l-vast-save':async()=>{const g=id=>document.getElementById(id),on=id=>!!(g(id)&&g(id).checked),body={pre:on('vastPre'),mid:on('vastMid'),native:on('vastNative'),midAfter:parseInt(g('vastMidAfter')&&g('vastMidAfter').value,10),gapSec:parseInt(g('vastGap')&&g('vastGap').value,10),tags:['vastT1','vastT2','vastT3'].map(id=>((g(id)&&g(id).value)||'').trim()).filter(Boolean)};
    if(!(body.midAfter>=10&&body.midAfter<=600)){toast('Middle ad time must be 10 to 600 seconds');return}
    if(!(body.gapSec>=0&&body.gapSec<=3600)){toast('Gap must be 0 to 3600 seconds');return}

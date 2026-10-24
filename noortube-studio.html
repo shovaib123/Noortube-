@@ -14,7 +14,9 @@
   <meta name="apple-mobile-web-app-title" content="NT Studio" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet"></noscript>
   <style>
     * { font-family: 'Inter', system-ui, sans-serif; }
     .font-display { font-family: 'Outfit', Inter, sans-serif; }
@@ -499,7 +501,7 @@
       if (!res.ok) { const er = new Error((data && data.error) || ('Error ' + res.status)); er.status = res.status; throw er; }
       return data;
     }
-    const S = { me: null, videos: [], reels: [], followers: 0, watchHours: 0, reelViews62d: 0, need: { followers: 1000, watchHours: 3000, reelViews: 2500000 }, rt: null, comments: [], earn: null, lastLoad: 0 };
+    const S = { me: null, videos: [], reels: [], followers: 0, watchHours: 0, reelViews62d: 0, need: { followers: 1000, watchHours: 3000, reelViews: 1000000, reelFollowers: 500 }, rt: null, comments: [], earn: null, lastLoad: 0 };
     const rt = { range: '60m', type: 'all' };
     let analyticsFilter = 'all', contentFilter = 'all';
 
@@ -550,8 +552,26 @@
       setText('gateText', kind === 'guest' ? 'Guests have no channel. Create a NoorTube account or sign in.' : kind === 'expired' ? 'Your session has expired. Sign in to NoorTube and open Studio again.' : 'Studio shows the real numbers of your NoorTube channel. Please sign in to NoorTube first.');
       showOnly('gate');
     }
+    function applyStudio(d) {
+      S.videos = (d.videos || []).map(normV); S.reels = (d.reels || []).map(normR);
+      S.followers = d.followers || 0; S.watchHours = d.watchHours || 0; S.reelViews62d = d.reelViews62d || 0;
+      if (d.need) S.need = d.need;
+      S.rt = d.rt || null; S.daily = d.daily || null; S.ret = d.retention || null; S.comments = d.comments || [];
+    }
+    // Last data is kept on this phone, so Studio opens at once and refreshes quietly in the background.
+    const cacheKey = 'nt_studio_cache_v1', tokenTag = () => String(getToken() || '').slice(-16);
+    function tryShowCached() {
+      try {
+        const c = JSON.parse(store.get(cacheKey) || 'null');
+        if (!c || c.tk !== tokenTag() || !c.me || !c.st || Date.now() - c.t > 7 * 86400000) return false;
+        S.me = c.me; applyStudio(c.st); S.earn = c.er || null; S.lastLoad = 0;
+        renderAll(); showOnly('app');
+        return true;
+      } catch (e) { return false; }
+    }
     async function loadData(silent) {
       if (!getToken()) { showGate('none'); return; }
+      if (!silent && !S.me && tryShowCached()) silent = true;
       if (!silent) showOnly('loading');
       try {
         const [meR, stR, erR] = await Promise.allSettled([api('/api/me'), api('/api/me/studio'), api('/api/me/earnings')]);
@@ -559,11 +579,7 @@
         S.me = meR.value.user;
         if (S.me.role === 'guest') { showGate('guest'); return; }
         if (stR.status === 'fulfilled') {
-          const d = stR.value;
-          S.videos = (d.videos || []).map(normV); S.reels = (d.reels || []).map(normR);
-          S.followers = d.followers || 0; S.watchHours = d.watchHours || 0; S.reelViews62d = d.reelViews62d || 0;
-          if (d.need) S.need = d.need;
-          S.rt = d.rt || null; S.daily = d.daily || null; S.ret = d.retention || null; S.comments = d.comments || [];
+          applyStudio(stR.value);
         } else {
           if (stR.reason && stR.reason.status === 401) { showGate('expired'); return; }
           // older backend without /api/me/studio: use the public endpoints (no realtime)
@@ -574,6 +590,7 @@
         }
         S.earn = erR.status === 'fulfilled' ? erR.value : null;
         S.lastLoad = Date.now();
+        if (stR.status === 'fulfilled') { try { store.set(cacheKey, JSON.stringify({ tk: tokenTag(), t: Date.now(), me: S.me, st: stR.value, er: S.earn })); } catch (e) {} }
         renderAll();
         loadSadaqah();
         if (!silent || document.getElementById('app').classList.contains('hidden')) showOnly('app');
@@ -706,8 +723,8 @@
       const el = document.getElementById('revenueBody'), e = S.earn;
       if (!e) { el.innerHTML = `<div class="${CARD} p-6 text-center text-sm text-studio-muted">Couldn't load earnings. Pull to refresh in a moment.</div>`; return; }
       if (!e.enabled) {
-        const n = S.need, items = [['Followers', S.followers, n.followers], ['Watch hours', S.watchHours, n.watchHours], ['Reel views · last 62 days', S.reelViews62d, n.reelViews]];
-        el.innerHTML = `<div class="${CARD} p-5"><h3 class="font-display text-lg font-bold">Monetization isn't enabled yet</h3><p class="text-sm text-studio-muted mt-1 mb-5">Reach all three targets to start earning from your content.</p><div class="space-y-4">${items.map(([l, v, t]) => barRow(l, pct(v, t), fmtNum(v) + ' / ' + fmtNum(t))).join('')}</div><a href="/monetization" class="mt-5 block text-center py-2.5 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition">Open monetization in NoorTube</a></div>`;
+        const n = S.need, itemsA = [['Followers', S.followers, n.followers], ['Watch hours', S.watchHours, n.watchHours]], itemsB = [['Followers', S.followers, n.reelFollowers || 500], ['Reel views · last 62 days', S.reelViews62d, n.reelViews]], rows = (a) => `<div class="space-y-4">${a.map(([l, v, t]) => barRow(l, pct(v, t), fmtNum(v) + ' / ' + fmtNum(t))).join('')}</div>`;
+        el.innerHTML = `<div class="${CARD} p-5"><h3 class="font-display text-lg font-bold">Monetization isn't enabled yet</h3><p class="text-sm text-studio-muted mt-1 mb-5">Reach either path to start earning from your content.</p><p class="text-xs font-semibold text-studio-muted mb-3">Path A · Videos</p>${rows(itemsA)}<p class="text-xs font-semibold text-studio-muted mt-5 mb-3">Path B · Reels</p>${rows(itemsB)}<a href="/monetization" class="mt-5 block text-center py-2.5 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition">Open monetization in NoorTube</a></div>`;
         return;
       }
       const tot = e.videoUsd + e.reelsUsd, vp = tot > 0 ? e.videoUsd / tot * 100 : 0;
@@ -846,6 +863,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
         detail = `<div class="grid grid-cols-3 gap-2 mt-3 text-center"><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${c.impressions.toLocaleString()}</p><p class="text-[11px] text-studio-muted">Views</p></div><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${c.clicks.toLocaleString()}</p><p class="text-[11px] text-studio-muted">Clicks</p></div><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${ctr}</p><p class="text-[11px] text-studio-muted">Click rate</p></div></div>
           <p class="text-[11px] text-studio-muted mt-2">${esc(fmtDay(new Date(c.startAt).toISOString()))} to ${esc(fmtDay(new Date(c.endAt).toISOString()))}</p>`;
       } else if (c.status === 'rejected') detail = `<p class="text-xs mt-3" style="color:#e11d48">${esc(c.rejectReason || 'Not accepted.')} If you already paid, contact us with reference ${esc(c.ref)}.</p>`;
+      if (c.status === 'ended' || c.status === 'rejected' || c.status === 'cancelled') detail += `<div class="mt-3"><button type="button" data-ad="delete" data-id="${esc(c.id)}" class="${AD_SEC} w-full" style="color:#e11d48">Delete</button></div>`;
       return `<div class="${CARD} p-4"><div class="flex gap-3"><div class="rounded-lg bg-gray-100 dark:bg-studio-hover" style="width:96px;height:72px;flex-shrink:0;overflow:hidden">${media}</div>
         <div class="min-w-0 flex-1"><div class="flex items-start justify-between gap-2"><p class="font-semibold text-sm truncate">${esc(c.name)}</p><span class="px-2 py-0.5 rounded-full text-[11px] font-semibold" style="flex-shrink:0;${st[1]}">${st[0]}</span></div>
           <p class="text-xs text-studio-muted mt-0.5">${c.days} days \u00B7 ${inr(c.amountPaise)}</p><div class="flex flex-wrap gap-1 mt-1.5">${places}</div></div></div>${detail}${S.adPay === c.id && c.status === 'draft' ? adPayPanel(c) : ''}</div>`;
@@ -923,6 +941,12 @@ const adCompressVideo=file=>new Promise(resolve=>{
           if (!confirm('Cancel this campaign?')) return;
           try { await api('/api/me/campaigns/' + b.dataset.id + '/cancel', { method: 'POST', body: '{}' }); showToast('Campaign cancelled'); if (S.adPay === b.dataset.id) S.adPay = null; await loadAds(true); }
           catch (er) { showToast(er.message || 'Could not cancel'); }
+          return;
+        }
+        if (act === 'delete') {
+          if (!confirm('Delete this campaign from your list?')) return;
+          try { await api('/api/me/campaigns/' + b.dataset.id, { method: 'DELETE' }); showToast('Campaign deleted'); await loadAds(true); }
+          catch (er) { showToast(er.message || 'Could not delete'); }
           return;
         }
         if (act === 'submitpay') {

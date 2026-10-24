@@ -51,9 +51,70 @@ function err(message, status = 400) {
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
-async function addNotification(db, userId, type, title, message) {
+async function addNotification(db, userId, type, title, message, push) {
   await db.prepare("INSERT INTO notifications (id, user_id, type, title, message) VALUES (?,?,?,?,?)")
     .bind(uid("n"), userId, type, title, message).run();
+  // Phone push (Android app) only for the notifications that ask for it (nazrana, withdrawals, ad campaigns). Everything else stays in the bell. Never slows or breaks the request.
+  if (push === true) {
+    try { const p = pushToUser(db, userId, title, message, type).catch(() => {}); if (_ctx && _ctx.waitUntil) _ctx.waitUntil(p); } catch (_) {}
+  }
+}
+// ================= PHONE PUSH (Firebase Cloud Messaging). Does nothing until the FCM_SERVICE_ACCOUNT secret is added to the worker =================
+let _pushEnv = null, _pushReady = false, _fcmTok = null;
+async function ensurePushTables(db) {
+  if (_pushReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS push_tokens (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, platform TEXT, updated_at INTEGER NOT NULL DEFAULT 0)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_push_user ON push_tokens (user_id)").run();
+  _pushReady = true;
+}
+function fcmAccount(env) {
+  try {
+    const raw = env && env.FCM_SERVICE_ACCOUNT;
+    if (!raw) return null;
+    const a = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return a && a.client_email && a.private_key && a.project_id ? a : null;
+  } catch (_) { return null; }
+}
+function b64url(data) {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function fcmAccessToken(acc) {
+  if (_fcmTok && _fcmTok.exp > Date.now() + 60000) return _fcmTok.t;
+  const pem = String(acc.private_key).replace(/\\n/g, "").replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+  const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const now = Math.floor(Date.now() / 1000);
+  const head = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claim = b64url(JSON.stringify({ iss: acc.client_email, scope: "https://www.googleapis.com/auth/firebase.messaging", aud: "https://oauth2.googleapis.com/token", iat: now, exp: now + 3600 }));
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(head + "." + claim));
+  const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") + "&assertion=" + head + "." + claim + "." + b64url(sig) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.access_token) throw new Error("Could not sign in to Firebase");
+  _fcmTok = { t: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
+  return j.access_token;
+}
+// target is { token: "..." } for one phone, or { topic: "all" } for every phone that joined that topic
+async function fcmSend(env, target, title, body, data) {
+  const acc = fcmAccount(env);
+  if (!acc) return { ok: false, skipped: true };
+  try {
+    const at = await fcmAccessToken(acc);
+    const msg = Object.assign({}, target, { notification: { title: String(title || "NoorTube").slice(0, 100), body: String(body || "").slice(0, 300) }, data: data || {}, android: { priority: "HIGH", notification: { sound: "default" } } });
+    const r = await fetch("https://fcm.googleapis.com/v1/projects/" + encodeURIComponent(acc.project_id) + "/messages:send", { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify({ message: msg }) });
+    return r.ok ? { ok: true } : { ok: false, gone: r.status === 404, status: r.status };
+  } catch (_) { return { ok: false }; }
+}
+async function pushToUser(db, userId, title, body, type) {
+  if (!userId || !fcmAccount(_pushEnv)) return;
+  await ensurePushTables(db);
+  const rows = await db.prepare("SELECT token FROM push_tokens WHERE user_id = ? ORDER BY updated_at DESC LIMIT 5").bind(userId).all();
+  for (const x of (rows.results || [])) {
+    const r = await fcmSend(_pushEnv, { token: x.token }, title, body, { type: String(type || "info") });
+    if (r.gone) { try { await db.prepare("DELETE FROM push_tokens WHERE token = ?").bind(x.token).run(); } catch (_) {} }
+  }
 }
 function toB64(buf) {
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -594,6 +655,69 @@ async function rkRelated(db, kind, seedId, userId, limit) {
 }
 const rkLimit = (url, d) => { const n = parseInt(url.searchParams.get("limit"), 10); return isFinite(n) ? Math.max(1, Math.min(200, n)) : d; };
 
+// ================= COMMENT LIKES / DISLIKES / REPLIES =================
+// If anything here cannot be prepared, comments keep working exactly as before (no likes/replies, nothing breaks).
+let _cmExtraP = null;
+function ensureCommentExtras(db) {
+  if (_cmExtraP) return _cmExtraP;
+  _cmExtraP = (async () => {
+    try {
+      await db.prepare("CREATE TABLE IF NOT EXISTS comment_votes (comment_id TEXT NOT NULL, user_id TEXT NOT NULL, vote INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (comment_id, user_id))").run();
+      await db.prepare("CREATE INDEX IF NOT EXISTS idx_comment_votes_c ON comment_votes (comment_id)").run();
+      try { await db.prepare("SELECT parent_id FROM comments LIMIT 1").first(); } catch (_) { await db.prepare("ALTER TABLE comments ADD COLUMN parent_id TEXT").run(); }
+      await db.prepare("SELECT parent_id FROM comments LIMIT 1").first();
+      try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (parent_id)").run(); } catch (_) {}
+      return true;
+    } catch (_) { _cmExtraP = null; return false; }
+  })();
+  return _cmExtraP;
+}
+async function listComments(db, request, env, type, targetId) {
+  const extras = await ensureCommentExtras(db);
+  const me = await currentUser(request, env);
+  const blocked = me ? await blockedIdsFor(db, me.id) : new Set();
+  const base = "comments.*, users.name AS user_name, users.avatar_color AS user_avatar_color";
+  const from = " FROM comments JOIN users ON users.id = comments.user_id WHERE target_type = '" + type + "' AND target_id = ? ORDER BY comments.created_at DESC";
+  let rows;
+  if (extras) {
+    rows = await db.prepare("SELECT " + base +
+      ", (SELECT COUNT(*) FROM comment_votes cv WHERE cv.comment_id = comments.id AND cv.vote = 1) AS likes" +
+      ", (SELECT COUNT(*) FROM comment_votes cv WHERE cv.comment_id = comments.id AND cv.vote = -1) AS dislikes" +
+      ", (SELECT cv.vote FROM comment_votes cv WHERE cv.comment_id = comments.id AND cv.user_id = ?) AS my_vote" + from).bind(me ? me.id : "", targetId).all();
+  } else {
+    rows = await db.prepare("SELECT " + base + from).bind(targetId).all();
+  }
+  const list = (rows.results || []).filter((c) => !blocked.has(c.user_id));
+  return list.map((c) => ({
+    id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at,
+    parentId: c.parent_id || null, likes: c.likes || 0, dislikes: c.dislikes || 0, myVote: c.my_vote || 0, targetType: type, targetId,
+  }));
+}
+// A reply is saved under the top comment (one level, like YouTube); replying to a reply attaches to the same top comment.
+async function addComment(db, u, type, targetId, body) {
+  const text = body && body.text;
+  if (!text || typeof text !== "string" || !text.trim()) return { error: "Comment text is required" };
+  if (text.length > 1000) return { error: "Comment is too long (max 1000 characters)" };
+  const id = uid("c");
+  let parentId = body && typeof body.parentId === "string" && body.parentId ? body.parentId : null;
+  if (parentId) {
+    if (!(await ensureCommentExtras(db))) return { error: "Replies are not available right now. Please try again later." };
+    const par = await db.prepare("SELECT id, parent_id, user_id, target_type, target_id FROM comments WHERE id = ?").bind(parentId).first();
+    if (!par || par.target_type !== type || par.target_id !== targetId) return { error: "The comment you are replying to was not found", status: 404 };
+    parentId = par.parent_id || par.id;
+    await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text, parent_id) VALUES (?, ?, ?, ?, ?, ?)").bind(id, type, targetId, u.id, text.trim(), parentId).run();
+    // tell the owner of the comment that someone replied (never for own replies, never if they blocked the replier); can never break posting
+    try {
+      if (par.user_id && par.user_id !== u.id && !(await isBlocked(db, par.user_id, u.id))) {
+        const snip = text.trim().length > 80 ? text.trim().slice(0, 80) + "…" : text.trim();
+        await addNotification(db, par.user_id, "info", "New reply to your comment", (u.name || "Someone") + " replied: \"" + snip + "\"");
+      }
+    } catch (_) {}
+  } else {
+    await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text) VALUES (?, ?, ?, ?, ?)").bind(id, type, targetId, u.id, text.trim()).run();
+  }
+  return { id };
+}
 // ================= HASHTAGS: unique tags, counts, autocomplete =================
 // Everything here runs in the background and swallows its own errors, so a hashtag problem can never break an upload.
 let _htReady = false, _htBackfill = false;
@@ -834,14 +958,17 @@ async function feedResponse(db, request, env, url, kind) {
   const userId = me && me.role !== "guest" ? me.id : null;
   let ranks = null;
   try { ranks = await rkRanks(db, kind, userId); } catch (_) { ranks = null; }
+  let blockedOwners = null; // people this viewer blocked: their videos/reels are hidden for this viewer only
+  if (userId) { try { const bs = await blockedIdsFor(db, userId); if (bs.size) blockedOwners = bs; } catch (_) {} }
+  const keep = (arr) => (blockedOwners ? arr.filter((v) => !blockedOwners.has(v.ownerId)) : arr);
   if ((sort === "trending" || sort === "foryou") && ranks) {
     const ids = sort === "trending" ? ranks.trOrder : ranks.order;
-    const out = ids.slice(0, limit).map((id) => mk(ranks.cache.byId[id].row));
+    const out = keep(ids.slice(0, blockedOwners ? ids.length : limit).map((id) => mk(ranks.cache.byId[id].row))).slice(0, limit);
     return json({ [key]: rkAttach(out, ranks), sort });
   }
   const order = sort === "popular" ? tbl + ".views DESC, " + tbl + ".uploaded_at DESC" : tbl + ".uploaded_at DESC";
   const rows = await db.prepare(FEED_SQL[kind] + " ORDER BY " + order + " LIMIT " + limit).all();
-  const out = rows.results.map(mk);
+  const out = keep(rows.results.map(mk));
   return json({ [key]: ranks ? rkAttach(out, ranks) : out, sort: sort || "latest" });
 }
 
@@ -1050,6 +1177,7 @@ async function ensureCampTables(db) {
   if (campReady) return;
   await db.prepare("CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, ref TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, media_url TEXT NOT NULL, click_url TEXT, placements TEXT NOT NULL, days INTEGER NOT NULL, mid_after INTEGER, skip INTEGER NOT NULL DEFAULT 0, amount_paise INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'draft', pay_method TEXT, pay_ref TEXT, payer_name TEXT, reject_reason TEXT, ad_id TEXT, created_at INTEGER NOT NULL, submitted_at INTEGER, resolved_at INTEGER, start_at INTEGER, end_at INTEGER)").run();
   await db.prepare("CREATE TABLE IF NOT EXISTS ad_pay_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)").run();
+  try { await db.prepare("SELECT owner_hidden FROM ad_campaigns LIMIT 1").first(); } catch (_) { try { await db.prepare("ALTER TABLE ad_campaigns ADD COLUMN owner_hidden INTEGER NOT NULL DEFAULT 0").run(); } catch (_2) {} }
   campReady = true;
 }
 const CAMP_DAYS = [3, 7, 14, 30];
@@ -1080,6 +1208,19 @@ async function getAdsenseCfg(db) {
     const slot = (k) => (/^\d{6,20}$/.test(m[k] || "") ? m[k] : "");
     return { switchOn: m.adsense_enabled === "1", enabled: m.adsense_enabled === "1" && !!client, client, slots: { home: slot("adsense_slot_home"), watch: slot("adsense_slot_watch") } };
   } catch (_) { return { switchOn: false, enabled: false, client: "", slots: { home: "", watch: "" } }; }
+}
+// ===== Muslim Ad Network (MAN): halal display banner ads. Off until the admin turns it on and pastes the banner code MAN gives =====
+async function getManCfg(db) {
+  const none = { switchOn: false, enabled: false, app: false, home: "", watch: "", heightHome: 100, heightWatch: 100, notes: "" };
+  try {
+    await ensureCampTables(db);
+    const rows = await db.prepare("SELECT k, v FROM ad_pay_settings WHERE k LIKE 'man_%'").all();
+    const m = {};
+    (rows.results || []).forEach((r) => { m[r.k] = r.v; });
+    const h = (k) => { const n = parseInt(m[k], 10); return n >= 30 && n <= 600 ? n : 100; };
+    const home = String(m.man_home || ""), watch = String(m.man_watch || "");
+    return { switchOn: m.man_enabled === "1", enabled: m.man_enabled === "1" && !!(home.trim() || watch.trim()), app: m.man_app === "1", home, watch, heightHome: h("man_hh"), heightWatch: h("man_hw"), notes: String(m.man_notes || "") };
+  } catch (_) { return none; }
 }
 // ===== Google AdMob (the Android app from the Play Store). The web app calls it through the native shell. Test mode is ON until the admin turns it off =====
 async function getAdmobCfg(db) {
@@ -1220,7 +1361,7 @@ async function autoDuplicateScan(env) {
 
 const WORKER = {
   async fetch(request, env, ctx) {
-    try { _ctx = ctx || null; _origin = new URL(request.url).origin; } catch (_) {}
+    try { _pushEnv = env; _ctx = ctx || null; _origin = new URL(request.url).origin; } catch (_) {}
     const res = await WORKER.main(request, env);
     try {
       const m = request.method, p = new URL(request.url).pathname;
@@ -1805,6 +1946,27 @@ async function handleRequest(request, env) {
       ).bind(u.id).all();
       return json({ videos: rows.results.map(videoOut) });
     }
+    // ----- phone push: the Android app registers its Firebase token here -----
+    if (method === "POST" && path === "/api/me/push-token") {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      if (u.role === "guest") return err("Sign in to get phone notifications", 403);
+      const b = await request.json().catch(() => ({}));
+      const token = String(b.token || "").trim();
+      if (token.length < 20 || token.length > 4096) return err("Invalid token", 400);
+      try {
+        await ensurePushTables(db);
+        await db.prepare("INSERT INTO push_tokens (token, user_id, platform, updated_at) VALUES (?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id, platform = excluded.platform, updated_at = excluded.updated_at").bind(token, u.id, String(b.platform || "android").slice(0, 20), Date.now()).run();
+        await db.prepare("DELETE FROM push_tokens WHERE user_id = ? AND token NOT IN (SELECT token FROM push_tokens WHERE user_id = ? ORDER BY updated_at DESC LIMIT 5)").bind(u.id, u.id).run();
+        return json({ ok: true });
+      } catch (_) { return err("Could not save", 500); }
+    }
+    if (method === "POST" && path === "/api/push-token/remove") {
+      const b = await request.json().catch(() => ({}));
+      const token = String(b.token || "").trim();
+      if (token.length >= 20 && token.length <= 4096) { try { await ensurePushTables(db); await db.prepare("DELETE FROM push_tokens WHERE token = ?").bind(token).run(); } catch (_) {} }
+      return json({ ok: true });
+    }
     if (method === "GET" && path === "/api/me/notifications") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
@@ -1828,8 +1990,8 @@ async function handleRequest(request, env) {
       try {
         await ensurePlatformTables(db);
         const A = await getAdsenseCfg(db), g = salahGuardState(Date.now(), await getAppSettings(db));
-        const M = await getAdmobCfg(db);
-        return json({ adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
+        const M = await getAdmobCfg(db), N = await getManCfg(db);
+        return json({ man: (!N.enabled || g.active) ? { enabled: false } : { enabled: true, app: N.app, home: N.home, watch: N.watch, hh: N.heightHome, hw: N.heightWatch }, adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
       } catch (_) { return json({ adsense: { enabled: false }, admob: { enabled: false } }); }
     }
     if (method === "GET" && path === "/ads.txt") {
@@ -1861,6 +2023,23 @@ async function handleRequest(request, env) {
         return json({ ok: true, settings: await getAdmobCfg(db) });
       } catch (_) { return err("Could not save", 500); }
     }
+    if ((method === "GET" || method === "PUT") && path === "/api/admin/man") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      try {
+        if (method === "PUT") {
+          const b = await request.json().catch(() => ({}));
+          const t = (v) => String(v == null ? "" : v).trim();
+          const home = t(b.home), watch = t(b.watch), notes = t(b.notes).slice(0, 1500);
+          if (home.length > 6000 || watch.length > 6000) return err("The ad code is too long (max 6000 characters)", 400);
+          const hh = parseInt(b.heightHome, 10), hw = parseInt(b.heightWatch, 10);
+          if (!(hh >= 30 && hh <= 600) || !(hw >= 30 && hw <= 600)) return err("Banner height must be a number between 30 and 600", 400);
+          await ensureCampTables(db);
+          const kv = { man_enabled: b.enabled === true ? "1" : "0", man_app: b.app === true ? "1" : "0", man_home: home, man_watch: watch, man_hh: String(hh), man_hw: String(hw), man_notes: notes };
+          await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO ad_pay_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
+        }
+        return json({ ok: true, settings: await getManCfg(db) });
+      } catch (_) { return err("Could not save", 500); }
+    }
     if ((method === "GET" || method === "PUT") && path === "/api/admin/adsense") {
       if (!(await adminUser(request, env))) return err("Not allowed", 403);
       try {
@@ -1886,12 +2065,30 @@ async function handleRequest(request, env) {
           pay: { upiId: C.upiId, payee: C.payee || "NoorTube", razorpayLink: C.razorpayLink, bankHolder: C.bankHolder, bankAccount: C.bankAccount, bankIfsc: C.bankIfsc, bankName: C.bankName, intlLink: C.intlLink, intlText: C.intlText } });
       } catch (_) { return err("Ad campaigns are temporarily unavailable", 503); }
     }
+    // creator removes a finished campaign from their own list (the record stays for the admin's payment history)
+    const mDel = path.match(/^\/api\/me\/campaigns\/([^/]+)$/);
+    if (method === "DELETE" && mDel) {
+      const u = await currentUser(request, env);
+      if (!u) return err("Sign in required", 401);
+      try {
+        await ensureCampTables(db);
+        const c = await db.prepare("SELECT id, status, end_at FROM ad_campaigns WHERE id = ? AND owner_id = ?").bind(mDel[1], u.id).first();
+        if (!c) return err("Campaign not found", 404);
+        // a live campaign whose end date has passed is shown to the creator as "Ended", so it can be deleted too
+        const st = (c.status === "live" && c.end_at && Date.now() > c.end_at) ? "ended" : c.status;
+        if (!["ended", "rejected", "cancelled"].includes(st)) return err("Only finished campaigns can be deleted", 409);
+        await db.prepare("UPDATE ad_campaigns SET owner_hidden = 1 WHERE id = ? AND owner_id = ?").bind(c.id, u.id).run();
+        return json({ ok: true });
+      } catch (_) { return err("Could not delete the campaign", 500); }
+    }
     if (method === "GET" && path === "/api/me/campaigns") {
       const u = await currentUser(request, env);
       if (!u) return err("Sign in required", 401);
       try {
         await ensurePlatformTables(db); await ensureCampTables(db);
-        const r = await db.prepare(CAMP_SELECT + "WHERE c.owner_id = ? ORDER BY c.created_at DESC LIMIT 100").bind(u.id).all();
+        let r;
+        try { r = await db.prepare(CAMP_SELECT + "WHERE c.owner_id = ? AND COALESCE(c.owner_hidden, 0) = 0 ORDER BY c.created_at DESC LIMIT 100").bind(u.id).all(); }
+        catch (_h) { r = await db.prepare(CAMP_SELECT + "WHERE c.owner_id = ? ORDER BY c.created_at DESC LIMIT 100").bind(u.id).all(); }
         return json({ ok: true, campaigns: (r.results || []).map(campOut) });
       } catch (_) { return err("Could not load your campaigns", 500); }
     }
@@ -1989,7 +2186,7 @@ async function handleRequest(request, env) {
             }
             const r = await db.prepare("UPDATE ad_campaigns SET status = 'live', ad_id = ?, start_at = ?, end_at = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(adId, now, end, now, c.id).run();
             if (!r.meta || r.meta.changes !== 1) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("This campaign was already handled", 409); }
-            try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live for " + c.days + " days. You can see its views and clicks in Studio > Halal Ads."); } catch (_) {}
+            try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live for " + c.days + " days. You can see its views and clicks in Studio > Halal Ads.", true); } catch (_) {}
             return json({ ok: true });
           }
           if (m3[2] === "reject") {
@@ -1998,13 +2195,13 @@ async function handleRequest(request, env) {
             const reason = String((b && b.reason) || "").trim().slice(0, 200) || "It did not meet the ad rules.";
             const r = await db.prepare("UPDATE ad_campaigns SET status = 'rejected', reject_reason = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(reason, now, c.id).run();
             if (!r.meta || r.meta.changes !== 1) return err("This campaign was already handled", 409);
-            try { await addNotification(db, c.owner_id, "warning", "Ad campaign not accepted", "Your campaign \"" + c.name + "\" was not accepted. Reason: " + reason + (/[.!?]$/.test(reason) ? "" : ".") + " If you already paid, contact us with your reference " + c.ref + "."); } catch (_) {}
+            try { await addNotification(db, c.owner_id, "warning", "Ad campaign not accepted", "Your campaign \"" + c.name + "\" was not accepted. Reason: " + reason + (/[.!?]$/.test(reason) ? "" : ".") + " If you already paid, contact us with your reference " + c.ref + ".", true); } catch (_) {}
             return json({ ok: true });
           }
           if (c.status !== "live") return err("Only a live campaign can be ended", 409);
           await db.prepare("UPDATE ad_campaigns SET status = 'ended', end_at = ?, resolved_at = ? WHERE id = ? AND status = 'live'").bind(now, now, c.id).run();
           if (c.ad_id) await db.prepare("UPDATE ads SET active = 0, ends_at = ? WHERE id = ?").bind(now, c.ad_id).run();
-          try { await addNotification(db, c.owner_id, "info", "Ad campaign ended", "Your campaign \"" + c.name + "\" has ended."); } catch (_) {}
+          try { await addNotification(db, c.owner_id, "info", "Ad campaign ended", "Your campaign \"" + c.name + "\" has ended.", true); } catch (_) {}
           return json({ ok: true });
         } catch (_) { return err("Could not save", 500); }
       }
@@ -2107,7 +2304,8 @@ async function handleRequest(request, env) {
           const fc = await db.prepare("SELECT COUNT(*) as c FROM follows WHERE followee_id = ?").bind(u.id).first();
           const cutoff = new Date(Date.now() - 62 * 24 * 3600 * 1000).toISOString().slice(0, 10);
           const rv = await db.prepare("SELECT COALESCE(SUM(views), 0) as v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
-          const ok = (fc?.c || 0) >= 1000 && (u.watch_hours || 0) >= 3000 && (rv?.v || 0) >= 2500000;
+          // Path A (videos): 1,000 followers + 3,000 watch hours.  Path B (reels): 500 followers + 10 lakh reel views in 62 days.
+          const ok = ((fc?.c || 0) >= 1000 && (u.watch_hours || 0) >= 3000) || ((fc?.c || 0) >= 500 && (rv?.v || 0) >= 1000000);
           if (!ok) return err("Monetization requirements not met", 403);
           if (!(await isEmailVerified(db, u))) return err("Please verify your email before enabling monetization.", 403);
         }
@@ -2195,13 +2393,13 @@ async function handleRequest(request, env) {
       if (u.role === "guest") return err("Sign in to use Studio", 403);
       try {
         const now = Date.now(), H = 3600000;
-        const vids = await db.prepare("SELECT id, title, thumbnail, file_url, views, likes, dislikes, duration, monetized, hidden, copyright_status, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'video' AND target_id = videos.id) AS comments, (SELECT COUNT(*) FROM saved_videos WHERE video_id = videos.id) AS saves FROM videos WHERE owner_id = ? AND removed = 0 ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
-        const rls = await db.prepare("SELECT id, title, thumbnail, file_url, views, likes, hidden, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'reel' AND target_id = reels.id) AS comments FROM reels WHERE owner_id = ? ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
-        const fc = await db.prepare("SELECT COUNT(*) AS c FROM follows WHERE followee_id = ?").bind(u.id).first();
+        const vidsP = db.prepare("SELECT id, title, thumbnail, file_url, views, likes, dislikes, duration, monetized, hidden, copyright_status, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'video' AND target_id = videos.id) AS comments, (SELECT COUNT(*) FROM saved_videos WHERE video_id = videos.id) AS saves FROM videos WHERE owner_id = ? AND removed = 0 ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
+        const rlsP = db.prepare("SELECT id, title, thumbnail, file_url, views, likes, hidden, uploaded_at, (SELECT COUNT(*) FROM comments WHERE target_type = 'reel' AND target_id = reels.id) AS comments FROM reels WHERE owner_id = ? ORDER BY uploaded_at DESC LIMIT 300").bind(u.id).all();
+        const fcP = db.prepare("SELECT COUNT(*) AS c FROM follows WHERE followee_id = ?").bind(u.id).first();
         const cutoff = new Date(now - 62 * 24 * H).toISOString().slice(0, 10);
-        const rv = await db.prepare("SELECT COALESCE(SUM(views), 0) AS v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
-        let rt = null;
-        try {
+        const rvP = db.prepare("SELECT COALESCE(SUM(views), 0) AS v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
+        let rt = null, daily = null, retention = null;
+        const pRt = (async () => { try {
           await ensureViewTables(db);
           const lg = await db.prepare("SELECT kind, content_id, ts, viewer FROM view_log WHERE ts > ? AND ((kind = 'v' AND content_id IN (SELECT id FROM videos WHERE owner_id = ? AND removed = 0)) OR (kind = 'r' AND content_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY ts DESC LIMIT 30000").bind(now - 48 * H, u.id, u.id).all();
           const mk = () => ({ m60: new Array(60).fill(0), h48: new Array(48).fill(0) });
@@ -2217,9 +2415,8 @@ async function handleRequest(request, env) {
             uniq.add(x.viewer);
           }
           rt = { series, perContent: per, uniqueViewers48h: uniq.size };
-        } catch (_) { rt = null; }
-        let daily = null, retention = null;
-        try {
+        } catch (_) { rt = null; } })();
+        const pDaily = (async () => { try {
           await ensureViewTables(db);
           const days = lastDays(90, now);
           const dr = await db.prepare("SELECT day, kind, SUM(views) AS n FROM view_daily WHERE owner_id = ? AND day >= ? GROUP BY day, kind").bind(u.id, days[0]).all();
@@ -2230,8 +2427,8 @@ async function handleRequest(request, env) {
           const fd = await db.prepare("SELECT MIN(day) AS d FROM view_daily WHERE owner_id = ?").bind(u.id).first();
           dv.firstDay = fd && fd.d ? fd.d : null;
           daily = dv;
-        } catch (_) { daily = null; }
-        try {
+        } catch (_) { daily = null; } })();
+        const pRet = (async () => { try {
           await ensureRetentionTables(db);
           const st = await db.prepare("SELECT s.video_id AS id, s.sessions AS sessions, s.seconds AS seconds FROM video_watch_stats s WHERE s.video_id IN (SELECT id FROM videos WHERE owner_id = ?)").bind(u.id).all();
           const bk = await db.prepare("SELECT r.video_id AS id, r.bucket AS b, r.n AS n FROM video_retention r WHERE r.video_id IN (SELECT id FROM videos WHERE owner_id = ?)").bind(u.id).all();
@@ -2245,11 +2442,13 @@ async function handleRequest(request, env) {
             perVideo[id] = { sessions: p.sessions, avgSeconds: p.sessions ? Math.round(p.seconds / p.sessions) : 0, curve: p.n.map((x) => (p.sessions ? Math.round(x / p.sessions * 1000) / 10 : 0)) };
           });
           retention = { overall: { sessions: out.sessions, avgSeconds: out.sessions ? Math.round(out.seconds / out.sessions) : 0, curve: out.n.map((x) => (out.sessions ? Math.round(x / out.sessions * 1000) / 10 : 0)) }, perVideo };
-        } catch (_) { retention = null; }
+        } catch (_) { retention = null; } })();
+        const [vids, rls, fc, rv] = await Promise.all([vidsP, rlsP, fcP, rvP]);
+        await Promise.all([pRt, pDaily, pRet]);
         const cm = await db.prepare("SELECT comments.id AS id, comments.target_type AS type, comments.target_id AS tid, comments.text AS text, comments.created_at AS at, users.name AS name, users.avatar_color AS color FROM comments JOIN users ON users.id = comments.user_id WHERE comments.user_id != ? AND ((comments.target_type = 'video' AND comments.target_id IN (SELECT id FROM videos WHERE owner_id = ?)) OR (comments.target_type = 'reel' AND comments.target_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY comments.created_at DESC LIMIT 30").bind(u.id, u.id, u.id).all();
         return json({
           ok: true, now, followers: (fc && fc.c) || 0, watchHours: u.watch_hours || 0, reelViews62d: (rv && rv.v) || 0,
-          need: { followers: 1000, watchHours: 3000, reelViews: 2500000 },
+          need: { followers: 1000, watchHours: 3000, reelViews: 1000000, reelFollowers: 500 },
           videos: vids.results.map(v => ({ id: v.id, title: v.title, thumbnail: v.thumbnail, fileUrl: v.file_url, views: v.views || 0, likes: v.likes || 0, dislikes: v.dislikes || 0, duration: v.duration, monetized: !!v.monetized, hidden: !!v.hidden, copyrightStatus: v.copyright_status, uploadedAt: v.uploaded_at, comments: v.comments || 0, saves: v.saves || 0 })),
           reels: rls.results.map(r => ({ id: r.id, title: r.title, thumbnail: r.thumbnail, fileUrl: r.file_url, views: r.views || 0, likes: r.likes || 0, hidden: !!r.hidden, uploadedAt: r.uploaded_at, comments: r.comments || 0 })),
           rt, daily, retention,
@@ -2456,7 +2655,26 @@ async function handleRequest(request, env) {
       const r = await db.prepare("INSERT INTO notifications (id, user_id, type, title, message) SELECT 'bc_' || lower(hex(randomblob(8))), id, 'info', ?, ? FROM users WHERE role != 'guest' AND suspended = 0" + where).bind(title, message).run();
       const sent = (r.meta && r.meta.changes) || 0;
       await db.prepare("INSERT INTO broadcasts (id, admin_id, title, message, audience, sent_count, created_at) VALUES (?,?,?,?,?,?,?)").bind(uid("bc"), u.id, title, message, b.audience, sent, Date.now()).run();
-      return json({ ok: true, sent });
+      // phone push (Android app) for the same people, only when Firebase is set up
+      const push = { configured: !!fcmAccount(env), topic: false, sent: 0 };
+      if (push.configured) {
+        try {
+          await ensurePushTables(db);
+          if (b.audience === "all") {
+            const r2 = await fcmSend(env, { topic: "all" }, title, message, { type: "info" });
+            push.topic = !!r2.ok;
+          } else {
+            const tk = await db.prepare("SELECT token FROM push_tokens WHERE user_id IN (SELECT id FROM users WHERE role != 'guest' AND suspended = 0" + where + ") LIMIT 40").all();
+            const res = await Promise.all((tk.results || []).map(async (x) => {
+              const r2 = await fcmSend(env, { token: x.token }, title, message, { type: "info" });
+              if (r2.gone) { try { await db.prepare("DELETE FROM push_tokens WHERE token = ?").bind(x.token).run(); } catch (_) {} }
+              return r2.ok ? 1 : 0;
+            }));
+            push.sent = res.reduce((a, c) => a + c, 0);
+          }
+        } catch (_) {}
+      }
+      return json({ ok: true, sent, push });
     }
     if (method === "GET" && path === "/api/admin/broadcasts") {
       if (!(await adminUser(request, env))) return err("Not allowed", 403);
@@ -2766,8 +2984,8 @@ async function handleRequest(request, env) {
             .bind(net, paise, cutOf("tax"), cutOf("platform"), cutOf("other"), JSON.stringify(parts.map((x) => ({ name: x.name, pct: x.pct, paise: x.paise }))), now, d.id).run()
         : await db.prepare("UPDATE sadaqah_donations SET status = 'received', amount_paise = ?, resolved_at = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(paise, now, d.id).run();
       if (!r.meta || r.meta.changes !== 1) return err("This nazrana was already handled", 409);
-      try { await addNotification(db, d.creator_id, "info", "Nazrana received", "You received " + rs2(net) + " nazrana on \"" + (d.vtitle || "your video") + "\"." + (parts.length ? " Total " + rs2(paise) + ", minus " + parts.map((x) => x.name + " " + rs2(x.paise)).join(", ") + "." : "") + " Open Studio > Nazrana to see it."); } catch (_) {}
-      if (d.donor_id) { try { await addNotification(db, d.donor_id, "info", "Nazrana received", "Your nazrana of " + rs2(paise) + " was received. JazakAllahu khayran."); } catch (_) {} }
+      try { await addNotification(db, d.creator_id, "info", "Nazrana received", "You received " + rs2(net) + " nazrana on \"" + (d.vtitle || "your video") + "\"." + (parts.length ? " Total " + rs2(paise) + ", minus " + parts.map((x) => x.name + " " + rs2(x.paise)).join(", ") + "." : "") + " Open Studio > Nazrana to see it.", true); } catch (_) {}
+      if (d.donor_id) { try { await addNotification(db, d.donor_id, "info", "Nazrana received", "Your nazrana of " + rs2(paise) + " was received. JazakAllahu khayran.", true); } catch (_) {} }
       return json({ ok: true, amountPaise: paise, netPaise: net, deductions: parts });
     }
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/donations\/([^/]+)\/reject$/))) {
@@ -2780,7 +2998,7 @@ async function handleRequest(request, env) {
       if (!d) return err("Not found", 404);
       const r = await db.prepare("UPDATE sadaqah_donations SET status = 'rejected', resolved_at = ?, note = ? WHERE id = ? AND status IN ('claimed', 'initiated')").bind(Date.now(), note, d.id).run();
       if (!r.meta || r.meta.changes !== 1) return err("This nazrana was already handled", 409);
-      if (d.donor_id && d.claimed_paise) { try { await addNotification(db, d.donor_id, "info", "Nazrana not found", "We could not find your nazrana of " + rs2(d.claimed_paise) + " in our account." + (note ? " " + note : "")); } catch (_) {} }
+      if (d.donor_id && d.claimed_paise) { try { await addNotification(db, d.donor_id, "info", "Nazrana not found", "We could not find your nazrana of " + rs2(d.claimed_paise) + " in our account." + (note ? " " + note : ""), true); } catch (_) {} }
       return json({ ok: true });
     }
     // ----- admin: creator's nazrana withdrawal: after paying them, mark Paid (their available balance drops by that amount) -----
@@ -2800,7 +3018,7 @@ async function handleRequest(request, env) {
         const bits = [[cs.taxPaise, nm("tax")], [cs.platformPaise, nm("platform")], [cs.otherPaise, nm("other")]].filter((x) => x[0] > 0).map((x) => x[1] + " " + rs2(x[0]));
         if (bits.length) stmt = " Your nazrana so far: " + rs2(cs.grossPaise) + " received, minus " + bits.join(", ") + " = " + rs2(cs.netPaise) + " credited to you.";
       } catch (_) {}
-      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal paid", "Your nazrana withdrawal of " + rs2(w.amount_paise) + " has been paid." + (payRef ? " Payment reference: " + payRef + "." : "") + stmt); } catch (_) {}
+      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal paid", "Your nazrana withdrawal of " + rs2(w.amount_paise) + " has been paid." + (payRef ? " Payment reference: " + payRef + "." : "") + stmt, true); } catch (_) {}
       return json({ ok: true, paidPaise: w.amount_paise });
     }
     if (method === "POST" && (m = path.match(/^\/api\/admin\/sadaqah\/requests\/([^/]+)\/reject$/))) {
@@ -2813,7 +3031,7 @@ async function handleRequest(request, env) {
       if (!w) return err("Request not found", 404);
       const r = await db.prepare("UPDATE sadaqah_requests SET status = 'Rejected', resolved_at = ?, note = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), note, w.id).run();
       if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
-      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal not approved", "Your nazrana withdrawal request of " + rs2(w.amount_paise) + " was not approved." + (note ? " Reason: " + note : " Please check your account / UPI details and request again.")); } catch (_) {}
+      try { await addNotification(db, w.creator_id, "info", "Nazrana withdrawal not approved", "Your nazrana withdrawal request of " + rs2(w.amount_paise) + " was not approved." + (note ? " Reason: " + note : " Please check your account / UPI details and request again."), true); } catch (_) {}
       return json({ ok: true });
     }
     // ----- creator: request a withdrawal of the full unpaid balance (needs minimum + payout details) -----
@@ -2948,7 +3166,7 @@ async function handleRequest(request, env) {
       ]);
       const changed = res && res[1] && res[1].meta ? res[1].meta.changes : 0;
       if (changed !== 1) return err("This request was already handled", 409);
-      try { await addNotification(db, w.user_id, "info", "Withdrawal Paid", "Your withdrawal of $" + (w.amount_cents / 100).toFixed(2) + " has been paid."); } catch (_) {}
+      try { await addNotification(db, w.user_id, "info", "Withdrawal Paid", "Your withdrawal of $" + (w.amount_cents / 100).toFixed(2) + " has been paid.", true); } catch (_) {}
       return json({ ok: true, paidUsd: w.amount_cents / 100 });
     }
     // ----- admin: reject a request (balance stays with the creator, nothing is deducted) -----
@@ -2962,7 +3180,7 @@ async function handleRequest(request, env) {
       if (!w) return err("Request not found", 404);
       const r = await db.prepare("UPDATE withdraw_requests SET status = 'Rejected', resolved_at = ?, note = ? WHERE id = ? AND status = 'Pending'").bind(Date.now(), note, w.id).run();
       if (!r.meta || r.meta.changes !== 1) return err("This request was already handled", 409);
-      try { await addNotification(db, w.user_id, "info", "Withdrawal Request Rejected", "Your withdrawal request of $" + (w.amount_cents / 100).toFixed(2) + " was not approved." + (note ? " Reason: " + note : " Please check your payout details and request again.")); } catch (_) {}
+      try { await addNotification(db, w.user_id, "info", "Withdrawal Request Rejected", "Your withdrawal request of $" + (w.amount_cents / 100).toFixed(2) + " was not approved." + (note ? " Reason: " + note : " Please check your payout details and request again."), true); } catch (_) {}
       return json({ ok: true });
     }
     // ----- admin: payouts overview -----
@@ -3154,6 +3372,20 @@ async function handleRequest(request, env) {
         .bind(id, targetType, targetId, u.id, reason).run();
       return json({ ok: true, id });
     }
+    if (method === "POST" && (m = path.match(/^\/api\/comments\/([^/]+)\/vote$/))) {
+      const u = await currentUser(request, env);
+      if (!u || u.role === "guest") return err("Please sign in to like comments", 401);
+      if (!(await ensureCommentExtras(db))) return err("Comment likes are not available right now", 503);
+      const b = await request.json().catch(() => ({}));
+      const v = Number(b.value);
+      if (v !== 1 && v !== -1 && v !== 0) return err("Invalid vote");
+      const c = await db.prepare("SELECT id FROM comments WHERE id = ?").bind(m[1]).first();
+      if (!c) return err("Comment not found", 404);
+      if (v === 0) await db.prepare("DELETE FROM comment_votes WHERE comment_id = ? AND user_id = ?").bind(m[1], u.id).run();
+      else await db.prepare("INSERT INTO comment_votes (comment_id, user_id, vote, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(comment_id, user_id) DO UPDATE SET vote = excluded.vote").bind(m[1], u.id, v, Date.now()).run();
+      const t = await db.prepare("SELECT COALESCE(SUM(CASE WHEN vote = 1 THEN 1 ELSE 0 END), 0) AS likes, COALESCE(SUM(CASE WHEN vote = -1 THEN 1 ELSE 0 END), 0) AS dislikes FROM comment_votes WHERE comment_id = ?").bind(m[1]).first();
+      return json({ ok: true, likes: (t && t.likes) || 0, dislikes: (t && t.dislikes) || 0, myVote: v });
+    }
     if (method === "POST" && (m = path.match(/^\/api\/comments\/([^/]+)\/report$/))) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
@@ -3273,6 +3505,14 @@ async function handleRequest(request, env) {
       return json({ [m[1]]: items.map((it) => (kind === "v" ? videoOut : reelOut)(it.row)) });
     }
     if (method === "GET" && path === "/api/hashtags/suggest") return await hashtagSuggest(db, url);
+    if (method === "GET" && path === "/api/trending-week") {
+      try {
+        await ensureViewTables(db);
+        const since = istDay(Date.now() - 6 * 86400000);
+        const rows = await db.prepare("SELECT d.content_id AS id, SUM(d.views) AS n FROM view_daily d JOIN videos v ON v.id = d.content_id WHERE d.kind = 'v' AND d.day >= ? AND v.removed = 0 GROUP BY d.content_id HAVING n > 0 ORDER BY n DESC LIMIT 60").bind(since).all();
+        return json({ items: (rows.results || []).map((r) => ({ id: r.id, views7: r.n || 0 })) });
+      } catch (_) { return json({ items: [] }); }
+    }
     if (method === "GET" && path === "/api/videos") return await feedCached(db, request, env, url, "v");
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)$/))) {
       const v = await db.prepare(
@@ -3386,23 +3626,14 @@ async function handleRequest(request, env) {
       return json({ ok: true, monetized: !!monetized });
     }
     if (method === "GET" && (m = path.match(/^\/api\/videos\/([^/]+)\/comments$/))) {
-      const rows = await db.prepare(
-        "SELECT comments.*, users.name as user_name, users.avatar_color as user_avatar_color FROM comments JOIN users ON users.id = comments.user_id WHERE target_type = 'video' AND target_id = ? ORDER BY comments.created_at DESC"
-      ).bind(m[1]).all();
-      const meV = await currentUser(request, env);
-      const blockedV = meV ? await blockedIdsFor(db, meV.id) : new Set();
-      const listV = (rows.results || []).filter((c) => !blockedV.has(c.user_id));
-      return json({ comments: listV.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
+      return json({ comments: await listComments(db, request, env, "video", m[1]) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/videos\/([^/]+)\/comments$/))) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
-      const { text } = await request.json().catch(() => ({}));
-      if (!text || typeof text !== "string" || !text.trim()) return err("Comment text is required");
-      if (text.length > 1000) return err("Comment is too long (max 1000 characters)");
-      const id = uid("c");
-      await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text) VALUES (?, 'video', ?, ?, ?)").bind(id, m[1], u.id, text.trim()).run();
-      return json({ ok: true, id });
+      const r = await addComment(db, u, "video", m[1], await request.json().catch(() => ({})));
+      if (r.error) return err(r.error, r.status || 400);
+      return json({ ok: true, id: r.id });
     }
 
     // ---------- REELS ----------
@@ -3463,23 +3694,14 @@ async function handleRequest(request, env) {
       return json({ ok: true, likes: rl.likes, liked: !existing });
     }
     if (method === "GET" && (m = path.match(/^\/api\/reels\/([^/]+)\/comments$/))) {
-      const rows = await db.prepare(
-        "SELECT comments.*, users.name as user_name, users.avatar_color as user_avatar_color FROM comments JOIN users ON users.id = comments.user_id WHERE target_type = 'reel' AND target_id = ? ORDER BY comments.created_at DESC"
-      ).bind(m[1]).all();
-      const meR = await currentUser(request, env);
-      const blockedR = meR ? await blockedIdsFor(db, meR.id) : new Set();
-      const listR = (rows.results || []).filter((c) => !blockedR.has(c.user_id));
-      return json({ comments: listR.map(c => ({ id: c.id, userId: c.user_id, userName: c.user_name, avatarColor: c.user_avatar_color, text: c.text, createdAt: c.created_at })) });
+      return json({ comments: await listComments(db, request, env, "reel", m[1]) });
     }
     if (method === "POST" && (m = path.match(/^\/api\/reels\/([^/]+)\/comments$/))) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
-      const { text } = await request.json().catch(() => ({}));
-      if (!text || typeof text !== "string" || !text.trim()) return err("Comment text is required");
-      if (text.length > 1000) return err("Comment is too long (max 1000 characters)");
-      const id = uid("c");
-      await db.prepare("INSERT INTO comments (id, target_type, target_id, user_id, text) VALUES (?, 'reel', ?, ?, ?)").bind(id, m[1], u.id, text.trim()).run();
-      return json({ ok: true, id });
+      const r = await addComment(db, u, "reel", m[1], await request.json().catch(() => ({})));
+      if (r.error) return err(r.error, r.status || 400);
+      return json({ ok: true, id: r.id });
     }
 
     // ---------- STATUSES ----------
