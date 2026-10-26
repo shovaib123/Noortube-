@@ -475,6 +475,18 @@ const FEED_SQL = {
   r: "SELECT reels.*, users.name as owner_name, users.avatar_color as owner_avatar_color, users.monetization_enabled as owner_monetized, (SELECT COUNT(*) FROM comments WHERE target_type='reel' AND target_id=reels.id) as comment_count FROM reels JOIN users ON users.id = reels.owner_id WHERE reels.hidden = 0",
 };
 const rkClamp = (x, a, b) => Math.max(a, Math.min(b, x));
+// Interest topics of one video/reel: its hashtags (title, description, tags written with #) first, then plain tags. Lower-case, '#' removed.
+// Only the first 5 count, so stuffing 15 hashtags gives no extra push. Hashtags never boost a video by themselves: they only help it reach people who already watch that topic.
+function rkTopics(row) {
+  const out = [], seen = new Set();
+  let tags = row && row.tags;
+  if (typeof tags === "string") { try { tags = JSON.parse(tags || "[]"); } catch (_) { tags = []; } }
+  if (!Array.isArray(tags)) tags = [];
+  const add = (t) => { t = String(t || "").replace(/^#/, "").trim().toLowerCase(); if (t && t.length <= 50 && !seen.has(t)) { seen.add(t); out.push(t); } };
+  try { for (const h of extractHashtags(row && row.title, row && row.description, tags)) add(h); } catch (_) {}
+  for (const t of tags) add(t);
+  return out.slice(0, 5);
+}
 function rkAgeH(s, now) {
   if (!s) return 9999;
   const str = String(s), t = Date.parse(/[TZ]/.test(str) ? str : str.replace(" ", "T") + "Z");
@@ -503,7 +515,17 @@ function rkBase(row, kind, sig, now) {
     const ws = sig.watch[row.id], dur = parseDurSec(row.duration);
     if (ws && ws.sessions >= 5 && dur > 0) { const f = rkClamp(ws.seconds / ws.sessions / dur, 0, 1); watchQ = rkClamp(((f * ws.sessions + 0.4 * 8) / (ws.sessions + 8)) / 0.45, 0.4, 1.6); }
   }
-  const quality = isV ? 0.40 * qLike + 0.15 * qCmt + 0.15 * qRatio * 1.4 + 0.30 * watchQ : 0.55 * qLike + 0.20 * qCmt + 0.25 * qRatio * 1.4;
+  // reels: how much of the reel people really watch (replays count, up to 1.5x); needs 5+ watch sessions, otherwise the old formula is used
+  let rwQ = null;
+  if (!isV) { const w = sig.rw[row.id]; if (w && w.sessions >= 5 && w.dur > 0) { const f = rkClamp(w.seconds / w.dur, 0, 1.5); rwQ = rkClamp(((f * w.sessions + 0.5 * 8) / (w.sessions + 8)) / 0.6, 0.4, 1.6); } }
+  let quality = isV ? 0.40 * qLike + 0.15 * qCmt + 0.15 * qRatio * 1.4 + 0.30 * watchQ : (rwQ !== null ? 0.40 * qLike + 0.15 * qCmt + 0.20 * qRatio * 1.4 + 0.25 * rwQ : 0.55 * qLike + 0.20 * qCmt + 0.25 * qRatio * 1.4);
+  // shares and "subscribed after watching this": only ever ADD to quality, so no data means no change
+  const shN = sig.sh[row.id] || 0, sbN = sig.sb[row.id] || 0;
+  const qShare = rkClamp((shN / (views + 60)) / 0.01, 0, 1.5), qSub = rkClamp((sbN / (views + 80)) / 0.004, 0, 1.5);
+  quality += 0.12 * rkClamp(0.5 * qShare + 0.5 * qSub, 0, 1.2);
+  // click-through (videos): of the people who really SAW this video's card, how many opened it. Needs 80+ impressions, otherwise neutral.
+  let ctrM = 1;
+  if (isV) { const imp = sig.imp[row.id] || 0; if (imp >= 80) { const ctr = (h48 + 2) / (imp + 20); ctrM = rkClamp(0.7 + 0.3 * (ctr / 0.10), 0.7, 1.25); } }
   const engM = 0.6 + 0.8 * rkClamp(quality, 0, 1.6);
   // velocity = how many views in the last 24 h, and is it speeding up compared with the 24 h before
   const accel = rkClamp((h24 + 2) / (prior24 + 2), 0.6, 2.5), momentum = Math.log(1 + h24) * Math.sqrt(accel);
@@ -515,7 +537,10 @@ function rkBase(row, kind, sig, now) {
   const evergreen = isV ? 0.65 + 0.35 * Math.exp(-ageH / (30 * 24)) : 0.55 + 0.45 * Math.exp(-ageH / (12 * 24));
   // safety: open reports and copyright claims push content down
   const reports = sig.reports[row.id] || 0, safety = (1 / (1 + 0.6 * reports)) * (isV && row.copyright_status === "claimed" ? 0.5 : 1);
-  const base = popM * engM * velM * fresh * evergreen * safety;
+  // satisfaction: once at least 30 people voted, a very high share of dislikes pushes a video down hard, so clickbait cannot ride on views alone.
+  // Normal videos (dislikes under ~35% of votes) are not touched at all.
+  const votes = likes + dislikes, dShare = votes >= 30 ? dislikes / votes : 0, satisfaction = 1 - 0.65 * rkClamp((dShare - 0.35) / 0.45, 0, 1);
+  const base = popM * engM * velM * fresh * evergreen * safety * satisfaction * ctrM;
   return { base, trend: base * (0.5 + momentum), ageH, views, velM, quality, h24 };
 }
 const _rkInflight = {};
@@ -527,15 +552,80 @@ async function rkLoad(db, kind, now) {
   _rkInflight[kind] = p;
   return await p;
 }
+// ================= RANKING SIGNALS: impressions (video cards seen), reel watch time, shares, subscribe-after-watch =================
+let _sigReady = false;
+async function ensureSignalTables(db) {
+  if (_sigReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS impr_daily (kind TEXT NOT NULL, content_id TEXT NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, content_id, day))").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS sig_seen (kind TEXT NOT NULL, content_id TEXT NOT NULL, viewer TEXT NOT NULL, ev TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY (kind, content_id, viewer, ev, day))").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS engage_daily (kind TEXT NOT NULL, content_id TEXT NOT NULL, day TEXT NOT NULL, shares INTEGER NOT NULL DEFAULT 0, subs INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, content_id, day))").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS reel_watch_stats (reel_id TEXT PRIMARY KEY, sessions INTEGER NOT NULL DEFAULT 0, seconds REAL NOT NULL DEFAULT 0, dur REAL NOT NULL DEFAULT 0)").run();
+  try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_impr_day ON impr_daily (kind, day)").run(); await db.prepare("CREATE INDEX IF NOT EXISTS idx_engage_day ON engage_daily (kind, day)").run(); } catch (_) {}
+  _sigReady = true;
+}
+// Builds the statements for one batch of signals. Every kind counts once per viewer per day, and never for the owner's own content.
+function signalStatements(db, evs, viewer, uid, day) {
+  const out = [], idOk = (x) => typeof x === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(x);
+  const T = (k) => (k === "r" ? "reels" : "videos");
+  const own = uid || "";
+  for (const e of evs) {
+    if (!e || typeof e !== "object" || !idOk(e.id)) continue;
+    const k = e.k === "r" ? "r" : "v", tbl = T(k);
+    if (e.t === "imp" && k === "v") {
+      out.push(db.prepare("INSERT INTO impr_daily (kind, content_id, day, n) SELECT 'v', t.id, ?, 1 FROM videos t WHERE t.id = ? AND t.removed = 0 AND t.owner_id != ? AND NOT EXISTS (SELECT 1 FROM sig_seen s WHERE s.kind = 'v' AND s.content_id = t.id AND s.viewer = ? AND s.ev = 'imp' AND s.day = ?) ON CONFLICT(kind, content_id, day) DO UPDATE SET n = n + 1").bind(day, e.id, own, viewer, day));
+      out.push(db.prepare("INSERT OR IGNORE INTO sig_seen (kind, content_id, viewer, ev, day) SELECT 'v', t.id, ?, 'imp', ? FROM videos t WHERE t.id = ? AND t.removed = 0 AND t.owner_id != ?").bind(viewer, day, e.id, own));
+    } else if (e.t === "sh") {
+      out.push(db.prepare("INSERT INTO engage_daily (kind, content_id, day, shares, subs) SELECT ?, t.id, ?, 1, 0 FROM " + tbl + " t WHERE t.id = ? AND t.removed = 0 AND t.owner_id != ? AND NOT EXISTS (SELECT 1 FROM sig_seen s WHERE s.kind = ? AND s.content_id = t.id AND s.viewer = ? AND s.ev = 'sh' AND s.day = ?) ON CONFLICT(kind, content_id, day) DO UPDATE SET shares = shares + 1").bind(k, day, e.id, own, k, viewer, day));
+      out.push(db.prepare("INSERT OR IGNORE INTO sig_seen (kind, content_id, viewer, ev, day) SELECT ?, t.id, ?, 'sh', ? FROM " + tbl + " t WHERE t.id = ? AND t.removed = 0 AND t.owner_id != ?").bind(k, viewer, day, e.id, own));
+    } else if (e.t === "sub" && uid && idOk(e.o)) {
+      out.push(db.prepare("INSERT INTO engage_daily (kind, content_id, day, shares, subs) SELECT ?, t.id, ?, 0, 1 FROM " + tbl + " t WHERE t.id = ? AND t.removed = 0 AND t.owner_id = ? AND t.owner_id != ? AND NOT EXISTS (SELECT 1 FROM sig_seen s WHERE s.kind = ? AND s.content_id = t.id AND s.viewer = ? AND s.ev = 'sub' AND s.day = ?) ON CONFLICT(kind, content_id, day) DO UPDATE SET subs = subs + 1").bind(k, day, e.id, e.o, own, k, viewer, day));
+      out.push(db.prepare("INSERT OR IGNORE INTO sig_seen (kind, content_id, viewer, ev, day) SELECT ?, t.id, ?, 'sub', ? FROM " + tbl + " t WHERE t.id = ? AND t.removed = 0 AND t.owner_id = ? AND t.owner_id != ?").bind(k, viewer, day, e.id, e.o, own));
+    } else if (e.t === "rw") {
+      let dur = Number(e.dur), sec = Number(e.sec);
+      if (!(dur >= 1 && dur <= 180) || !(sec >= 0.8 && sec <= 900)) continue;
+      sec = Math.min(sec, dur * 3); // at most 3 replays count
+      const guard = (n) => "EXISTS (SELECT 1 FROM sig_seen s WHERE s.kind = 'r' AND s.content_id = r.id AND s.viewer = ? AND s.ev = '" + n + "' AND s.day = ?)";
+      const up = "INSERT INTO reel_watch_stats (reel_id, sessions, seconds, dur) SELECT r.id, 1, ?, ? FROM reels r WHERE r.id = ? AND r.removed = 0 AND r.owner_id != ? AND ";
+      const on = " ON CONFLICT(reel_id) DO UPDATE SET sessions = sessions + 1, seconds = seconds + excluded.seconds, dur = dur + excluded.dur";
+      const mark = (n, cond) => "INSERT OR IGNORE INTO sig_seen (kind, content_id, viewer, ev, day) SELECT 'r', r.id, ?, '" + n + "', ? FROM reels r WHERE r.id = ? AND r.removed = 0 AND r.owner_id != ? AND " + cond;
+      // only the first 2 watch sessions of one viewer per reel per day count (order matters: 2nd, then 1st)
+      out.push(db.prepare(up + guard("rw1") + " AND NOT " + guard("rw2") + on).bind(sec, dur, e.id, own, viewer, day, viewer, day));
+      out.push(db.prepare(mark("rw2", guard("rw1") + " AND NOT " + guard("rw2"))).bind(viewer, day, e.id, own, viewer, day, viewer, day));
+      out.push(db.prepare(up + "NOT " + guard("rw1") + on).bind(sec, dur, e.id, own, viewer, day));
+      out.push(db.prepare(mark("rw1", "NOT " + guard("rw1"))).bind(viewer, day, e.id, own, viewer, day));
+    }
+  }
+  return out;
+}
+let perfIdxDone = false;
+// extra indexes for the busiest queries, created once (safe to run again: IF NOT EXISTS)
+async function perfIndexes(db) {
+  if (perfIdxDone) return;
+  perfIdxDone = true;
+  try {
+    let f = null;
+    try { f = await db.prepare("SELECT v FROM auto_tools WHERE k = 'perf_idx_v2'").first(); } catch (_) { try { await ensureAutoToolsTable(db); } catch (__) {} }
+    if (f) return;
+  } catch (_) {}
+  for (const q of [
+    "CREATE INDEX IF NOT EXISTS idx_reels_views ON reels (hidden, views)",
+    "CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows (followee_id)",
+    "CREATE INDEX IF NOT EXISTS idx_videos_owner ON videos (owner_id, uploaded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_reels_owner ON reels (owner_id, uploaded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_id, created_at)",
+  ]) { try { await db.prepare(q).run(); } catch (_) {} }
+  try { await setAutoTool(db, "perf_idx_v2", "1"); } catch (_) {}
+}
 async function rkLoadRaw(db, kind, now) {
   await leanFeedSql(db);
+  await perfIndexes(db);
   const c = rankCache[kind];
   if (c && now - c.t < RANK_TTL_MS) return c;
   const tbl = kind === "v" ? "videos" : "reels", sel = FEED_SQL[kind];
   const [newest, top] = await Promise.all([db.prepare(sel + " ORDER BY " + tbl + ".uploaded_at DESC LIMIT 400").all(), db.prepare(sel + " ORDER BY " + tbl + ".views DESC LIMIT 200").all()]);
   const seen = new Set(), rows = [];
   for (const r of [...(newest.results || []), ...(top.results || [])]) { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); } }
-  const sig = { h24: Object.create(null), h48: Object.create(null), watch: Object.create(null), reports: Object.create(null) };
+  const sig = { h24: Object.create(null), h48: Object.create(null), watch: Object.create(null), reports: Object.create(null), imp: Object.create(null), sh: Object.create(null), sb: Object.create(null), rw: Object.create(null) };
   try {
     await ensureViewTables(db);
     const q = await db.prepare("SELECT content_id AS id, SUM(CASE WHEN ts > ? THEN 1 ELSE 0 END) AS h24, COUNT(*) AS h48 FROM view_log WHERE kind = ? AND ts > ? GROUP BY content_id").bind(now - 86400000, kind, now - 172800000).all();
@@ -545,22 +635,30 @@ async function rkLoadRaw(db, kind, now) {
     try { await ensureRetentionTables(db); const q = await db.prepare("SELECT video_id AS id, sessions, seconds FROM video_watch_stats").all(); for (const r of q.results || []) sig.watch[r.id] = { sessions: r.sessions || 0, seconds: r.seconds || 0 }; } catch (_) {}
   }
   try { const q = await db.prepare("SELECT target_id AS id, COUNT(*) AS n FROM reports WHERE status = 'open' AND target_type = ? GROUP BY target_id").bind(kind === "v" ? "video" : "reel").all(); for (const r of q.results || []) sig.reports[r.id] = r.n; } catch (_) {}
-  const items = rows.map((row) => { const b = rkBase(row, kind, sig, now); return { id: row.id, row, owner: row.owner_id, cat: row.category || null, mix: row.mix_category || null, ...b }; });
+  try {
+    await ensureSignalTables(db);
+    if (kind === "v") { const q = await db.prepare("SELECT content_id AS id, SUM(n) AS n FROM impr_daily WHERE kind = 'v' AND day >= ? GROUP BY content_id").bind(istDay(now - 86400000)).all(); for (const r of q.results || []) sig.imp[r.id] = r.n || 0; }
+    const e = await db.prepare("SELECT content_id AS id, SUM(shares) AS sh, SUM(subs) AS sb FROM engage_daily WHERE kind = ? AND day >= ? GROUP BY content_id").bind(kind, istDay(now - 30 * 86400000)).all();
+    for (const r of e.results || []) { sig.sh[r.id] = r.sh || 0; sig.sb[r.id] = r.sb || 0; }
+    if (kind === "r") { const q = await db.prepare("SELECT reel_id AS id, sessions, seconds, dur FROM reel_watch_stats").all(); for (const r of q.results || []) sig.rw[r.id] = { sessions: r.sessions || 0, seconds: r.seconds || 0, dur: r.dur || 0 }; }
+  } catch (_) {}
+  const items = rows.map((row) => { const b = rkBase(row, kind, sig, now); return { id: row.id, row, owner: row.owner_id, cat: row.category || null, mix: row.mix_category || null, topics: rkTopics(row), ...b }; });
   const cache = { t: now, items, byId: Object.fromEntries(items.map((x) => [x.id, x])) };
   rankCache[kind] = cache;
   return cache;
 }
 async function rkPersonal(db, userId, kind) {
-  const P = { key: userId ? "u:" + userId : "anon", follows: new Set(), cats: Object.create(null), mix: Object.create(null), seen: new Set(), has: !!userId };
+  const P = { key: userId ? "u:" + userId : "anon", follows: new Set(), cats: Object.create(null), mix: Object.create(null), topics: Object.create(null), seen: new Set(), has: !!userId };
   if (!userId) return P;
   try { const f = await db.prepare("SELECT followee_id FROM follows WHERE follower_id = ? LIMIT 500").bind(userId).all(); for (const r of f.results || []) P.follows.add(r.followee_id); } catch (_) {}
   try {
-    const h = await db.prepare("SELECT watch_history.video_id AS id, videos.category AS cat, videos.mix_category AS mix FROM watch_history LEFT JOIN videos ON videos.id = watch_history.video_id WHERE watch_history.user_id = ? ORDER BY watch_history.watched_at DESC LIMIT 200").bind(userId).all();
+    const h = await db.prepare("SELECT watch_history.video_id AS id, videos.category AS cat, videos.mix_category AS mix, videos.title AS title, videos.description AS description, videos.tags AS tags FROM watch_history LEFT JOIN videos ON videos.id = watch_history.video_id WHERE watch_history.user_id = ? ORDER BY watch_history.watched_at DESC LIMIT 200").bind(userId).all();
     (h.results || []).forEach((r, i) => {
       if (kind === "v") P.seen.add(r.id);
       const w = i < 60 ? Math.pow(0.96, i) : 0;
       if (w && r.cat) P.cats[r.cat] = (P.cats[r.cat] || 0) + w;
       if (w && r.mix) P.mix[r.mix] = (P.mix[r.mix] || 0) + w;
+      if (w) for (const t of rkTopics(r)) P.topics[t] = (P.topics[t] || 0) + w;
     });
   } catch (_) {}
   return P;
@@ -570,6 +668,7 @@ function rkPersonalMult(it, P) {
   if (P.follows.has(it.owner)) m += 0.45;
   if (it.cat && P.cats[it.cat]) m += 0.30 * Math.min(1, P.cats[it.cat] / 4);
   if (it.mix && P.mix[it.mix]) m += 0.15 * Math.min(1, P.mix[it.mix] / 4);
+  if (it.topics && it.topics.length) { let ts = 0; for (const t of it.topics) ts += P.topics[t] || 0; m += 0.20 * Math.min(1, ts / 4); } // hashtags / tags the viewer already watches
   if (P.seen.has(it.id)) m *= 0.45; // already watched: show something new first
   return Math.min(m, 2.2);
 }
@@ -605,7 +704,7 @@ async function rkRanks(db, kind, userId) {
     let reason = "popular";
     if (P.follows.has(it.owner)) reason = "following";
     else if (slots.has(it.id)) reason = "new";
-    else if ((it.cat && P.cats[it.cat]) || (it.mix && P.mix[it.mix])) reason = "interest";
+    else if ((it.cat && P.cats[it.cat]) || (it.mix && P.mix[it.mix]) || (it.topics && it.topics.some((t) => P.topics[t]))) reason = "interest";
     else if (it.velM > 1.4) reason = "trending";
     fy.set(it.id, { pos: i + 1, reason });
   });
@@ -634,9 +733,7 @@ async function rkRelated(db, kind, seedId, userId, limit) {
     if (!row) return null;
     seed = { id: row.id, row, owner: row.owner_id, cat: row.category || null, mix: row.mix_category || null };
   }
-  let seedTags = [];
-  try { seedTags = (JSON.parse(seed.row.tags || "[]") || []).map((t) => String(t).toLowerCase()); } catch (_) {}
-  const tagSet = new Set(seedTags);
+  const tagSet = new Set(rkTopics(seed.row));
   const scored = [];
   for (const it of cache.items) {
     if (it.id === seed.id) continue;
@@ -644,7 +741,7 @@ async function rkRelated(db, kind, seedId, userId, limit) {
     if (it.owner === seed.owner) aff += 0.9;
     if (seed.cat && it.cat === seed.cat) aff += 0.45;
     if (seed.mix && it.mix === seed.mix) aff += 0.35;
-    if (tagSet.size) { try { const tg = (JSON.parse(it.row.tags || "[]") || []).filter((t) => tagSet.has(String(t).toLowerCase())).length; aff += Math.min(3, tg) * 0.15; } catch (_) {} }
+    if (tagSet.size && it.topics) { const tg = it.topics.filter((t) => tagSet.has(t)).length; aff += Math.min(3, tg) * 0.15; }
     let s = it.base * (1 + aff * 1.6) * (aff > 0 ? 1 : 0.5);
     if (P.seen.has(it.id)) s *= 0.45;
     if (P.follows.has(it.owner)) s *= 1.15;
@@ -2022,6 +2119,44 @@ async function handleRequest(request, env) {
         }
         return json({ ok: true, settings: await getAdmobCfg(db) });
       } catch (_) { return err("Could not save", 500); }
+    }
+    // ranking signals from the app (card seen, reel watch time, share, subscribe-after-watch); small batches, never blocks anything
+    if (method === "POST" && path === "/api/signals") {
+      const b = await request.json().catch(() => ({}));
+      const evs = Array.isArray(b.events) ? b.events.slice(0, 40) : [];
+      if (!evs.length) return json({ ok: true });
+      try {
+        await ensureSignalTables(db);
+        const u = await currentUser(request, env).catch(() => null);
+        const ip = String(request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for") || "").slice(0, 64);
+        const viewer = u ? "u:" + u.id : "ip:" + ip, day = istDay(Date.now());
+        const st = signalStatements(db, evs, viewer, u ? u.id : "", day);
+        for (let i = 0; i < st.length; i += 50) await db.batch(st.slice(i, i + 50));
+        if (Math.random() < 0.02) { try { await db.prepare("DELETE FROM sig_seen WHERE day < ?").bind(istDay(Date.now() - 3 * 86400000)).run(); await db.prepare("DELETE FROM impr_daily WHERE day < ?").bind(istDay(Date.now() - 10 * 86400000)).run(); await db.prepare("DELETE FROM engage_daily WHERE day < ?").bind(istDay(Date.now() - 40 * 86400000)).run(); } catch (_) {} }
+      } catch (_) {}
+      return json({ ok: true });
+    }
+    // admin: test the Firebase key without sending anything to people
+    if (method === "GET" && path === "/api/admin/push-status") {
+      if (!(await adminUser(request, env))) return err("Not allowed", 403);
+      const out = { ok: true, configured: false, authOk: false, sendOk: false, project: "", phones: 0, people: 0, detail: "" };
+      try {
+        await ensurePushTables(db);
+        const c = await db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT user_id) AS p FROM push_tokens").first();
+        out.phones = (c && c.n) || 0; out.people = (c && c.p) || 0;
+      } catch (_) {}
+      const acc = fcmAccount(env);
+      if (!acc) { out.detail = env.FCM_SERVICE_ACCOUNT ? "The FCM_SERVICE_ACCOUNT secret could not be read. Paste the whole text of the Firebase JSON file." : "The FCM_SERVICE_ACCOUNT secret is not added to the worker yet."; return json(out); }
+      out.configured = true; out.project = String(acc.project_id || "");
+      let at = "";
+      try { _fcmTok = null; at = await fcmAccessToken(acc); out.authOk = true; }
+      catch (e) { out.detail = "Could not sign in to Firebase with this key. Make sure you pasted the full JSON of a service account key for this project."; return json(out); }
+      try {
+        const r = await fetch("https://fcm.googleapis.com/v1/projects/" + encodeURIComponent(acc.project_id) + "/messages:send", { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify({ validate_only: true, message: { topic: "all", notification: { title: "Test", body: "Test" } } }) });
+        out.sendOk = r.ok;
+        if (!r.ok) { let t = ""; try { t = await r.text(); } catch (_) {} out.detail = ("Firebase answered " + r.status + ". " + t).slice(0, 300); }
+      } catch (_) { out.detail = "Could not reach Firebase."; }
+      return json(out);
     }
     if ((method === "GET" || method === "PUT") && path === "/api/admin/man") {
       if (!(await adminUser(request, env))) return err("Not allowed", 403);
