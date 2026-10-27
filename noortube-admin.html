@@ -1201,6 +1201,7 @@ Object.assign(ACT,{
 document.addEventListener('input',e=>{const el=e.target;
   if(el.dataset&&el.dataset.pf&&LIVE.pf){LIVE.pf[el.dataset.pf]=el.value;updPf()}
   else if(el.dataset&&el.dataset.fb){LIVE.drafts[el.dataset.fb]=el.value}
+  else if(el.dataset&&el.dataset.sd==='on'&&LIVE.sdf){LIVE.sdf.on=el.checked}
   else if(el.dataset&&el.dataset.sd&&LIVE.sdf){LIVE.sdf[el.dataset.sd]=el.value}
   else if(el.dataset&&el.dataset.cf&&LIVE.cf){LIVE.cf[el.dataset.cf]=el.type==='checkbox'?el.checked:el.value}
   else if(el.dataset&&el.dataset.asf&&LIVE.asf){LIVE.asf[el.dataset.asf]=el.type==='checkbox'?el.checked:el.value}
@@ -1288,7 +1289,7 @@ const dedExample=()=>{const f=LIVE.sdf||{},parts=['tax','platform','other'].map(
 V['l-sad']=()=>sadHead('Nazrana','Viewers pay your UPI from the Nazrana button under each video. Confirm each payment here; creators see it in Studio.')+
   gate(['sad'],D=>{
     const T=D.totals,S=D.settings;
-    if(!LIVE.sdf)LIVE.sdf={upi:S.upiId,name:S.payeeName,limit:String(S.unlockPaise/100)};
+    if(!LIVE.sdf)LIVE.sdf={upi:S.upiId,name:S.payeeName,limit:String(S.unlockPaise/100),on:S.enabled!==false};
     (S.deductions||[]).forEach(x=>{if(LIVE.sdf[x.key+'_pct']===undefined){LIVE.sdf[x.key+'_pct']=x.pct?String(x.pct):'';LIVE.sdf[x.key+'_name']=x.name}});
     const awaitRows=D.awaiting.map(d=>`<tr><td><span class="b">${esc(d.ref)}</span><div class="sm muted">${esc(when(d.claimedAt))}</div></td>${dCell(d)}<td>${esc(d.donorName)}</td><td class="right b">${rp(d.claimedPaise)}</td><td class="sm">${esc(d.utr||'—')}</td>
       <td><div class="row"><button type="button" class="btn pri sm" data-act="l-sd-confirm" data-id="${esc(d.id)}" ${LIVE.busy===d.id?'disabled':''}>Confirm received</button><button type="button" class="btn sm danger" data-act="l-sd-reject" data-id="${esc(d.id)}" ${LIVE.busy===d.id?'disabled':''}>Not received</button></div></td></tr>`).join('');
@@ -1300,6 +1301,8 @@ V['l-sad']=()=>sadHead('Nazrana','Viewers pay your UPI from the Nazrana button u
     const tbl=(head,rows,empt,min)=>`<div class="card"><div class="tbl-wrap"><table style="min-width:${min||640}px"><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan="9">${empty(empt,'')}</td></tr>`}</tbody></table></div></div>`;
     return sadKpis(T)+`<div style="height:12px"></div>`+sadDl+
     `<div class="card pad" style="margin-bottom:14px"><h3>Where donors pay</h3><p class="sm muted" style="margin:4px 0 12px">This is the UPI the Nazrana button opens. Money comes straight to you; creators can withdraw it from you later.</p>
+      <label class="row" style="gap:8px;margin-bottom:12px;align-items:flex-start"><input type="checkbox" data-sd="on" ${LIVE.sdf.on?'checked':''} style="width:18px;height:18px;margin-top:2px"><span><b>Nazrana is ON</b> <span class="muted sm">· tick = viewers can give Nazrana. Untick and press Save = the Nazrana button is hidden for everyone and no new Nazrana can start. Money already given, and creators’ balances, are not touched.</span></span></label>
+      ${S.enabled===false?`<div style="margin-bottom:12px">${chip('Nazrana is switched OFF — viewers cannot give Nazrana','rose','ban')}</div>`:''}
       ${S.upiId?'':`<div style="margin-bottom:12px">${chip('Nazrana is OFF — add your UPI ID so donors can pay','rose','ban')}</div>`}
       <div class="grid g2">${field('Your UPI ID',`<input class="inp" data-sd="upi" data-keep="sd-upi" value="${esc(LIVE.sdf.upi)}" placeholder="yourname@bank" autocapitalize="none" aria-label="UPI ID">`)}
       ${field('Name shown in the UPI app',`<input class="inp" data-sd="name" data-keep="sd-name" value="${esc(LIVE.sdf.name)}" maxlength="60" aria-label="Payee name">`)}
@@ -1342,7 +1345,7 @@ Object.assign(ACT,{
      const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='noortube-nazrana-'+t+'-'+new Date().toISOString().slice(0,10)+'.csv';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500);toast('Download started')}
    catch(e){lerr(e)}},
  'l-sd-save':async()=>{const f=LIVE.sdf;LIVE.busy='sdsave';render();
-   try{await api('/api/admin/sadaqah/settings',{method:'PUT',body:JSON.stringify({upiId:f.upi,payeeName:f.name,unlockRupees:parseFloat(f.limit),deductions:['tax','platform','other'].map(k=>({key:k,name:f[k+'_name'],pct:f[k+'_pct']}))})});toast('Nazrana settings saved')}
+   try{await api('/api/admin/sadaqah/settings',{method:'PUT',body:JSON.stringify({enabled:!!f.on,upiId:f.upi,payeeName:f.name,unlockRupees:parseFloat(f.limit),deductions:['tax','platform','other'].map(k=>({key:k,name:f[k+'_name'],pct:f[k+'_pct']}))})});toast('Nazrana settings saved')}
    catch(e){lerr(e)}finally{LIVE.busy=null;load('sad',true);render()}},
  'l-sd-confirm':el=>{const d=sadFind(el.dataset.id);if(!d)return;
    modal({title:'Confirm nazrana received',ok:'Confirm received',body:`<p style="margin-bottom:12px">Reference <b>${esc(d.ref)}</b> · ${esc(d.videoTitle)}<br>${d.claimedPaise?`Donor says they sent <b>${rp(d.claimedPaise)}</b>.`:'The donor did not report an amount.'}</p>${field('Amount you actually received (₹)',`<input class="inp" name="amount" type="number" inputmode="decimal" step="0.01" min="1" value="${d.claimedPaise?d.claimedPaise/100:''}">`,'Check your UPI app first. Only this amount is added for the creator.')}${(()=>{const Dd=dData('sad'),ds=Dd&&Dd.settings&&(Dd.settings.deductions||[]).filter(x=>x.pct>0)||[];return ds.length?`<p class="sm" style="margin-top:10px">Cut from this payment: <b>${ds.map(x=>esc(x.name)+' '+x.pct+'%').join(', ')}</b>. The creator gets the rest and will see this breakdown.</p>`:''})()}`,
@@ -1599,9 +1602,20 @@ V['l-ads']=()=>pageH('Halal ads','Upload banners or video ads and choose where t
       <td class="right"><div class="row" style="justify-content:flex-end"><button type="button" class="btn sm" data-act="l-ad-toggle" data-id="${esc(a.id)}" ${LIVE.busy===a.id?'disabled':''}>${a.active?'Pause':'Resume'}</button><button type="button" class="btn sm" data-act="l-ad-edit" data-id="${esc(a.id)}">Edit</button><button type="button" class="btn sm danger" data-act="l-ad-del" data-id="${esc(a.id)}" data-name="${esc(a.name)}" ${LIVE.busy===a.id?'disabled':''}>Delete</button></div></td></tr>`).join(''):`<tr><td colspan="6">${empty('No ads here yet','Tap “Upload new ad” to add your first banner.')}</td></tr>`}</tbody></table></div></div>`});
 
 /* ---- Push notifications (in-app bell) ---- */
+Object.assign(ACT,{'l-pushcheck':async()=>{LIVE.pushChk={busy:true};render();try{LIVE.pushChk=await api('/api/admin/push-status')}catch(e){LIVE.pushChk={error:(e&&e.message)||'Could not check'}}render()}});
+const pushStatusCard=()=>{const c=LIVE.pushChk,ok=t=>`<div class="sm" style="color:#16a34a;margin:3px 0">✓ ${t}</div>`,no=t=>`<div class="sm" style="color:#dc2626;margin:3px 0">✗ ${t}</div>`;
+  let b='<p class="sm muted" style="margin:4px 0 10px">Tests the Firebase key you added to the worker. It does not send anything to people.</p>';
+  if(c&&c.busy)b+='<div class="sm">Checking…</div>';
+  else if(c&&c.error)b+=no(esc(c.error));
+  else if(c){b+=c.configured?ok('Firebase key added'+(c.project?' (project: '+esc(c.project)+')':'')):no('Firebase key not added');
+    if(c.configured)b+=c.authOk?ok('Signed in to Firebase'):no('Could not sign in to Firebase');
+    if(c.authOk)b+=c.sendOk?ok('Firebase accepted a test message'):no('Firebase did not accept a test message');
+    b+=`<div class="sm" style="margin:3px 0">Android phones registered: <b>${(c.phones||0).toLocaleString()}</b> (${(c.people||0).toLocaleString()} people)${c.phones?'':' <span class="muted">· phones appear here after people open the Android app and allow notifications</span>'}</div>`;
+    if(c.detail)b+=`<div class="sm muted" style="margin:6px 0 0;word-break:break-word">${esc(c.detail)}</div>`}
+  return`<div class="card pad" style="margin-bottom:14px"><h3>Phone push (Firebase)</h3>${b}<div style="margin-top:10px"><button type="button" class="btn" data-act="l-pushcheck" ${c&&c.busy?'disabled':''}>Check Firebase</button></div></div>`};
 V['l-notify']=()=>pageH('Push notifications','Send a message that appears in the bell of the people you choose.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
   gate(['notify'],H=>{const f=LIVE.nf||(LIVE.nf={title:'',message:'',audience:'all'});
-    return`<div class="card pad" style="margin-bottom:14px"><h3>New message</h3><p class="sm muted" style="margin:4px 0 12px">It shows in each person’s notification bell inside NoorTube. When phone push (Firebase) is set up, Android app users also get it on their phone lock screen.</p>
+    return`${pushStatusCard()}<div class="card pad" style="margin-bottom:14px"><h3>New message</h3><p class="sm muted" style="margin:4px 0 12px">It shows in each person’s notification bell inside NoorTube. When phone push (Firebase) is set up, Android app users also get it on their phone lock screen.</p>
       <div class="stack">${field('Title',`<input class="inp" data-nf="title" data-keep="nf-t" value="${esc(f.title)}" maxlength="80" placeholder="e.g. Eid Mubarak" aria-label="Title">`)}
       ${field('Message',`<textarea class="inp" rows="3" data-nf="message" data-keep="nf-m" maxlength="300" placeholder="Write the message people will read" aria-label="Message">${esc(f.message)}</textarea>`)}
       ${field('Send to',`<select class="inp" data-nf="audience" aria-label="Audience"><option value="all" ${f.audience==='all'?'selected':''}>Everyone</option><option value="creators" ${f.audience==='creators'?'selected':''}>Creators (people with uploads)</option><option value="monetized" ${f.audience==='monetized'?'selected':''}>Monetized channels</option><option value="admins" ${f.audience==='admins'?'selected':''}>Admins only</option></select>`)}</div>
@@ -1703,7 +1717,7 @@ Object.assign(ACT,{
  'l-nf-send':()=>{const f=LIVE.nf;if(!f||!f.title.trim()||!f.message.trim()){toast('Write a title and a message');return}
    const who={all:'everyone',creators:'all creators',monetized:'monetized channels',admins:'admins'}[f.audience];
    modal({title:'Send notification',ok:'Send now',body:`<p>Send <b>“${esc(f.title.trim())}”</b> to <b>${who}</b>? It cannot be taken back.</p>`,
-     onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people'+(r.push&&r.push.configured?' · phone push sent':''));LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
+     onOk:()=>{(async()=>{LIVE.busy='nfsend';render();try{const r=await api('/api/admin/broadcast',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+r.sent.toLocaleString()+' people'+(r.push&&r.push.configured?((r.push.topic||r.push.sent>0)?' · phone push sent':' · phone push could not be sent'):''));LIVE.nf={title:'',message:'',audience:f.audience}}catch(e){lerr(e)}finally{LIVE.busy=null;load('notify',true);render()}})()}})},
  'l-vast-save':async()=>{const g=id=>document.getElementById(id),on=id=>!!(g(id)&&g(id).checked),body={pre:on('vastPre'),mid:on('vastMid'),native:on('vastNative'),midAfter:parseInt(g('vastMidAfter')&&g('vastMidAfter').value,10),gapSec:parseInt(g('vastGap')&&g('vastGap').value,10),tags:['vastT1','vastT2','vastT3'].map(id=>((g(id)&&g(id).value)||'').trim()).filter(Boolean)};
    if(!(body.midAfter>=10&&body.midAfter<=600)){toast('Middle ad time must be 10 to 600 seconds');return}
    if(!(body.gapSec>=0&&body.gapSec<=3600)){toast('Gap must be 0 to 3600 seconds');return}

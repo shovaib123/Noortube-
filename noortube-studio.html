@@ -732,7 +732,15 @@
       if (e.pendingRequest) btn = `<button disabled class="w-full py-3 rounded-xl bg-gray-200 dark:bg-studio-hover text-gray-500 text-sm font-semibold">Withdrawal pending · ${usd(e.pendingRequest.amountUsd)}</button>`;
       else if (!e.hasPayoutInfo) btn = `<a href="/monetization" class="block text-center w-full py-3 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold">Add payout details to withdraw</a>`;
       else if (e.availableUsd < e.minWithdrawUsd) btn = `<button disabled class="w-full py-3 rounded-xl bg-gray-200 dark:bg-studio-hover text-gray-500 text-sm font-semibold">Minimum ${usd(e.minWithdrawUsd)} to withdraw</button>`;
-      else btn = `<button id="wdBtn" type="button" class="w-full py-3 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition">Request withdrawal · ${usd(e.availableUsd)}</button>`;
+      else {
+        const wMin = Number(e.minWithdrawUsd), wMax = Number(e.availableUsd);
+        const wCur = (S.wdAmt >= wMin && S.wdAmt <= wMax) ? S.wdAmt : wMax;
+        btn = `<div class="mb-3"><label for="wdAmt" class="text-[12px] text-studio-muted block mb-1">Amount to withdraw (USD)</label>
+          <div class="flex gap-2"><input id="wdAmt" type="number" inputmode="decimal" step="0.01" min="${wMin}" max="${wMax}" value="${wCur.toFixed(2)}" class="w-full px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-studio-hover border border-gray-200 dark:border-studio-border text-sm focus:outline-none focus:border-noor-500" style="flex:1">
+          <button id="wdMax" type="button" class="px-4 rounded-lg border border-gray-200 dark:border-studio-border text-sm font-semibold hover:bg-gray-50 dark:hover:bg-studio-hover">Max</button></div>
+          <p class="text-[12px] text-studio-muted mt-2">Ask for any amount from ${usd(wMin)} to ${usd(wMax)}. What you do not ask for stays in your balance.</p></div>
+          <button id="wdBtn" type="button" class="w-full py-3 rounded-xl bg-noor-500 hover:bg-noor-400 text-white text-sm font-semibold transition">Request withdrawal · ${usd(wCur)}</button>`;
+      }
       const last = e.lastRequest ? `<p class="text-[12px] text-studio-muted mt-3">Last request: <strong>${esc(e.lastRequest.status)}</strong> · ${usd(e.lastRequest.amountUsd)}${e.lastRequest.note ? ' · ' + esc(e.lastRequest.note) : ''}</p>` : '';
       el.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">${statCard('Unpaid earnings', usd(e.totalUsd), 'Your share', 'text-noor-400')}${statCard('Available', usd(e.availableUsd), 'Ready to withdraw')}${statCard('Pending', usd(e.pendingUsd), 'Awaiting payment')}${statCard('Paid so far', usd(e.paidUsd), e.lastPaidAt ? 'Last: ' + fmtDay(e.lastPaidAt) : 'No payments yet')}</div>
         <div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-4">Where it comes from</h3><div class="space-y-4">${barRow('Videos', vp, usd(e.videoUsd) + ' · ' + fmtNum(e.videoViews) + ' new views')}${barRow('Reels', 100 - (tot > 0 ? vp : 100), usd(e.reelsUsd) + ' · ' + fmtNum(e.reelViews) + ' new views')}</div></div>
@@ -1036,7 +1044,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
       const breakdown = hasCuts ? `<div class="${CARD} p-5"><h3 class="text-sm font-semibold">Where your nazrana went</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">What viewers gave in total, what was cut, and what you get.</p>
           <div class="divide-y divide-gray-100 dark:divide-studio-border"><div class="flex items-center justify-between gap-3 py-2 text-sm"><span>Total from viewers</span><span class="font-semibold">${inr(cuts.grossPaise)}</span></div>${cutLine(nm.tax || 'Tax', cuts.taxPaise)}${cutLine(nm.platform || 'Platform fee', cuts.platformPaise)}${cutLine(nm.other || 'Other', cuts.otherPaise)}<div class="flex items-center justify-between gap-3 py-2.5 text-sm"><span class="font-semibold">You get</span><span class="font-bold text-noor-400">${inr(cuts.netPaise)}</span></div></div>
           <p class="text-[11px] text-studio-muted mt-2">These deductions are taken when NoorTube confirms each nazrana, so your available balance and withdrawals are already the amount you get.${d.rules && d.rules.length ? ' Current rule: ' + d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ') + ' of each new nazrana.' : ''}</p></div>` : (d.rules && d.rules.length ? `<div class="${CARD} p-4"><p class="text-[12px] text-studio-muted">From now on, ${d.rules.map((x) => esc(x.name) + ' ' + x.pct + '%').join(', ')} will be cut from each new nazrana when NoorTube confirms it. You will see the full breakdown here.</p></div>` : '');
-      el.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">${statCard('Received', inr(d.receivedPaise), hasCuts ? 'After deductions' : d.receivedCount + ' nazrana' + (d.receivedCount === 1 ? '' : 's'), 'text-noor-400')}${statCard('Available', inr(d.availablePaise), d.unlocked ? 'Ready to withdraw' : 'Opens at ' + inr(d.unlockPaise))}${statCard('Awaiting', inr(d.awaitingPaise), 'Being confirmed')}${statCard('Withdrawn', inr(d.paidPaise), d.pendingPaise ? inr(d.pendingPaise) + ' pending' : 'Paid to you')}</div>
+      el.innerHTML = `${d.givingOn === false ? '<div class="rounded-xl p-3 mb-4 text-[13px] bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">Nazrana giving is switched off by NoorTube for now. Your earlier nazrana and your balance are safe.</div>' : ''}<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">${statCard('Received', inr(d.receivedPaise), hasCuts ? 'After deductions' : d.receivedCount + ' nazrana' + (d.receivedCount === 1 ? '' : 's'), 'text-noor-400')}${statCard('Available', inr(d.availablePaise), d.unlocked ? 'Ready to withdraw' : 'Opens at ' + inr(d.unlockPaise))}${statCard('Awaiting', inr(d.awaitingPaise), 'Being confirmed')}${statCard('Withdrawn', inr(d.paidPaise), d.pendingPaise ? inr(d.pendingPaise) + ' pending' : 'Paid to you')}</div>
         ${breakdown}
         <div class="${CARD} p-5"><h3 class="text-sm font-semibold">Nazrana per video</h3><p class="text-[11px] text-studio-muted mt-0.5 mb-2">Total confirmed nazrana on each video. Donor names are private.</p><div class="divide-y divide-gray-100 dark:divide-studio-border">${vrows}</div></div>
         <div class="${CARD} p-5"><h3 class="text-sm font-semibold mb-1">Withdraw nazrana</h3><p class="text-[12px] text-studio-muted mb-4">Nazrana is separate from monetization. You receive it even if your channel is not monetized.</p>${wd}</div>
@@ -1228,10 +1236,25 @@ const adCompressVideo=file=>new Promise(resolve=>{
       setActive(document.querySelectorAll('.cfilter-btn'), b, ['bg-noor-500', 'text-white'], ['border', 'border-gray-200', 'dark:border-studio-border', 'hover:bg-gray-50', 'dark:hover:bg-studio-hover']);
       renderGrid();
     }));
+    // withdraw amount box: keep the typed amount and the button text in step
+    function wdSync() {
+      const i = document.getElementById('wdAmt'), b = document.getElementById('wdBtn'); if (!i || !b) return;
+      const v = Number(i.value); S.wdAmt = isFinite(v) ? v : 0;
+      if (isFinite(v) && v >= Number(i.min) - 1e-9 && v <= Number(i.max) + 1e-9) b.textContent = 'Request withdrawal · ' + usd(v);
+      else b.textContent = 'Request withdrawal';
+    }
+    document.getElementById('revenueBody').addEventListener('input', (e) => { if (e.target && e.target.id === 'wdAmt') wdSync(); });
     document.getElementById('revenueBody').addEventListener('click', async (e) => {
+      const mx = e.target.closest('#wdMax');
+      if (mx) { const i = document.getElementById('wdAmt'); if (i) { i.value = Number(i.max).toFixed(2); wdSync(); } return; }
       const b = e.target.closest('#wdBtn'); if (!b) return;
+      const inp = document.getElementById('wdAmt'); let amt = null;
+      if (inp) {
+        amt = Math.round(Number(inp.value) * 100) / 100;
+        if (!isFinite(amt) || amt < Number(inp.min) - 1e-9 || amt > Number(inp.max) + 1e-9) { showToast('Check the amount', 'Enter an amount from ' + usd(Number(inp.min)) + ' to ' + usd(Number(inp.max))); return; }
+      }
       b.disabled = true; b.textContent = 'Sending…';
-      try { const r = await api('/api/me/withdraw', { method: 'POST', body: '{}' }); showToast('Withdrawal requested', usd(r.amountUsd) + ' · we will notify you when it is paid'); }
+      try { const r = await api('/api/me/withdraw', { method: 'POST', body: JSON.stringify(amt === null ? {} : { amountUsd: amt }) }); S.wdAmt = 0; showToast('Withdrawal requested', usd(r.amountUsd) + ' · we will notify you when it is paid'); }
       catch (er) { showToast('Could not request withdrawal', er.message); }
       try { S.earn = await api('/api/me/earnings'); } catch (er) {}
       renderRevenue();

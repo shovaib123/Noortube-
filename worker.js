@@ -1147,7 +1147,7 @@ async function getSadaqahSettings(db) {
   const m = {};
   (rows.results || []).forEach((r) => { m[r.k] = r.v; });
   const unlock = parseInt(m.unlock_paise, 10);
-  return { upiId: m.upi_id || "", payeeName: String(m.payee_name || "NoorTube Nazrana").replace(/sadaqah/gi, "Nazrana"), unlockPaise: unlock >= SADAQAH_MIN_REQUEST_PAISE ? unlock : SADAQAH_UNLOCK_PAISE, minRequestPaise: SADAQAH_MIN_REQUEST_PAISE, deductions: parseDeductions(m.deductions) };
+  return { enabled: m.enabled !== "0", upiId: m.upi_id || "", payeeName: String(m.payee_name || "NoorTube Nazrana").replace(/sadaqah/gi, "Nazrana"), unlockPaise: unlock >= SADAQAH_MIN_REQUEST_PAISE ? unlock : SADAQAH_UNLOCK_PAISE, minRequestPaise: SADAQAH_MIN_REQUEST_PAISE, deductions: parseDeductions(m.deductions) };
 }
 async function sadaqahBalance(db, creatorId) {
   const r = await db.prepare(
@@ -2088,7 +2088,9 @@ async function handleRequest(request, env) {
         await ensurePlatformTables(db);
         const A = await getAdsenseCfg(db), g = salahGuardState(Date.now(), await getAppSettings(db));
         const M = await getAdmobCfg(db), N = await getManCfg(db);
-        return json({ man: (!N.enabled || g.active) ? { enabled: false } : { enabled: true, app: N.app, home: N.home, watch: N.watch, hh: N.heightHome, hw: N.heightWatch }, adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
+        let nazOn = true;
+        try { const nz = await db.prepare("SELECT v FROM sadaqah_settings WHERE k = 'enabled'").first(); nazOn = !(nz && nz.v === "0"); } catch (_) {}
+        return json({ nazrana: { enabled: nazOn }, man: (!N.enabled || g.active) ? { enabled: false } : { enabled: true, app: N.app, home: N.home, watch: N.watch, hh: N.heightHome, hw: N.heightWatch }, adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
       } catch (_) { return json({ adsense: { enabled: false }, admob: { enabled: false } }); }
     }
     if (method === "GET" && path === "/ads.txt") {
@@ -2916,6 +2918,7 @@ async function handleRequest(request, env) {
       if (u.suspended) return err("This account cannot give nazrana", 403);
       try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana is temporarily unavailable. Try again later.", 503); }
       const S = await getSadaqahSettings(db);
+      if (!S.enabled) return err("Nazrana is switched off right now.", 403);
       if (!S.upiId) return err("Nazrana is not available yet. Please try again later.", 503);
       const v = await db.prepare("SELECT id, owner_id, hidden, removed FROM videos WHERE id = ?").bind(m[1]).first();
       if (!v) return err("Video not found", 404);
@@ -2971,7 +2974,7 @@ async function handleRequest(request, env) {
       let cuts = { grossPaise: 0, taxPaise: 0, platformPaise: 0, otherPaise: 0, netPaise: 0 };
       try { cuts = await sadaqahCutSummary(db, u.id); } catch (_) {}
       return json({
-        ok: true, enabled: !!S.upiId, unlockPaise: S.unlockPaise, minRequestPaise: S.minRequestPaise, ...bal, unlocked: bal.availablePaise >= S.unlockPaise,
+        ok: true, enabled: !!S.upiId, givingOn: S.enabled, unlockPaise: S.unlockPaise, minRequestPaise: S.minRequestPaise, ...bal, unlocked: bal.availablePaise >= S.unlockPaise,
         hasPayoutInfo: !!(u.payout_method && u.payout_account_number),
         payoutInfo: u.payout_method ? { method: u.payout_method, accountName: u.payout_account_name, accountNumber: u.payout_account_number, routingCode: u.payout_routing_code } : null,
         pending: pend ? { id: pend.id, amountPaise: pend.amount_paise, createdAt: pend.created_at } : null,
@@ -3091,6 +3094,7 @@ async function handleRequest(request, env) {
         dedJson = JSON.stringify(list);
       }
       await db.batch([
+        ...(b.enabled !== undefined ? [db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('enabled', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(b.enabled === false || b.enabled === "0" || b.enabled === 0 ? "0" : "1")] : []),
         ...(dedJson !== null ? [db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('deductions', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(dedJson)] : []),
         db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('upi_id', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(upiId),
         db.prepare("INSERT INTO sadaqah_settings (k, v) VALUES ('payee_name', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(payeeName),
@@ -3182,12 +3186,33 @@ async function handleRequest(request, env) {
       if (await getPendingWithdraw(db, u.id)) return err("You already have a withdrawal request pending", 409);
       const e = await computeEarnings(db, u.id, S);
       if (e.c.creator < WITHDRAW_MIN_CENTS) return err("Minimum limit not reached. You need at least $" + (WITHDRAW_MIN_CENTS / 100).toFixed(2) + " to withdraw.", 400);
+      // The creator may ask for any amount between the minimum and everything available. No amount sent (older app) = everything, exactly as before.
+      const body = await request.json().catch(() => ({}));
+      let want = e.c.creator;
+      if (body && body.amountUsd !== undefined && body.amountUsd !== null && body.amountUsd !== "") {
+        const n = Number(body.amountUsd);
+        if (!Number.isFinite(n) || n <= 0) return err("Enter a valid amount", 400);
+        want = Math.round(n * 100);
+        if (Math.abs(n * 100 - want) > 0.0001) return err("Use at most 2 decimals, like 120.50", 400);
+        if (want < WITHDRAW_MIN_CENTS) return err("The minimum withdrawal is $" + (WITHDRAW_MIN_CENTS / 100).toFixed(2), 400);
+        if (want > e.c.creator) return err("You can withdraw at most $" + (e.c.creator / 100).toFixed(2), 400);
+      }
+      // Whole balance: freeze today's view totals. Part of it: move the "already paid" view line forward by the same share, so the rest stays in the creator's balance.
+      let vSnap = e.totals.v, rSnap = e.totals.r;
+      if (want < e.c.creator) {
+        const rec = await db.prepare("SELECT v_views, r_views FROM payout_records WHERE user_id = ?").bind(u.id).first();
+        const vb = rec ? Math.min(rec.v_views, e.totals.v) : 0, rb = rec ? Math.min(rec.r_views, e.totals.r) : 0, f = want / e.c.creator;
+        let vA = Math.floor(e.vNew * f), rA = Math.floor(e.rNew * f);
+        // rounding must never cost the creator: do not move the line further than the amount asked for is worth
+        for (let k = 0; k < 800 && payoutCents(vA, rA, S).creator > want && (vA > 0 || rA > 0); k++) { if (vA > 0) vA--; if (rA > 0) rA--; }
+        vSnap = vb + vA; rSnap = rb + rA;
+      }
       const id = uid("wr");
       try {
         await db.prepare("INSERT INTO withdraw_requests (id, user_id, amount_cents, v_snap, r_snap, method, account_name, account_number, routing_code, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,'Pending',?)")
-          .bind(id, u.id, e.c.creator, e.totals.v, e.totals.r, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now()).run();
+          .bind(id, u.id, want, vSnap, rSnap, u.payout_method, u.payout_account_name || "", u.payout_account_number, u.payout_routing_code || "", Date.now()).run();
       } catch (_) { return err("You already have a withdrawal request pending", 409); }
-      return json({ ok: true, id, amountUsd: e.c.creator / 100 });
+      return json({ ok: true, id, amountUsd: want / 100 });
     }
     // ----- admin: find (and optionally remove) duplicate uploads that already exist -----
     if (method === "POST" && path === "/api/admin/scan-duplicates") {
