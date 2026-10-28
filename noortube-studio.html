@@ -796,16 +796,35 @@ const adCompressVideo=file=>new Promise(resolve=>{
       if (!res.ok) throw new Error(d.error || 'Upload failed (' + res.status + ')');
       return d.url;
     };
-    const AD_PL = [['home', 'Home banner', 'Seen on the home page'], ['watch', 'Under videos', 'Shown under every video'], ['reels', 'Reels (full screen)', 'A full-screen ad between reels'], ['preroll', 'Video start', 'Plays before a video. Video file only'], ['midroll', 'Video middle', 'Plays during a video. Video file only']];
-    const AD_ST = { draft: ['Waiting for payment', 'background:rgba(107,114,128,.18);color:#6b7280'], submitted: ['Checking your payment', 'background:rgba(245,158,11,.18);color:#d97706'], live: ['Live', 'background:rgba(34,197,94,.18);color:#16a34a'], ended: ['Ended', 'background:rgba(107,114,128,.18);color:#6b7280'], rejected: ['Not accepted', 'background:rgba(244,63,94,.15);color:#e11d48'], cancelled: ['Cancelled', 'background:rgba(107,114,128,.18);color:#6b7280'] };
+    const AD_PL = [['home', 'Home banner', 'Seen on the home page. Best size: 1080\u00D71350 (4:5) or 1080\u00D71080 (square)'], ['watch', 'Under videos', 'Shown under every video. Best size: 1080\u00D71350 (4:5) or 1080\u00D71080 (square)'], ['reels', 'Reels (full screen)', 'A full-screen ad between reels. Best size: 1080\u00D71920 (tall, 9:16)'], ['preroll', 'Video start', 'Plays before a video. Video file only. Best size: 1280\u00D7720 (wide, 16:9). Best length: up to 8 seconds'], ['midroll', 'Video middle', 'Plays during a video. Video file only. Best size: 1280\u00D7720 (wide, 16:9). Best length: up to 8 seconds']];
+    const AD_ST = { draft: ['Waiting for payment', 'background:rgba(107,114,128,.18);color:#6b7280'], submitted: ['Checking your payment', 'background:rgba(245,158,11,.18);color:#d97706'], live: ['Live', 'background:rgba(34,197,94,.18);color:#16a34a'], ended: ['Ended', 'background:rgba(107,114,128,.18);color:#6b7280'], completed: ['Completed', 'background:rgba(59,130,246,.15);color:#2563eb'], rejected: ['Not accepted', 'background:rgba(244,63,94,.15);color:#e11d48'], cancelled: ['Cancelled', 'background:rgba(107,114,128,.18);color:#6b7280'] };
     const AD_BTN = 'inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-sm font-semibold';
     const AD_PRI = AD_BTN + ' bg-noor-500 text-white';
     const adDis = () => (S.adBusy ? 'disabled style="opacity:.55"' : '');
     const AD_SEC = AD_BTN + ' border border-gray-200 dark:border-studio-border hover:bg-gray-50 dark:hover:bg-studio-hover';
     let adFile = null, adPreview = '';
-    function adFormInit() { S.adForm = { name: '', clickUrl: '', placements: [], days: 7, skip: true, midAfter: 30, compress: true }; if (adPreview) { try { URL.revokeObjectURL(adPreview); } catch (e) {} } adFile = null; adPreview = ''; }
+    function adFormInit() { S.adForm = { name: '', clickUrl: '', placements: [], views: 10000, skip: true, midAfter: 30, compress: true }; if (adPreview) { try { URL.revokeObjectURL(adPreview); } catch (e) {} } adFile = null; adPreview = ''; }
     const adIsVid = () => !!(adFile && /^video\//.test(adFile.type));
     const adUsd = (paise) => (S.adInfo && S.adInfo.usdRate > 0) ? (Math.ceil(paise / 100 / S.adInfo.usdRate * 100) / 100) : 0;
+    const AD_VIEWS = [1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000], AD_VIDEO_PL = ['preroll', 'midroll'];
+    const AD_SZ = { home: ['Home banner', '1080\u00D71350 (4:5) or 1080\u00D71080 (square)'], watch: ['Under videos', '1080\u00D71350 (4:5) or 1080\u00D71080 (square)'], reels: ['Reels', '1080\u00D71920 (tall, 9:16)'], preroll: ['Video start', '1280\u00D7720 (wide, 16:9) video, up to 8 seconds is best'], midroll: ['Video middle', '1280\u00D7720 (wide, 16:9) video, up to 8 seconds is best'] };
+    const adSizeGuide = () => {
+      const pls = (S.adForm && S.adForm.placements && S.adForm.placements.length) ? S.adForm.placements : Object.keys(AD_SZ);
+      return `<div class="mt-1 rounded-xl p-3 text-[11px] leading-relaxed" style="background:rgba(59,130,246,.10)"><p class="text-xs font-semibold mb-1">Which size should I upload?</p>${pls.map((k) => `<p><b>${AD_SZ[k][0]}:</b> ${AD_SZ[k][1]}</p>`).join('')}<p class="mt-1 text-studio-muted">Tip: keep the important text and logo in the middle, because the edges can be cropped on some phones. Use a clear, sharp file, JPG or PNG for pictures, MP4 for videos.</p></div>`;
+    };
+    window.adDimNote = function (el, isVid) {
+      try {
+        const w = isVid ? el.videoWidth : el.naturalWidth, h = isVid ? el.videoHeight : el.naturalHeight, n = document.getElementById('adDimNote');
+        if (!w || !h || !n) return;
+        const r = h / w, pl = (S.adForm && S.adForm.placements) || [], w2 = [];
+        if ((pl.includes('home') || pl.includes('watch')) && (r < 0.5625 || r > 1.25)) w2.push('For Home / Under videos, a shape between wide (16:9) and 4:5 fits best. Yours will be cropped or shown with bars.');
+        if ((pl.includes('home') || pl.includes('watch')) && w < 720) w2.push('Your file is small and may look blurry. Use at least 1080 pixels wide.');
+        if (pl.includes('reels') && r < 1.6) w2.push('A Reels ad fills the whole phone screen. A tall 1080\u00D71920 file looks best.');
+        if ((pl.includes('preroll') || pl.includes('midroll')) && r > 0.8) w2.push('For video start / middle, a wide 1280\u00D7720 video looks best.');
+        n.innerHTML = '<b>Your file: ' + w + ' \u00D7 ' + h + ' px.</b> ' + (w2.length ? '<span style="color:#d97706">' + w2.join(' ') + '</span>' : '<span style="color:#16a34a">Size looks good.</span>');
+        n.style.display = 'block';
+      } catch (e) {}
+    };
     const adMb = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
     function adCopy(text) {
       const done = () => showToast('Copied', text);
@@ -866,35 +885,36 @@ const adCompressVideo=file=>new Promise(resolve=>{
       let detail = '';
       if (c.status === 'draft') detail = `<div class="flex gap-2 mt-3"><button type="button" data-ad="pay" data-id="${esc(c.id)}" class="${AD_PRI} flex-1">${S.adPay === c.id ? 'Hide payment' : 'Pay now'}</button><button type="button" data-ad="cancel" data-id="${esc(c.id)}" class="${AD_SEC}">Cancel</button></div>`;
       else if (c.status === 'submitted') detail = `<p class="text-xs text-studio-muted mt-3">We are checking your payment (reference ${esc(c.payRef)}). Your ad starts as soon as it is confirmed.</p>`;
-      else if (c.status === 'live' || c.status === 'ended') {
+      else if (c.status === 'live' || c.status === 'ended' || c.status === 'completed') {
         const ctr = c.impressions > 0 ? (c.clicks / c.impressions * 100).toFixed(1) + '%' : '0%';
         detail = `<div class="grid grid-cols-3 gap-2 mt-3 text-center"><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${c.impressions.toLocaleString()}</p><p class="text-[11px] text-studio-muted">Views</p></div><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${c.clicks.toLocaleString()}</p><p class="text-[11px] text-studio-muted">Clicks</p></div><div class="rounded-lg bg-gray-50 dark:bg-studio-hover p-2"><p class="text-base font-bold">${ctr}</p><p class="text-[11px] text-studio-muted">Click rate</p></div></div>
-          <p class="text-[11px] text-studio-muted mt-2">${esc(fmtDay(new Date(c.startAt).toISOString()))} to ${esc(fmtDay(new Date(c.endAt).toISOString()))}</p>`;
+          ${c.targetImpressions > 0 ? `<div class="mt-3"><div class="flex justify-between text-[11px] text-studio-muted mb-1"><span>${Math.min(c.impressions, c.targetImpressions).toLocaleString()} of ${c.targetImpressions.toLocaleString()} views</span><span>${Math.min(100, Math.floor(c.impressions / c.targetImpressions * 100))}%</span></div><div style="height:6px;border-radius:3px;background:rgba(128,128,128,.25);overflow:hidden"><div style="height:100%;width:${Math.min(100, c.impressions / c.targetImpressions * 100)}%;background:#16a34a"></div></div><p class="text-[11px] text-studio-muted mt-2">${c.status === 'completed' ? 'All the views you bought were delivered. The ad stopped by itself.' : 'The ad stops by itself after the last view.'}</p></div>` : `<p class="text-[11px] text-studio-muted mt-2">${esc(fmtDay(new Date(c.startAt).toISOString()))} to ${esc(fmtDay(new Date(c.endAt).toISOString()))}</p>`}`;
       } else if (c.status === 'rejected') detail = `<p class="text-xs mt-3" style="color:#e11d48">${esc(c.rejectReason || 'Not accepted.')} If you already paid, contact us with reference ${esc(c.ref)}.</p>`;
-      if (c.status === 'ended' || c.status === 'rejected' || c.status === 'cancelled') detail += `<div class="mt-3"><button type="button" data-ad="delete" data-id="${esc(c.id)}" class="${AD_SEC} w-full" style="color:#e11d48">Delete</button></div>`;
+      if (c.status === 'ended' || c.status === 'completed' || c.status === 'rejected' || c.status === 'cancelled') detail += `<div class="mt-3"><button type="button" data-ad="delete" data-id="${esc(c.id)}" class="${AD_SEC} w-full" style="color:#e11d48">Delete</button></div>`;
       return `<div class="${CARD} p-4"><div class="flex gap-3"><div class="rounded-lg bg-gray-100 dark:bg-studio-hover" style="width:96px;height:72px;flex-shrink:0;overflow:hidden">${media}</div>
         <div class="min-w-0 flex-1"><div class="flex items-start justify-between gap-2"><p class="font-semibold text-sm truncate">${esc(c.name)}</p><span class="px-2 py-0.5 rounded-full text-[11px] font-semibold" style="flex-shrink:0;${st[1]}">${st[0]}</span></div>
-          <p class="text-xs text-studio-muted mt-0.5">${c.days} days \u00B7 ${inr(c.amountPaise)}</p><div class="flex flex-wrap gap-1 mt-1.5">${places}</div></div></div>${detail}${S.adPay === c.id && c.status === 'draft' ? adPayPanel(c) : ''}</div>`;
+          <p class="text-xs text-studio-muted mt-0.5">${c.targetImpressions > 0 ? c.targetImpressions.toLocaleString() + ' views' : c.days + ' days'} \u00B7 ${inr(c.amountPaise)}</p><div class="flex flex-wrap gap-1 mt-1.5">${places}</div></div></div>${detail}${S.adPay === c.id && c.status === 'draft' ? adPayPanel(c) : ''}</div>`;
     }
     function adFormHtml() {
       const I = S.adInfo, F = S.adForm, vid = adIsVid(), vslot = F.placements.includes('preroll') || F.placements.includes('midroll');
-      const perDay = F.placements.reduce((t, k) => t + (I.prices[k] || 0), 0), total = Math.round(perDay * F.days * 100), usd = adUsd(total);
+      const cpmRs = F.placements.length ? (I.prices[F.placements[0]] || 0) : 0, total = Math.round(Number(F.views) / 1000 * cpmRs * 100), usd = adUsd(total);
       const pl = AD_PL.filter((x) => I.prices[x[0]] > 0).map((x) => {
         const needVid = (x[0] === 'preroll' || x[0] === 'midroll'), off = needVid && adFile && !vid;
-        return `<label class="flex items-start gap-3 py-2.5" ${off ? 'style="opacity:.5"' : ''}><input type="checkbox" data-pl="${x[0]}" ${F.placements.includes(x[0]) ? 'checked' : ''} ${off ? 'disabled' : ''} class="mt-1 w-4 h-4"><span class="min-w-0 flex-1"><span class="block text-sm font-medium">${x[1]}</span><span class="block text-[11px] text-studio-muted">${x[2]}${off ? ' (choose a video file)' : ''}</span></span><span class="text-sm font-semibold" style="flex-shrink:0">${inr(Math.round(I.prices[x[0]] * 100))}<span class="text-[11px] font-normal text-studio-muted">/day</span></span></label>`;
+        return `<label class="flex items-start gap-3 py-2.5" ${off ? 'style="opacity:.5"' : ''}><input type="checkbox" data-pl="${x[0]}" ${F.placements.includes(x[0]) ? 'checked' : ''} ${off ? 'disabled' : ''} class="mt-1 w-4 h-4"><span class="min-w-0 flex-1"><span class="block text-sm font-medium">${x[1]}</span><span class="block text-[11px] text-studio-muted">${x[2]}${off ? ' (choose a video file)' : ''}</span></span><span class="text-sm font-semibold" style="flex-shrink:0;text-align:right">${inr(Math.round(I.prices[x[0]] * 100))}<span class="block text-[11px] font-normal text-studio-muted">per 1,000 views</span></span></label>`;
       }).join('');
       return `<div class="${CARD} p-5 space-y-4"><h3 class="text-sm font-semibold">New campaign</h3>
         <div><label class="text-xs text-studio-muted">Campaign name</label><input data-f="name" value="${esc(F.name)}" maxlength="80" class="${SDQ_IN} mt-1" placeholder="e.g. My new naat"></div>
         <div><label class="text-xs text-studio-muted">Your image or video</label>
-          ${adFile ? `<div class="mt-1 rounded-xl bg-gray-50 dark:bg-studio-hover p-3"><div class="rounded-lg overflow-hidden mb-2 flex items-center justify-center" style="background:#000;max-height:192px">${vid ? `<video src="${esc(adPreview)}" muted playsinline controls class="w-full" style="max-height:192px"></video>` : `<img src="${esc(adPreview)}" alt="" style="max-height:192px;object-fit:contain">`}</div><p class="text-xs break-all">${esc(adFile.name)} \u00B7 ${adMb(adFile.size)}</p><button type="button" data-ad="clearfile" class="text-xs font-semibold text-noor-400 mt-1">Choose a different file</button></div>`
+          ${adSizeGuide()}
+          ${adFile ? `<div class="mt-1 rounded-xl bg-gray-50 dark:bg-studio-hover p-3"><div class="rounded-lg overflow-hidden mb-2 flex items-center justify-center" style="background:#000;max-height:192px">${vid ? `<video src="${esc(adPreview)}" muted playsinline controls onloadedmetadata="adDimNote(this,true)" class="w-full" style="max-height:192px"></video>` : `<img src="${esc(adPreview)}" alt="" onload="adDimNote(this,false)" style="max-height:192px;object-fit:contain">`}</div><p class="text-xs break-all">${esc(adFile.name)} \u00B7 ${adMb(adFile.size)}</p><p id="adDimNote" class="text-[11px] mt-1" style="display:none"></p><button type="button" data-ad="clearfile" class="text-xs font-semibold text-noor-400 mt-1">Choose a different file</button></div>`
           : `<label class="mt-1 flex flex-col items-center justify-center gap-1 rounded-xl p-6 text-center cursor-pointer" style="border:2px dashed rgba(128,128,128,.4)"><span class="text-sm font-medium">Tap to choose a file</span><span class="text-[11px] text-studio-muted">Image (JPG, PNG, WebP) or short video (MP4, WebM)</span><input id="adFileInput" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" class="hidden"></label>`}</div>
         <div><label class="text-xs text-studio-muted">Link when someone taps the ad (optional)</label><input data-f="clickUrl" value="${esc(F.clickUrl)}" maxlength="500" class="${SDQ_IN} mt-1" placeholder="https://\u2026"></div>
-        <div><p class="text-xs text-studio-muted mb-1">Where should it show?</p><div class="divide-y divide-gray-100 dark:divide-studio-border">${pl || '<p class="text-sm text-studio-muted py-2">No place is available right now.</p>'}</div></div>
+        <div><p class="text-xs text-studio-muted mb-1">Where should it show?</p><p class="text-[11px] text-studio-muted mb-1">Pick banner places (Home, Under videos, Reels) or video places (Video start, Video middle). One campaign uses one kind. You pay only for the views you buy.</p><div class="divide-y divide-gray-100 dark:divide-studio-border">${pl || '<p class="text-sm text-studio-muted py-2">No place is available right now.</p>'}</div></div>
         ${F.placements.includes('midroll') ? `<div><label class="text-xs text-studio-muted">Video middle: play after how many seconds?</label><input data-f="midAfter" type="number" min="5" max="3600" value="${esc(F.midAfter)}" class="${SDQ_IN} mt-1"></div>` : ''}
         ${vslot ? `<label class="flex items-center gap-2 text-sm"><input type="checkbox" data-f="skip" ${F.skip ? 'checked' : ''} class="w-4 h-4"> Let viewers skip my ad after 5 seconds</label>` : ''}
-        <div><label class="text-xs text-studio-muted">How many days?</label><select data-f="days" class="${SDQ_IN} mt-1">${I.durations.map((d) => `<option value="${d}" ${Number(F.days) === d ? 'selected' : ''}>${d} days</option>`).join('')}</select></div>
+        <div><label class="text-xs text-studio-muted">How many views do you want?</label><select data-f="views" class="${SDQ_IN} mt-1">${AD_VIEWS.map((d) => `<option value="${d}" ${Number(F.views) === d ? 'selected' : ''}>${d.toLocaleString()} views</option>`).join('')}</select><p class="text-[11px] text-studio-muted mt-1">One view = your ad was shown once to a person. Your ad stops by itself when all the views are delivered.</p></div>
         <label class="flex items-start gap-2 text-sm"><input type="checkbox" data-f="compress" ${F.compress ? 'checked' : ''} class="mt-1 w-4 h-4"><span><b>Compress to fit (recommended)</b><span class="block text-[11px] text-studio-muted">Makes your file smaller so it loads fast. A video takes about as long as the video to compress.</span></span></label>
-        <div class="rounded-xl bg-gray-50 dark:bg-studio-hover p-4"><p class="text-xs text-studio-muted">Total price</p><p class="text-2xl font-bold">${inr(total)}${usd ? ' <span class="text-sm font-medium text-studio-muted">\u2248 $' + usd.toFixed(2) + '</span>' : ''}</p><p class="text-[11px] text-studio-muted">${F.placements.length ? inr(Math.round(perDay * 100)) + ' per day \u00D7 ' + F.days + ' days' : 'Choose where your ad should show'}</p></div>
+        <div class="rounded-xl bg-gray-50 dark:bg-studio-hover p-4"><p class="text-xs text-studio-muted">Total price</p><p class="text-2xl font-bold">${inr(total)}${usd ? ' <span class="text-sm font-medium text-studio-muted">\u2248 $' + usd.toFixed(2) + '</span>' : ''}</p><p class="text-[11px] text-studio-muted">${F.placements.length ? Number(F.views).toLocaleString() + ' views \u00D7 ' + inr(Math.round(cpmRs * 100)) + ' per 1,000 views' : 'Choose where your ad should show'}</p></div>
         ${S.adBusy ? `<p class="text-sm text-center text-studio-muted">${esc(S.adBusy)}</p>` : ''}
         <div class="flex gap-2"><button type="button" data-ad="create" class="${AD_PRI} flex-1" ${adDis()}>Create campaign</button><button type="button" data-ad="closeform" class="${AD_SEC}" ${adDis()}>Close</button></div></div>`;
     }
@@ -927,11 +947,11 @@ const adCompressVideo=file=>new Promise(resolve=>{
           if (!adIsVid()) S.adForm.placements = S.adForm.placements.filter((k) => k !== 'preroll' && k !== 'midroll');
           renderAds(true); return;
         }
-        if (t.dataset && t.dataset.pl && S.adForm) { const k = t.dataset.pl, a = S.adForm.placements; S.adForm.placements = t.checked ? a.concat(a.includes(k) ? [] : [k]) : a.filter((x) => x !== k); renderAds(true); return; }
+        if (t.dataset && t.dataset.pl && S.adForm) { const k = t.dataset.pl, a = S.adForm.placements; const kv = AD_VIDEO_PL.includes(k), sameKind = a.filter((x) => AD_VIDEO_PL.includes(x) === kv); S.adForm.placements = t.checked ? sameKind.concat(sameKind.includes(k) ? [] : [k]) : a.filter((x) => x !== k); renderAds(true); return; }
         if (!f) return;
         if (f === 'payMethod') { S.adPayMethod = t.value; return; }
         if (!S.adForm) return;
-        if (f === 'days') { S.adForm.days = Number(t.value); renderAds(true); }
+        if (f === 'views') { S.adForm.views = Number(t.value); renderAds(true); }
         else if (f === 'skip' || f === 'compress') S.adForm[f] = t.checked;
       });
       body.addEventListener('click', async (e) => {
@@ -980,7 +1000,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
             S.adBusy = 'Uploading\u2026'; renderAds(true);
             const url = await adUpload(up);
             S.adBusy = 'Saving\u2026'; renderAds(true);
-            const r = await api('/api/me/campaigns', { method: 'POST', body: JSON.stringify({ name, type: vid ? 'video' : 'image', mediaUrl: url, clickUrl: F.clickUrl.trim(), placements: F.placements, days: Number(F.days), midAfter: Number(F.midAfter) || 30, skip: !!F.skip }) });
+            const r = await api('/api/me/campaigns', { method: 'POST', body: JSON.stringify({ name, type: vid ? 'video' : 'image', mediaUrl: url, clickUrl: F.clickUrl.trim(), placements: F.placements, views: Number(F.views), midAfter: Number(F.midAfter) || 30, skip: !!F.skip }) });
             S.adShowForm = false; adFormInit(); S.adPay = r.campaign.id; S.adPayTab = null; S.adPayMethod = null; S.adPayRef = ''; S.adPayName = '';
             S.adBusy = ''; await loadAds(true); showToast('Campaign created', 'Now pay to start it');
           } catch (er) { S.adBusy = ''; showToast(er.message || 'Could not create the campaign'); renderAds(true); }

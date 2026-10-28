@@ -16,6 +16,7 @@ function cors() {
     "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Upload-Secret, X-Upload-Token, X-Upload-Expiry, Authorization, X-Anon-Id, Range",
     "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, ETag",
+    "Access-Control-Max-Age": "7200",
   };
 }
 // Parses a standard "bytes=start-end" Range header against a known total size.
@@ -1275,8 +1276,24 @@ async function ensureCampTables(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, ref TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, media_url TEXT NOT NULL, click_url TEXT, placements TEXT NOT NULL, days INTEGER NOT NULL, mid_after INTEGER, skip INTEGER NOT NULL DEFAULT 0, amount_paise INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'draft', pay_method TEXT, pay_ref TEXT, payer_name TEXT, reject_reason TEXT, ad_id TEXT, created_at INTEGER NOT NULL, submitted_at INTEGER, resolved_at INTEGER, start_at INTEGER, end_at INTEGER)").run();
   await db.prepare("CREATE TABLE IF NOT EXISTS ad_pay_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)").run();
   try { await db.prepare("SELECT owner_hidden FROM ad_campaigns LIMIT 1").first(); } catch (_) { try { await db.prepare("ALTER TABLE ad_campaigns ADD COLUMN owner_hidden INTEGER NOT NULL DEFAULT 0").run(); } catch (_2) {} }
+  try { await db.prepare("SELECT target_impressions, cpm_paise FROM ad_campaigns LIMIT 1").first(); } catch (_) {
+    try { await db.prepare("ALTER TABLE ad_campaigns ADD COLUMN target_impressions INTEGER").run(); } catch (_2) {}
+    try { await db.prepare("ALTER TABLE ad_campaigns ADD COLUMN cpm_paise INTEGER").run(); } catch (_2) {}
+  }
   campReady = true;
 }
+// Impression-based (CPM) campaigns: the ad row keeps the number of views that were bought. 0 / empty = no limit (admin ads, older day-based campaigns).
+let adTargetOk = false;
+async function ensureAdTargetCol(db) {
+  if (adTargetOk) return true;
+  const has = async () => { try { await db.prepare("SELECT target_impressions FROM ads LIMIT 1").first(); return true; } catch (_) { return false; } };
+  if (await has()) { adTargetOk = true; return true; }
+  try { await db.prepare("ALTER TABLE ads ADD COLUMN target_impressions INTEGER").run(); } catch (_) {}
+  adTargetOk = await has();
+  return adTargetOk;
+}
+const CAMP_VIEW_MIN = 1000, CAMP_VIEW_MAX = 1000000;
+const CAMP_BANNER_PL = ["home", "watch", "reels"], CAMP_VIDEO_PL = ["preroll", "midroll"];
 const CAMP_DAYS = [3, 7, 14, 30];
 const CAMP_PRICE_KEYS = ["home", "watch", "reels", "preroll", "midroll"];
 async function getCampSettings(db) {
@@ -1289,7 +1306,12 @@ async function getCampSettings(db) {
   const P = {};
   CAMP_PRICE_KEYS.forEach((k) => { const n = Number(prices[k]); P[k] = isFinite(n) && n > 0 && n <= 1000000 ? Math.round(n * 100) / 100 : 0; });
   const s = (k, n) => String(m[k] || "").trim().slice(0, n || 200), usd = Number(m.usd_rate);
-  const out = { enabled: m.enabled === "1", upiId: s("upi_id", 80), payee: s("payee", 60), razorpayLink: s("razorpay_link", 300), bankHolder: s("bank_holder", 80), bankAccount: s("bank_account", 40), bankIfsc: s("bank_ifsc", 20), bankName: s("bank_name", 80), intlLink: s("intl_link", 300), intlText: s("intl_text", 600), usdRate: isFinite(usd) && usd > 0 ? usd : 0, prices: P };
+  const cpmIn = (k) => { const n = Number(m[k]); return isFinite(n) && n > 0 && n <= 100000 ? Math.round(n * 100) / 100 : 0; };
+  const usdR = isFinite(usd) && usd > 0 ? usd : 0, cpmRaw = { banner: cpmIn("cpm_banner"), video: cpmIn("cpm_video") };
+  const cpm = { banner: cpmRaw.banner || (usdR ? Math.round(1 * usdR * 100) / 100 : 0), video: cpmRaw.video || (usdR ? Math.round(2.5 * usdR * 100) / 100 : 0) };
+  CAMP_BANNER_PL.forEach((k) => { P[k] = cpm.banner; });
+  CAMP_VIDEO_PL.forEach((k) => { P[k] = cpm.video; });
+  const out = { cpm, cpmRaw, minViews: CAMP_VIEW_MIN, maxViews: CAMP_VIEW_MAX, enabled: m.enabled === "1", upiId: s("upi_id", 80), payee: s("payee", 60), razorpayLink: s("razorpay_link", 300), bankHolder: s("bank_holder", 80), bankAccount: s("bank_account", 40), bankIfsc: s("bank_ifsc", 20), bankName: s("bank_name", 80), intlLink: s("intl_link", 300), intlText: s("intl_text", 600), usdRate: isFinite(usd) && usd > 0 ? usd : 0, prices: P };
   out.methods = { upi: !!out.upiId, razorpay: /^https:\/\//i.test(out.razorpayLink), bank: !!(out.bankAccount && out.bankIfsc), intl: !!(out.intlText || /^https:\/\//i.test(out.intlLink)) };
   out.ready = out.enabled && CAMP_PRICE_KEYS.some((k) => P[k] > 0) && Object.values(out.methods).some(Boolean);
   return out;
@@ -1339,9 +1361,11 @@ function campOut(c) {
   const now = Date.now();
   let status = c.status;
   if (status === "live" && c.end_at && now > c.end_at) status = "ended";
+  const target = c.target_impressions || 0;
+  if (target > 0 && status === "ended" && (c.impressions || 0) >= target) status = "completed";
   return { id: c.id, ref: c.ref, name: c.name, type: c.type, mediaUrl: c.media_url, clickUrl: c.click_url || "", placements: String(c.placements || "").split(",").filter(Boolean), days: c.days, midAfter: c.mid_after || 30, skip: !!c.skip, amountPaise: c.amount_paise,
     status, payMethod: c.pay_method || "", payRef: c.pay_ref || "", payerName: c.payer_name || "", rejectReason: c.reject_reason || "", createdAt: c.created_at, submittedAt: c.submitted_at || null, resolvedAt: c.resolved_at || null, startAt: c.start_at || null, endAt: c.end_at || null,
-    impressions: c.impressions || 0, clicks: c.clicks || 0 };
+    impressions: c.impressions || 0, clicks: c.clicks || 0, targetImpressions: target, cpmPaise: c.cpm_paise || 0 };
 }
 const CAMP_SELECT = "SELECT c.*, a.impressions AS impressions, a.clicks AS clicks FROM ad_campaigns c LEFT JOIN ads a ON a.id = c.ad_id ";
 
@@ -2250,15 +2274,19 @@ async function handleRequest(request, env) {
         const places = [...new Set((Array.isArray(b.placements) ? b.placements : []).filter((x) => CAMP_PRICE_KEYS.includes(x) && C.prices[x] > 0))];
         if (!places.length) return err("Choose where your ad should appear", 400);
         if (isVideoSlot(places) && type !== "video") return err("Video start and Video middle need a video file", 400);
-        const days = Math.round(Number(b.days));
-        if (!CAMP_DAYS.includes(days)) return err("Choose how many days", 400);
+        const views = Math.round(Number(b.views) / 1000) * 1000;
+        if (!isFinite(views) || views < CAMP_VIEW_MIN || views > CAMP_VIEW_MAX) return err("Choose how many views you want (" + CAMP_VIEW_MIN.toLocaleString("en-US") + " to " + CAMP_VIEW_MAX.toLocaleString("en-US") + ")", 400);
+        const isBanner = places.every((x) => CAMP_BANNER_PL.includes(x)), isVid = places.every((x) => CAMP_VIDEO_PL.includes(x));
+        if (!isBanner && !isVid) return err("Choose either banner places (Home, Under videos, Reels) or video places (Video start, Video middle), not both in one campaign", 400);
+        const cpmRs = isVid ? C.cpm.video : C.cpm.banner;
+        if (!(cpmRs > 0)) return err("This kind of ad is not offered right now", 400);
         const open = await db.prepare("SELECT COUNT(*) AS n FROM ad_campaigns WHERE owner_id = ? AND status IN ('draft', 'submitted')").bind(u.id).first();
         if ((open && open.n || 0) >= 5) return err("You already have 5 campaigns waiting. Finish or cancel one first.", 400);
-        const perDay = places.reduce((s, k) => s + C.prices[k], 0), amount = Math.round(perDay * days * 100);
+        const cpmPaise = Math.round(cpmRs * 100), amount = Math.round(views / 1000 * cpmPaise);
         if (!(amount > 0)) return err("Could not work out the price", 400);
         const id = uid("camp"), ref = campRef(), midAfter = Math.max(5, Math.min(3600, Math.round(Number(b.midAfter) || 30)));
-        await db.prepare("INSERT INTO ad_campaigns (id, ref, owner_id, name, type, media_url, click_url, placements, days, mid_after, skip, amount_paise, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'draft', ?)")
-          .bind(id, ref, u.id, name, type, media, click || null, places.join(","), days, midAfter, b.skip ? 1 : 0, amount, Date.now()).run();
+        await db.prepare("INSERT INTO ad_campaigns (id, ref, owner_id, name, type, media_url, click_url, placements, days, mid_after, skip, amount_paise, status, created_at, target_impressions, cpm_paise) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'draft', ?, ?, ?)")
+          .bind(id, ref, u.id, name, type, media, click || null, places.join(","), 0, midAfter, b.skip ? 1 : 0, amount, Date.now(), views, cpmPaise).run();
         const row = await db.prepare(CAMP_SELECT + "WHERE c.id = ?").bind(id).first();
         return json({ ok: true, campaign: campOut(row) });
       } catch (_) { return err("Could not create the campaign", 500); }
@@ -2311,7 +2339,8 @@ async function handleRequest(request, env) {
           const now = Date.now();
           if (m3[2] === "confirm") {
             if (c.status !== "submitted" && c.status !== "draft") return err("This campaign was already handled", 409);
-            const places = String(c.placements || "").split(",").filter(Boolean), end = now + c.days * 86400000, adId = uid("ad");
+            const places = String(c.placements || "").split(",").filter(Boolean), tgt = c.target_impressions || 0, end = tgt > 0 ? null : now + c.days * 86400000, adId = uid("ad");
+            if (tgt > 0 && !(await ensureAdTargetCol(db))) return err("The server could not prepare view-based ads yet. Please try again.", 500);
             if (isVideoSlot(places) && c.type !== "video") return err("Video start / middle need a video file", 400);
             if (await ensureAdVideoCols(db)) {
               await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at, mid_after, skip_after) VALUES (?,?,?,?,?,?,1,?,?,?,?,?)")
@@ -2321,9 +2350,10 @@ async function handleRequest(request, env) {
               await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at) VALUES (?,?,?,?,?,?,1,?,?,?)")
                 .bind(adId, "Campaign: " + c.name, c.type, c.media_url, c.click_url || "", places.join(","), now, end, now).run();
             }
+            if (tgt > 0) { try { await db.prepare("UPDATE ads SET target_impressions = ? WHERE id = ?").bind(tgt, adId).run(); } catch (_) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("Could not start the campaign. Please try again.", 500); } }
             const r = await db.prepare("UPDATE ad_campaigns SET status = 'live', ad_id = ?, start_at = ?, end_at = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(adId, now, end, now, c.id).run();
             if (!r.meta || r.meta.changes !== 1) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("This campaign was already handled", 409); }
-            try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live for " + c.days + " days. You can see its views and clicks in Studio > Halal Ads.", true); } catch (_) {}
+            try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live" + (tgt > 0 ? ". It stops by itself after " + tgt.toLocaleString("en-US") + " views." : " for " + c.days + " days.") + " You can see its views and clicks in Studio > Halal Ads.", true); } catch (_) {}
             return json({ ok: true });
           }
           if (m3[2] === "reject") {
@@ -2360,8 +2390,14 @@ async function handleRequest(request, env) {
             if (!isFinite(n) || n < 0 || n > 1000000) return err("A price is not valid. Use a number like 100 (0 means not offered).", 400);
             P[k] = Math.round(n * 100) / 100;
           }
+          const cin = b.cpm && typeof b.cpm === "object" ? b.cpm : {}, CP = {};
+          for (const k of ["banner", "video"]) {
+            const n = cin[k] === "" || cin[k] == null ? 0 : Number(cin[k]);
+            if (!isFinite(n) || n < 0 || n > 100000) return err("A rate is not valid. Use a number like 85 (empty = automatic from the dollar rate).", 400);
+            CP[k] = Math.round(n * 100) / 100;
+          }
           await ensureCampTables(db);
-          const kv = { enabled: b.enabled === true ? "1" : "0", upi_id: upi, payee: str("payee", 60), razorpay_link: rz, bank_holder: str("bankHolder", 80), bank_account: str("bankAccount", 40), bank_ifsc: str("bankIfsc", 20), bank_name: str("bankName", 80), intl_link: il, intl_text: str("intlText", 600), usd_rate: String(usd), prices: JSON.stringify(P) };
+          const kv = { cpm_banner: String(CP.banner || ""), cpm_video: String(CP.video || ""), enabled: b.enabled === true ? "1" : "0", upi_id: upi, payee: str("payee", 60), razorpay_link: rz, bank_holder: str("bankHolder", 80), bank_account: str("bankAccount", 40), bank_ifsc: str("bankIfsc", 20), bank_name: str("bankName", 80), intl_link: il, intl_text: str("intlText", 600), usd_rate: String(usd), prices: JSON.stringify(P) };
           await db.batch(Object.keys(kv).map((k) => db.prepare("INSERT INTO ad_pay_settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(k, kv[k])));
         }
         return json({ ok: true, settings: await getCampSettings(db) });
@@ -2658,7 +2694,8 @@ async function handleRequest(request, env) {
         const now = Date.now(), cfg = await getAppSettings(db), g = salahGuardState(now, cfg);
         if (g.active) return json({ ads: [], guard: { active: true, name: g.name, untilMs: g.untilMs } });
         const vOnly = (placement === "preroll" || placement === "midroll") ? " AND type = 'video'" : "";
-        const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
+        const tgtOk = await ensureAdTargetCol(db), tgtSql = tgtOk ? " AND (COALESCE(target_impressions, 0) <= 0 OR impressions < target_impressions)" : "";
+        const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + tgtSql + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
           .bind(now, now, "%," + placement + ",%").all();
         return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })), vast: await (async () => { if (placement !== "preroll" && placement !== "midroll") return undefined; const v = await getVastCfg(db); return (placement === "preroll" ? v.pre : v.mid) && v.tags.length ? { tags: v.tags, midAfter: v.midAfter, gapSec: v.gapSec, native: v.native } : undefined; })() });
       } catch (_) { return json({ ads: [] }); }
@@ -2673,7 +2710,22 @@ async function handleRequest(request, env) {
       try {
         await ensurePlatformTables(db);
         const col = m[2] === "click" ? "clicks" : "impressions";
-        await db.prepare("UPDATE ads SET " + col + " = " + col + " + 1 WHERE id = ? AND active = 1").bind(m[1]).run();
+        if (col === "impressions" && await ensureAdTargetCol(db)) {
+          // one single statement: count the view and, if that was the last bought view, switch the ad off in the same moment (no extra views can slip in)
+          const rr = await db.prepare("UPDATE ads SET impressions = impressions + 1, active = CASE WHEN COALESCE(target_impressions, 0) > 0 AND impressions + 1 >= target_impressions THEN 0 ELSE active END WHERE id = ? AND active = 1 AND (COALESCE(target_impressions, 0) <= 0 OR impressions < target_impressions)").bind(m[1]).run();
+          if (rr && rr.meta && rr.meta.changes === 1) {
+            const row = await db.prepare("SELECT impressions, target_impressions FROM ads WHERE id = ?").bind(m[1]).first();
+            if (row && row.target_impressions > 0 && row.impressions >= row.target_impressions) {
+              await ensureCampTables(db);
+              const nowT = Date.now(), cr = await db.prepare("UPDATE ad_campaigns SET status = 'ended', end_at = ?, resolved_at = ? WHERE ad_id = ? AND status = 'live'").bind(nowT, nowT, m[1]).run();
+              if (cr && cr.meta && cr.meta.changes === 1) {
+                try { const cc = await db.prepare("SELECT owner_id, name FROM ad_campaigns WHERE ad_id = ?").bind(m[1]).first(); if (cc) await addNotification(db, cc.owner_id, "info", "Your ad campaign is complete", "Your campaign \"" + cc.name + "\" reached all " + Number(row.target_impressions).toLocaleString("en-US") + " views and has stopped. You can see the results in Studio > Halal Ads.", true); } catch (_) {}
+              }
+            }
+          }
+        } else {
+          await db.prepare("UPDATE ads SET " + col + " = " + col + " + 1 WHERE id = ? AND active = 1").bind(m[1]).run();
+        }
       } catch (_) {}
       return json({ ok: true });
     }
