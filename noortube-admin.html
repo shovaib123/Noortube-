@@ -516,7 +516,7 @@ const match=(q,...f)=>!q||f.some(x=>String(x).toLowerCase().includes(q.toLowerCa
 const applyTheme=()=>{const t=S.settings.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;
   document.documentElement.style.setProperty('--accent',S.settings.color);$('#theme-btn').innerHTML=ic(t==='dark'?'sun':'moon');$('#brand-name').textContent=S.settings.appName||'NoorTube'};
 /* ============ navigation ============ */
-const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Nazrana','heart'],['l-sadreq','Nazrana withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],['l-man','Muslim Ad Network','mega'],['l-adsense','Google AdSense (website)','mega'],['l-admob','Google AdMob (Play Store app)','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
+const NAV=[['dashboard','Dashboard','dash'],'People',['l-users','All users','users'],['l-monet','Monetized channels','crown'],'Content',['l-videos','All videos','video'],['l-reels','All reels','reel'],['l-reports','Reports','flag'],['l-feedback','Feedback','send'],'Money',['l-pay','Creator payouts','wallet'],['l-sad','Nazrana','heart'],['l-sadreq','Nazrana withdrawals','wallet'],['l-ads','Halal ads','mega'],['l-camp','Ad campaigns','mega'],['l-campset','Ad payment settings','wallet'],['l-man','Muslim Ad Network','mega'],['l-adsense','Google AdSense (website)','mega'],['l-admob','Google AdMob (Play Store app)','mega'],'System',['l-analytics','Analytics','chart'],['l-notify','Push notifications','bell'],['l-settings','Settings & prayer times','moonstar'],['l-2fa','Two-step login (2FA)','shield'],['l-audit','Audit log','history'],['l-tools','Tools','sliders']];
 const badge=id=>id==='l-pay'?reqBadge():id==='l-reports'?openReports():id==='l-feedback'?newFeedback():id==='l-sad'?sadAwaiting():id==='l-sadreq'?sadReqCount():id==='l-camp'?campAwaiting():0;
 const renderNav=()=>{$('#nav').innerHTML=NAV.map(n=>typeof n==='string'?`<h5>${n}</h5>`:`<a href="#/${n[0]}" class="${route()===n[0]?'on':''}" ${route()===n[0]?'aria-current="page"':''}>${ic(n[2])}<span>${n[1]}</span>${badge(n[0])?`<span class="badge">${badge(n[0])}</span>`:''}</a>`).join('')};
 const TITLES=Object.fromEntries(NAV.filter(n=>typeof n!=='string').map(n=>[n[0],n[1]]));
@@ -863,6 +863,17 @@ const sendNotif=(t,m,aud,at)=>mutate(()=>{S.notifs.unshift({id:nid('n'),title:t,
 /* ============ action registry ============ */
 const byId=(arr,id)=>S[arr].find(x=>x.id===id);
 const ACT={
+ 'l-tf':async el=>{const T=LIVE.tfa||(LIVE.tfa={setup:null,codes:null,busy:false,err:''}),a=el.dataset.a,v=id=>{const x=$(id);return x?String(x.value||'').trim():''};
+   if(a==='done'){T.codes=null;T.err='';render();return}
+   if(a==='cancel'){T.setup=null;T.err='';render();return}
+   const val={code:v('#tf-code'),pw:v('#tf-pw'),off:v('#tf-off')}; /* read the typed values BEFORE the screen is redrawn */
+   T.err='';T.busy=true;render();
+   try{
+     if(a==='setup'){T.setup=await api('/api/admin/2fa/setup',{method:'POST',body:'{}'})}
+     else if(a==='enable'){const r=await api('/api/admin/2fa/enable',{method:'POST',body:JSON.stringify({code:val.code})});T.codes=r.recoveryCodes||[];T.setup=null;load('tfa',true);toast('Two-step login is ON')}
+     else if(a==='disable'){await api('/api/admin/2fa/disable',{method:'POST',body:JSON.stringify({password:val.pw,code:val.off})});T.err='';load('tfa',true);toast('Two-step login is OFF')}
+   }catch(e){T.err=e.message||'Something went wrong'}
+   T.busy=false;render()},
  theme:()=>{const cur=document.documentElement.dataset.theme;S.settings.theme=cur==='dark'?'light':'dark';save();applyTheme()},
  'open-side':()=>{$('#side').classList.add('open');$('#scrim').classList.remove('hide')},
  'close-side':()=>{$('#side').classList.remove('open');$('#scrim').classList.add('hide')},
@@ -938,6 +949,7 @@ const api=async(path,opts={})=>{
 const LIVE={d:{},busy:null,pf:null,drafts:{},cp:null,cpMap:{},pmsg:'',rmsg:'',fol:{},folStarted:false,
   scan:{busy:false,res:null,err:''},demo:{busy:false,res:null,err:'',deleted:false}};
 const SRC={
+  tfa:()=>api('/api/admin/2fa'),
   users:()=>api('/api/admin/users').then(r=>r.users||[]),
   pvideos:()=>api('/api/videos').then(r=>r.videos||[]),
   preels:()=>api('/api/reels').then(r=>r.reels||[]),
@@ -1119,6 +1131,31 @@ V['l-feedback']=()=>liveHead('Feedback','Messages from users. Replies go back to
     :`<div class="card">${empty('No feedback yet.','User feedback will show up here.')}</div>`);
 
 /* ---- Tools ---- */
+V['l-2fa']=()=>pageH('Two-step login (2FA)','Protects your admin account. After the password, a 6-digit code from an authenticator app is also needed, so a stolen password alone is not enough.',`<button type="button" class="btn" data-act="l-refresh">${ic('history','sm')}Refresh</button>`)+
+  gate(['tfa'],S=>{
+    const T=LIVE.tfa||(LIVE.tfa={setup:null,codes:null,busy:false,err:''});
+    const errBox=T.err?`<div class="err" style="margin-top:10px">${esc(T.err)}</div>`:'';
+    if(T.codes){
+      return `<div class="card pad"><h3>Two-step login is ON</h3><p class="sm" style="margin:6px 0 10px"><b>Write these 8 recovery codes in your diary now.</b> They are shown only this one time. If you ever lose your phone, one code lets you in (each code works once).</p>
+      <div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;font-family:monospace;font-size:17px;line-height:1.9">${T.codes.map(c=>esc(c)).join('<br>')}</div>
+      <div class="row wrap" style="margin-top:12px">${cpBtn('tfrec','Copy all codes',T.codes.join('\n'))}<button type="button" class="btn pri" data-act="l-tf" data-a="done">I have saved them</button></div></div>`;
+    }
+    if(S.enabled){
+      return `<div class="card pad"><div class="row between wrap"><h3>Status: ON ✓</h3><span class="sm muted">Recovery codes left: <b>${S.recoveryLeft}</b></span></div>
+      <p class="sm muted" style="margin:6px 0 12px">Your admin login asks for a code from your authenticator app. To turn it off, type your password and a current code (or a recovery code).</p>
+      <div class="grid g2"><label class="sm muted">Your password<input class="inp" id="tf-pw" type="password" autocomplete="current-password"></label><label class="sm muted">6-digit code or recovery code<input class="inp" id="tf-off" type="text" inputmode="text" autocomplete="one-time-code"></label></div>
+      ${errBox}<div style="margin-top:12px"><button type="button" class="btn danger" data-act="l-tf" data-a="disable" ${T.busy?'disabled':''}>${T.busy?'Please wait…':'Turn OFF two-step login'}</button></div></div>`;
+    }
+    if(T.setup){
+      return `<div class="card pad"><h3>Set up your authenticator app</h3>
+      <ol class="sm" style="margin:8px 0 12px 18px;line-height:1.7"><li>Install <b>Google Authenticator</b> (or any authenticator app) on your phone.</li><li>Tap <b>+</b> then <b>Enter a setup key</b>. Account name: <b>NoorTube Admin</b>. Type: <b>Time based</b>.</li><li>Paste the key below, or on your phone just tap the link “Open in authenticator app”.</li><li>Type the 6-digit code the app shows and press <b>Turn ON</b>.</li></ol>
+      <div class="card pad-sm row between" style="background:var(--surface-2);box-shadow:none"><div style="min-width:0"><div class="sm muted">Setup key</div><div class="b" style="word-break:break-all;font-family:monospace;font-size:16px">${esc(T.setup.secret)}</div></div>${cpBtn('tfsecret','Copy',T.setup.secret)}</div>
+      <div style="margin-top:8px"><a class="sm" href="${esc(T.setup.otpauth)}">Open in authenticator app (phone)</a></div>
+      <div style="margin-top:12px"><label class="sm muted">6-digit code from the app<input class="inp" id="tf-code" type="text" inputmode="numeric" maxlength="7" autocomplete="one-time-code" placeholder="123456"></label></div>
+      ${errBox}<div class="row wrap" style="margin-top:12px"><button type="button" class="btn pri" data-act="l-tf" data-a="enable" ${T.busy?'disabled':''}>${T.busy?'Please wait…':'Turn ON'}</button><button type="button" class="btn" data-act="l-tf" data-a="cancel">Cancel</button></div></div>`;
+    }
+    return `<div class="card pad"><h3>Status: OFF</h3><p class="sm muted" style="margin:6px 0 12px">Right now the admin login needs only email and password. Turn this on so that a stolen password is not enough. You will get 8 recovery codes. <b>Write them in your diary</b>.</p>${errBox}<button type="button" class="btn pri" data-act="l-tf" data-a="setup" ${T.busy?'disabled':''}>${T.busy?'Please wait…':'Set up two-step login'}</button></div>`;
+  });
 V['l-tools']=()=>{const sc=LIVE.scan,r=sc.res,dl=r&&r.duplicates||[],dm=LIVE.demo,dr=dm.res;
   const row=(k,l,v)=>`<div class="card pad-sm row between" style="background:var(--surface-2);box-shadow:none;margin-bottom:8px"><div style="min-width:0"><div class="sm muted">${l}</div><div class="b" style="word-break:break-all">${esc(v)}</div></div>${cpBtn(k,'Copy',v)}</div>`;
   const au=(LIVE.d.autoscan&&LIVE.d.autoscan.st==='ok'&&LIVE.d.autoscan.data)||null;

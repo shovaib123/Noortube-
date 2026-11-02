@@ -1,0 +1,20 @@
+# Put this file, named exactly "_headers", in the SAME folder as index.html (the main site folder), then deploy.
+# It covers the main site, Studio and Admin. All 3 pages are served from the same site.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000
+  Permissions-Policy: geolocation=(), payment=(), usb=()
+  Content-Security-Policy: object-src 'none'; base-uri 'self'; frame-ancestors 'self'
+
+# Admin and Studio: no ads and no third-party scripts here, so a strict policy is possible.
+# Only these hosts are allowed: the site itself, your API worker, Google Fonts and OpenStreetMap (used by Admin for place names).
+/noortube-admin
+/noortube-admin.html
+/noortube-studio
+/noortube-studio.html
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' blob: data: https://noortube-storage.mk7233624.workers.dev https://nominatim.openstreetmap.org; manifest-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'

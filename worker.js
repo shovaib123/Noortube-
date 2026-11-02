@@ -1480,6 +1480,150 @@ async function autoDuplicateScan(env) {
   }
 }
 
+// ---------- SECURITY HEADERS + CORS ALLOW-LIST (applied to every response on its way out) ----------
+// ALLOWED_ORIGINS (optional Cloudflare variable): comma-separated list of the sites that may call this API, for example
+//   https://noortube.pages.dev,https://your-studio.pages.dev,https://your-admin.pages.dev
+// If ALLOWED_ORIGINS is NOT set, CORS stays open ("*") exactly as before, so deploying this file cannot break anything by itself.
+const CORS_ALWAYS_OK = ["https://localhost", "capacitor://localhost", "http://localhost"]; // the Android app's own origins
+function applySecurity(request, env, res) {
+  try {
+    const h = new Headers(res.headers);
+    h.set("X-Content-Type-Options", "nosniff");
+    if (!h.has("Referrer-Policy")) h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    const raw = String((env && env.ALLOWED_ORIGINS) || "").trim();
+    if (raw) {
+      const list = raw.split(",").map((x) => x.trim().replace(/\/+$/, "")).filter(Boolean);
+      const origin = request.headers.get("Origin");
+      if (origin) {
+        const ok = list.includes(origin) || CORS_ALWAYS_OK.includes(origin) || origin === new URL(request.url).origin;
+        if (ok) h.set("Access-Control-Allow-Origin", origin);
+        else for (const k of ["Access-Control-Allow-Origin", "Access-Control-Allow-Methods", "Access-Control-Allow-Headers", "Access-Control-Expose-Headers", "Access-Control-Max-Age"]) h.delete(k);
+        h.append("Vary", "Origin");
+      }
+    }
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+  } catch (_) { return res; }
+}
+
+// ---------- TURNSTILE (free human check). Off until you add the secrets TURNSTILE_SECRET and TURNSTILE_SITE_KEY ----------
+async function turnstileCheck(env, token, ip) {
+  if (!env || !env.TURNSTILE_SECRET) return true; // not set up = switched off
+  if (!token || typeof token !== "string" || token.length > 2048) return false;
+  try {
+    const fd = new FormData();
+    fd.append("secret", String(env.TURNSTILE_SECRET)); fd.append("response", token);
+    if (ip && ip !== "unknown") fd.append("remoteip", ip);
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 4000);
+    const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: fd, signal: ctl.signal });
+    clearTimeout(tm);
+    if (!r.ok) return true; // a problem on Cloudflare's side must never lock people out
+    const d = await r.json();
+    return !!(d && d.success);
+  } catch (_) { return true; }
+}
+function captchaErr() { return json({ error: "Please complete the quick human check and try again.", captcha: true }, 403); }
+async function loginNeedsCaptcha(db, ip, email) { // only after a few wrong passwords; normal logins never see the check
+  try {
+    await ensureLoginTable(db);
+    const r = await db.prepare("SELECT COUNT(*) AS ip_c, COALESCE(SUM(CASE WHEN email = ? THEN 1 ELSE 0 END), 0) AS em_c FROM login_attempts WHERE ip = ? AND ts > ?").bind(email, ip, Date.now() - LOGIN_WINDOW_MS).first();
+    return !!r && (r.em_c >= 3 || r.ip_c >= 10);
+  } catch (_) { return false; }
+}
+
+// ---------- SIGNED AD TOKENS (stops people from posting fake views/clicks straight to the API) ----------
+// /api/ads gives every ad a signed token. A token only works for its own ad, for 3 hours, and at most 3 times.
+// Until you set the variable AD_TOKEN_REQUIRED = 1, calls WITHOUT a token are still counted the old way (so old app versions keep working).
+const AD_TOKEN_LIFE_MS = 3 * 3600 * 1000, AD_TOKEN_MAX_USES = 3;
+let adTokTableReady = false;
+async function ensureAdTokTable(db) {
+  if (adTokTableReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS ad_tok_use (k TEXT PRIMARY KEY, n INTEGER NOT NULL, exp INTEGER NOT NULL)").run();
+  adTokTableReady = true;
+}
+async function mintAdToken(env, adId) {
+  const exp = Date.now() + AD_TOKEN_LIFE_MS, nonce = toB64Url(crypto.getRandomValues(new Uint8Array(9))), body = adId + "|" + exp + "|" + nonce;
+  return body + "|" + (await hmacB64Url(await getAppSecret(env, "adtok"), body)).slice(0, 22);
+}
+async function checkAdToken(env, db, token, adId, kind) { // "ok" = count it, "none" = no token sent, "bad" = do not count
+  try {
+    if (!token || typeof token !== "string" || token.length > 220) return "none";
+    const parts = token.split("|");
+    if (parts.length !== 4) return "bad";
+    const [id, exp, nonce, sig] = parts;
+    if (id !== adId || !(Number(exp) > Date.now())) return "bad";
+    const want = (await hmacB64Url(await getAppSecret(env, "adtok"), id + "|" + exp + "|" + nonce)).slice(0, 22);
+    if (!safeEq(sig, want)) return "bad";
+    await ensureAdTokTable(db);
+    const r = await db.prepare("INSERT INTO ad_tok_use (k, n, exp) VALUES (?, 1, ?) ON CONFLICT(k) DO UPDATE SET n = n + 1 WHERE n < ?").bind(nonce + "|" + kind, Number(exp), AD_TOKEN_MAX_USES).run();
+    if (Math.random() < 0.01) await db.prepare("DELETE FROM ad_tok_use WHERE exp < ?").bind(Date.now()).run();
+    return r && r.meta && r.meta.changes === 1 ? "ok" : "bad";
+  } catch (_) { return "none"; } // if anything fails here, fall back to the old behaviour
+}
+
+// ---------- ADMIN TWO-STEP LOGIN (authenticator-app code). OFF for everybody until an admin turns it on in Admin > Two-step login ----------
+// Emergency switch-off if an admin ever loses both the phone and the recovery codes: in the Cloudflare dashboard open
+// D1 > your database > Console and run:  DELETE FROM admin_2fa;
+let tfaReady = false;
+async function ensureTfaTable(db) {
+  if (tfaReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS admin_2fa (user_id TEXT PRIMARY KEY, secret TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, recovery TEXT NOT NULL DEFAULT '[]', last_step INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)").run();
+  tfaReady = true;
+}
+const B32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function b32enc(bytes) {
+  let bits = 0, val = 0, out = "";
+  for (const b of bytes) { val = (val << 8) | b; bits += 8; while (bits >= 5) { out += B32_ALPHABET[(val >>> (bits - 5)) & 31]; bits -= 5; } }
+  if (bits > 0) out += B32_ALPHABET[(val << (5 - bits)) & 31];
+  return out;
+}
+function b32dec(str) {
+  let bits = 0, val = 0; const out = [];
+  for (const ch of String(str).toUpperCase().replace(/=+$/, "")) {
+    const i = B32_ALPHABET.indexOf(ch); if (i < 0) continue;
+    val = (val << 5) | i; bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return new Uint8Array(out);
+}
+async function totpCode(secretB32, step) { // standard TOTP (RFC 6238): 6 digits, 30 seconds, SHA-1
+  const key = await crypto.subtle.importKey("raw", b32dec(secretB32), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const msg = new Uint8Array(8); let v = step;
+  for (let i = 7; i >= 0; i--) { msg[i] = v & 255; v = Math.floor(v / 256); }
+  const h = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg)), o = h[19] & 15;
+  const bin = ((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(bin % 1000000).padStart(6, "0");
+}
+async function totpCheck(secretB32, code, lastStep) { // returns the accepted 30-second step, or 0. Allows 30 seconds of clock difference. A code works only once.
+  const now = Math.floor(Date.now() / 30000);
+  for (const d of [0, -1, 1]) { const st = now + d; if (st <= lastStep) continue; if (safeEq(await totpCode(secretB32, st), code)) return st; }
+  return 0;
+}
+function newRecoveryCodes() { // 8 codes like abcd-efgh (no look-alike characters)
+  const A = "abcdefghjkmnpqrstuvwxyz23456789", out = [];
+  for (let i = 0; i < 8; i++) { const b = crypto.getRandomValues(new Uint8Array(8)); let c = ""; for (const x of b) c += A[x % A.length]; out.push(c.slice(0, 4) + "-" + c.slice(4)); }
+  return out;
+}
+async function tfaVerifyLogin(db, userId, codeRaw) { // "off" = no 2FA for this user, "need" = code missing, "wrong", "ok"
+  const row = await db.prepare("SELECT * FROM admin_2fa WHERE user_id = ? AND enabled = 1").bind(userId).first();
+  if (!row) return "off";
+  const code = String(codeRaw || "").replace(/\s+/g, "").toLowerCase();
+  if (!code) return "need";
+  if (/^\d{6}$/.test(code)) {
+    const st = await totpCheck(row.secret, code, row.last_step);
+    if (!st) return "wrong";
+    const r = await db.prepare("UPDATE admin_2fa SET last_step = ? WHERE user_id = ? AND last_step < ?").bind(st, userId, st).run();
+    return r && r.meta && r.meta.changes === 1 ? "ok" : "wrong";
+  }
+  if (/^[a-z0-9]{4}-?[a-z0-9]{4}$/.test(code)) {
+    const hash = await sha256Hex(code.replace("-", "")); let list = [];
+    try { list = JSON.parse(row.recovery || "[]"); } catch (_) {}
+    if (!list.includes(hash)) return "wrong";
+    const r = await db.prepare("UPDATE admin_2fa SET recovery = ? WHERE user_id = ? AND recovery = ?").bind(JSON.stringify(list.filter((x) => x !== hash)), userId, row.recovery).run();
+    return r && r.meta && r.meta.changes === 1 ? "ok" : "wrong"; // each recovery code works only once
+  }
+  return "wrong";
+}
+
 const WORKER = {
   async fetch(request, env, ctx) {
     try { _pushEnv = env; _ctx = ctx || null; _origin = new URL(request.url).origin; } catch (_) {}
@@ -1498,7 +1642,7 @@ const WORKER = {
         }
       }
     } catch (_) {}
-    return res;
+    return applySecurity(request, env, res);
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(autoDuplicateScan(env));
@@ -1882,6 +2026,52 @@ async function handleRequest(request, env) {
     if (!db) return err("Database not configured", 500);
 
     // ---------- AUTH ----------
+    if (path.startsWith("/api/admin/2fa")) {
+      const u = await currentUser(request, env);
+      if (!u || u.role !== "admin") return err("Not allowed", 403);
+      await ensureTfaTable(db);
+      const row = await db.prepare("SELECT * FROM admin_2fa WHERE user_id = ?").bind(u.id).first();
+      const ip2 = request.headers.get("CF-Connecting-IP") || "unknown", em2 = String(u.email || "").toLowerCase().slice(0, 254);
+      if (method === "GET" && path === "/api/admin/2fa") {
+        let left = 0; try { left = row && row.enabled ? JSON.parse(row.recovery || "[]").length : 0; } catch (_) {}
+        return json({ enabled: !!(row && row.enabled), recoveryLeft: left });
+      }
+      if (method === "POST" && path === "/api/admin/2fa/setup") {
+        if (row && row.enabled) return err("Two-step login is already on.", 409);
+        const secret = b32enc(crypto.getRandomValues(new Uint8Array(20)));
+        await db.prepare("INSERT INTO admin_2fa (user_id, secret, enabled, recovery, last_step, created_at) VALUES (?, ?, 0, '[]', 0, ?) ON CONFLICT(user_id) DO UPDATE SET secret = excluded.secret, enabled = 0, recovery = '[]', last_step = 0, created_at = excluded.created_at WHERE enabled = 0").bind(u.id, secret, Date.now()).run();
+        const label = encodeURIComponent("NoorTube Admin:" + (u.email || u.id));
+        return json({ secret, otpauth: "otpauth://totp/" + label + "?secret=" + secret + "&issuer=" + encodeURIComponent("NoorTube Admin") + "&algorithm=SHA1&digits=6&period=30" });
+      }
+      if (method === "POST" && path === "/api/admin/2fa/enable") {
+        if (!row) return err("Press 'Set up' first.", 400);
+        if (row.enabled) return err("Two-step login is already on.", 409);
+        const b = await request.json().catch(() => ({}));
+        const code = String((b && b.code) || "").replace(/\s+/g, "");
+        if (!/^\d{6}$/.test(code)) return err("Type the 6-digit code shown in your authenticator app.", 400);
+        const st = await totpCheck(row.secret, code, 0);
+        if (!st) return err("That code is not correct. Check the phone time is automatic, then try the newest code.", 400);
+        const codes = newRecoveryCodes(), hashes = [];
+        for (const c of codes) hashes.push(await sha256Hex(c.replace("-", "")));
+        await db.prepare("UPDATE admin_2fa SET enabled = 1, recovery = ?, last_step = ? WHERE user_id = ? AND enabled = 0").bind(JSON.stringify(hashes), st, u.id).run();
+        return json({ ok: true, recoveryCodes: codes });
+      }
+      if (method === "POST" && path === "/api/admin/2fa/disable") {
+        if (!row || !row.enabled) return err("Two-step login is not on.", 400);
+        if (await loginBlocked(db, ip2, em2)) return err("Too many failed attempts. Please try again in 10 minutes.", 429);
+        const b = await request.json().catch(() => ({}));
+        const urow = await db.prepare("SELECT password_hash, password_salt FROM users WHERE id = ?").bind(u.id).first();
+        const pwOk = !!urow && typeof b.password === "string" && await verifyPassword(b.password, urow.password_hash, urow.password_salt);
+        const cdOk = (await tfaVerifyLogin(db, u.id, b && b.code)) === "ok";
+        if (!pwOk || !cdOk) { await recordLoginFailure(db, ip2, em2); return err("Password or code is not correct.", 400); }
+        await db.prepare("DELETE FROM admin_2fa WHERE user_id = ?").bind(u.id).run();
+        return json({ ok: true });
+      }
+      return err("Not found", 404);
+    }
+    if (method === "GET" && path === "/api/security-config") {
+      return json({ turnstileSiteKey: env.TURNSTILE_SECRET && env.TURNSTILE_SITE_KEY ? String(env.TURNSTILE_SITE_KEY) : "" });
+    }
     if (method === "POST" && path === "/api/register") {
       const body = await request.json().catch(() => ({}));
       const { name, email, password } = body;
@@ -1890,6 +2080,7 @@ async function handleRequest(request, env) {
       if (name.trim().length < 1 || name.length > 60) return err("Name must be 1-60 characters");
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 254) return err("Enter a valid email address");
       if (password.length < 6 || password.length > 200) return err("Password must be at least 6 characters");
+      if (!(await turnstileCheck(env, body.turnstileToken, request.headers.get("CF-Connecting-IP") || "unknown"))) return captchaErr();
       if (await signupBlocked(db, env, request)) return err("Too many accounts were created from this network recently. Please try again later.", 429);
       const existing = await db.prepare("SELECT id FROM users WHERE email = ?").bind(email.toLowerCase()).first();
       if (existing) return err("An account with this email already exists");
@@ -1904,16 +2095,23 @@ async function handleRequest(request, env) {
       return json({ ok: true, token, user: publicUser(user, true) });
     }
     if (method === "POST" && path === "/api/login") {
-      const { email, password } = await request.json().catch(() => ({}));
+      const { email, password, turnstileToken, totp } = await request.json().catch(() => ({}));
       if (!email || !password) return err("email and password are required");
       if (typeof email !== "string" || typeof password !== "string") return err("Invalid input");
       const loginIp = request.headers.get("CF-Connecting-IP") || "unknown";
       const loginEmail = email.toLowerCase().slice(0, 254);
       if (await loginBlocked(db, loginIp, loginEmail)) return err("Too many failed attempts. Please try again in 10 minutes.", 429);
+      if (env.TURNSTILE_SECRET && await loginNeedsCaptcha(db, loginIp, loginEmail) && !(await turnstileCheck(env, turnstileToken, loginIp))) return captchaErr();
       const user = await db.prepare("SELECT * FROM users WHERE email = ?").bind(loginEmail).first();
       if (!user || !(await verifyPassword(password, user.password_hash, user.password_salt))) {
         await recordLoginFailure(db, loginIp, loginEmail);
         return err("Invalid email or password", 401);
+      }
+      if (user.role === "admin") { // two-step login, only for admins who turned it on
+        let tf;
+        try { await ensureTfaTable(db); tf = await tfaVerifyLogin(db, user.id, totp); } catch (_) { return err("The security check is not available right now. Please try again in a minute.", 503); }
+        if (tf === "need") return json({ error: "Enter the 6-digit code from your authenticator app (or a recovery code).", twofa: true }, 401);
+        if (tf === "wrong") { await recordLoginFailure(db, loginIp, loginEmail); return json({ error: "That code is not correct. Try the newest code, or a recovery code.", twofa: true }, 401); }
       }
       const token = crypto.randomUUID();
       await createSession(db, token, user.id);
@@ -1929,6 +2127,7 @@ async function handleRequest(request, env) {
     if (method === "POST" && path === "/api/auth/forgot-password") {
       const b = await request.json().catch(() => ({}));
       const email = String((b && b.email) || "").toLowerCase().trim().slice(0, 254);
+      if (!(await turnstileCheck(env, b && b.turnstileToken, request.headers.get("CF-Connecting-IP") || "unknown"))) return captchaErr();
       const okMsg = { ok: true, message: "If an account exists for that email, a reset code has been sent. Check your inbox." };
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return json(okMsg);
       if (!mailConfigured(env)) return err("Password reset is not set up yet. Contact support at noortube09@gmail.com.", 503);
@@ -2697,11 +2896,15 @@ async function handleRequest(request, env) {
         const tgtOk = await ensureAdTargetCol(db), tgtSql = tgtOk ? " AND (COALESCE(target_impressions, 0) <= 0 OR impressions < target_impressions)" : "";
         const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + tgtSql + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
           .bind(now, now, "%," + placement + ",%").all();
-        return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: (rows.results || []).map((a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 })), vast: await (async () => { if (placement !== "preroll" && placement !== "midroll") return undefined; const v = await getVastCfg(db); return (placement === "preroll" ? v.pre : v.mid) && v.tags.length ? { tags: v.tags, midAfter: v.midAfter, gapSec: v.gapSec, native: v.native } : undefined; })() });
+        return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: await Promise.all((rows.results || []).map(async (a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0, t: await mintAdToken(env, a.id).catch(() => "") }))), vast: await (async () => { if (placement !== "preroll" && placement !== "midroll") return undefined; const v = await getVastCfg(db); return (placement === "preroll" ? v.pre : v.mid) && v.tags.length ? { tags: v.tags, midAfter: v.midAfter, gapSec: v.gapSec, native: v.native } : undefined; })() });
       } catch (_) { return json({ ads: [] }); }
     }
     if (method === "POST" && (m = path.match(/^\/api\/ads\/([^/]+)\/(impression|click)$/))) {
+      let tokState = "none";
+      try { const bj = await request.json().catch(() => ({})); tokState = await checkAdToken(env, db, bj && bj.t, m[1], m[2]); } catch (_) {}
+      if (tokState === "bad" || (tokState === "none" && String(env.AD_TOKEN_REQUIRED || "") === "1")) return json({ ok: true });
       try {
+        if (tokState !== "none") throw 0; // a valid token is already protected; only old-style calls use the 15-second rule below
         const hk = (request.headers.get("CF-Connecting-IP") || "x") + "|" + m[1] + "|" + m[2], tNow = Date.now(), tLast = _adHit.get(hk);
         if (tLast && tNow - tLast < 15000) return json({ ok: true });
         _adHit.set(hk, tNow);
