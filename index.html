@@ -2215,22 +2215,72 @@ async function ntFastCompress(file, opts) {
 }
 
 
+/* ===== Mini player: when you leave a video page while it is playing, it keeps playing in a small window (tap it to go back, X to close) ===== */
+const ntMini={el:null,v:null,id:null,tm:null};
+function ntMiniClose(){
+  const m=ntMini;
+  try{
+    if(m.tm)clearInterval(m.tm);
+    if(m.v){try{m.v.pause();m.v.removeAttribute("src");m.v.load()}catch(e){}}
+    if(m.el&&m.el.parentNode)m.el.parentNode.removeChild(m.el);
+  }catch(e){}
+  m.el=m.v=m.id=m.tm=null;
+}
+function ntMiniOpen(id,src,t,rate){
+  try{
+    ntMiniClose();
+    const el=document.createElement("div");
+    el.setAttribute("data-nt-mini","1");
+    el.style.cssText="position:fixed;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px));width:min(46vw,240px);aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.45);z-index:70;touch-action:manipulation;cursor:pointer";
+    const v=document.createElement("video");
+    v.setAttribute("data-nt-ad","1");
+    v.setAttribute("playsinline","");
+    v.style.cssText="width:100%;height:100%;object-fit:contain;background:#000;display:block";
+    v.src=src;
+    try{v.defaultPlaybackRate=rate||1;v.playbackRate=rate||1}catch(e){}
+    v.addEventListener("loadedmetadata",()=>{try{if(t>0&&t<(v.duration||1e9)-1)v.currentTime=t;v.playbackRate=rate||1}catch(e){}},{once:!0});
+    const bar=document.createElement("div");
+    bar.style.cssText="position:absolute;left:0;bottom:0;height:3px;width:0;background:#f00;pointer-events:none";
+    v.addEventListener("timeupdate",()=>{try{if(v.duration)bar.style.width=Math.min(100,v.currentTime/v.duration*100)+"%"}catch(e){}});
+    v.addEventListener("ended",ntMiniClose);
+    const btn=(txt,pos,label)=>{const b=document.createElement("button");b.type="button";b.setAttribute("aria-label",label);b.textContent=txt;b.style.cssText="position:absolute;top:6px;"+pos+";width:30px;height:30px;border-radius:15px;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:13px;line-height:30px;padding:0;text-align:center;cursor:pointer";return b};
+    const pp=btn("\u275A\u275A","left:6px","Pause");
+    const cl=btn("\u2715","right:6px","Close");
+    const upd=()=>{pp.textContent=v.paused?"\u25B6":"\u275A\u275A";pp.setAttribute("aria-label",v.paused?"Play":"Pause")};
+    v.addEventListener("play",upd);v.addEventListener("pause",upd);
+    pp.addEventListener("click",e=>{e.stopPropagation();if(v.paused){const p=v.play();p&&p.catch&&p.catch(()=>{})}else v.pause()});
+    cl.addEventListener("click",e=>{e.stopPropagation();ntMiniClose()});
+    el.addEventListener("click",()=>{
+      try{const c=v.currentTime;if(c>10&&v.duration&&c<v.duration-15)localStorage.setItem("nt_pos_"+id,JSON.stringify({t:Math.floor(c),ts:Date.now()}))}catch(e){}
+      ntMiniClose();
+      try{history.pushState(null,"","/watch/"+encodeURIComponent(id))}catch(e){location.href="/watch/"+encodeURIComponent(id)}
+    });
+    el.appendChild(v);el.appendChild(bar);el.appendChild(pp);el.appendChild(cl);
+    document.body.appendChild(el);
+    ntMini.el=el;ntMini.v=v;ntMini.id=id;
+    ntMini.tm=setInterval(()=>{if(/^\/(watch|shorts)(\/|$)/.test(location.pathname||""))ntMiniClose()},600);
+    const p=v.play();
+    p&&p.catch&&p.catch(()=>{upd()});
+  }catch(e){ntMiniClose()}
+}
 function NtSpeedBtn(){
   const[open,setOpen]=x.useState(!1);
   const[rate,setRate]=x.useState(()=>{try{const r=parseFloat(localStorage.getItem("nt_speed")||"1");return r>=.25&&r<=3?r:1}catch(e){return 1}});
   const rateRef=x.useRef(rate);rateRef.current=rate;
+  const panelRef=x.useRef(null),chipRef=x.useRef(null);
+  x.useEffect(()=>{if(!open)return;const h=e=>{const t=e.target;if(panelRef.current&&panelRef.current.contains(t))return;if(chipRef.current&&chipRef.current.contains(t))return;setOpen(!1)};document.addEventListener("pointerdown",h,!0);return()=>document.removeEventListener("pointerdown",h,!0)},[open]);
   x.useEffect(()=>{
-    let v=null,dead=!1,t=null;
+    let v=null,dead=!1,t=null,lastT=0,lastTs=0;const wm=(location.pathname||"").match(/^\/watch\/([^/?#]+)/),wid=wm?decodeURIComponent(wm[1]):null;const tu=()=>{if(v&&!v.paused&&!v.ended){lastT=v.currentTime;lastTs=Date.now()}},pa=()=>{if(v&&v.isConnected)lastTs=0};
     const sync=()=>{if(!v)return;const r=Math.round(v.playbackRate*100)/100;if(r>=.25&&r<=3&&r!==rateRef.current){setRate(r);try{localStorage.setItem("nt_speed",String(r))}catch(e){}}};
     const attach=()=>{
       v=ntMainVideo();
       if(!v){if(!dead)t=setTimeout(attach,300);return}
       const r=rateRef.current;try{v.defaultPlaybackRate=r;v.playbackRate=r}catch(e){}
-      v.addEventListener("ratechange",sync);
+      v.addEventListener("ratechange",sync);v.addEventListener("timeupdate",tu);v.addEventListener("pause",pa);
       v.addEventListener("loadedmetadata",()=>{try{v.playbackRate=rateRef.current}catch(e){}});
     };
     attach();
-    return()=>{dead=!0;t&&clearTimeout(t);v&&v.removeEventListener("ratechange",sync)};
+    return()=>{dead=!0;t&&clearTimeout(t);if(v){v.removeEventListener("ratechange",sync);v.removeEventListener("timeupdate",tu);v.removeEventListener("pause",pa);try{if(wid&&lastTs&&Date.now()-lastTs<2500&&!/^\/(watch|shorts)(\/|$)/.test(location.pathname||"")){const src=v.currentSrc||v.src;if(src)ntMiniOpen(wid,src,lastT,rateRef.current)}}catch(e){}}};
   },[]);
   const setSpeed=r=>{
     r=Math.min(3,Math.max(.25,Math.round(r*100)/100));
@@ -2241,8 +2291,8 @@ function NtSpeedBtn(){
   const pill=on=>({flex:"1 1 0",minWidth:0,height:32,borderRadius:16,border:"0",background:on?"#fff":"rgba(255,255,255,.18)",color:on?"#111":"#fff",fontSize:13,fontWeight:700,padding:0});
   const round={width:32,height:32,borderRadius:16,border:"0",background:"rgba(255,255,255,.18)",color:"#fff",fontSize:18,lineHeight:1,flexShrink:0,padding:0};
   return i.jsxs("div",{style:{position:"absolute",top:0,left:0,right:0,bottom:0,pointerEvents:"none"},children:[
-    i.jsx("button",{type:"button","aria-label":"Playback speed",title:"Playback speed",onClick:()=>setOpen(o=>!o),style:chip,children:(Math.round(rate*100)/100)+"x"}),
-    open&&i.jsxs("div",{style:{position:"absolute",left:0,right:0,bottom:0,zIndex:6,pointerEvents:"auto",background:"rgba(24,24,24,.96)",color:"#fff",borderRadius:"14px 14px 0 0",padding:"10px 12px 12px"},children:[
+    i.jsx("button",{ref:chipRef,type:"button","aria-label":"Playback speed",title:"Playback speed",onClick:()=>setOpen(o=>!o),style:chip,children:(Math.round(rate*100)/100)+"x"}),
+    open&&i.jsxs("div",{ref:panelRef,style:{position:"absolute",left:0,right:0,bottom:0,zIndex:6,pointerEvents:"auto",background:"rgba(24,24,24,.96)",color:"#fff",borderRadius:"14px 14px 0 0",padding:"10px 12px 12px"},children:[
       i.jsxs("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8},children:[
         i.jsx("span",{style:{fontSize:13,fontWeight:700},children:"Playback speed"}),
         i.jsx("span",{style:{fontSize:15,fontWeight:700},children:rate.toFixed(2)+"x"}),
