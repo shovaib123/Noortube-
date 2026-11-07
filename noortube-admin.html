@@ -1035,8 +1035,8 @@ V['l-monet']=()=>liveHead('Monetized channels','Channels that have monetization 
 /* ---- Payouts ---- */
 const copyKey=(k,text)=>{LIVE.cpMap[k]=text;return k};
 const cpBtn=(k,label,text)=>`<button type="button" class="btn sm" data-act="l-copy" data-k="${esc(copyKey(k,text))}">${LIVE.cp===k?'Copied ✓':label}</button>`;
-const mLabel=m=>m==='bank'?'Bank account':m==='paypal'?'PayPal':m==='upi'?'UPI':'Mobile wallet';
-const payLines=pi=>pi?['Name: '+pi.accountName,(pi.method==='upi'?'UPI ID: ':pi.method==='paypal'?'PayPal: ':pi.method==='bank'?'Account: ':'Mobile: ')+pi.accountNumber].concat(pi.method==='bank'&&pi.routingCode?['IFSC/Bank: '+pi.routingCode]:[]):[];
+const mLabel=m=>m==='bank'?'Bank account':m==='paypal'?'PayPal':m==='wise'?'Wise':m==='upi'?'UPI':'Mobile wallet';
+const payLines=pi=>pi?['Name: '+pi.accountName,(pi.method==='upi'?'UPI ID: ':pi.method==='paypal'?'PayPal: ':pi.method==='wise'?'Wise: ':pi.method==='bank'?'Account: ':'Mobile: ')+pi.accountNumber].concat(pi.method==='bank'&&pi.routingCode?['IFSC/Bank: '+pi.routingCode]:[]):[];
 const payActions=(pi,inr,name,k)=>{
   if(!pi)return '';
   const acct=String(pi.accountNumber||'').trim(),ifsc=String(pi.routingCode||'').trim().toUpperCase(),holder=pi.accountName||name,note='NoorTube payout',ok=inr>0;
@@ -1044,7 +1044,7 @@ const payActions=(pi,inr,name,k)=>{
   if(pi.method==='bank'){
     const link=ok&&/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)&&/^\d{6,20}$/.test(acct)?'upi://pay?pa='+acct+'@'+ifsc+'.ifsc.npci&pn='+encodeURIComponent(holder)+'&am='+inr.toFixed(2)+'&cu=INR&tn='+encodeURIComponent(note):null;
     return (link?`<a class="btn pri sm" href="${esc(link)}">Pay to A/C (UPI app)</a>`:'')+cpBtn(k+'a','Copy A/C no.',acct)+(ifsc?cpBtn(k+'i','Copy IFSC',ifsc):'')+cpBtn(k+'n','Copy name',holder)}
-  return cpBtn(k+'c',pi.method==='paypal'?'Copy PayPal email':'Copy number',acct)};
+  return cpBtn(k+'c',pi.method==='paypal'?'Copy PayPal email':pi.method==='wise'?'Copy Wise email/tag':'Copy number',acct)};
 const pfOk=(t,lo,hi)=>{const n=parseFloat(t);return !isNaN(n)&&n>=lo&&n<=hi};
 const pfCalc=()=>{const d=LIVE.d.payouts.data,L=d.limits,f=LIVE.pf,S=d.settings,
     o={v:pfOk(f.v,L.vrpm[0],L.vrpm[1]),r:pfOk(f.r,L.rrpm[0],L.rrpm[1]),s:pfOk(f.s,0,100),i:pfOk(f.i,.01,999)};
