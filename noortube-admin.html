@@ -504,6 +504,22 @@ const modal=({title,body,ok='Save',cancel='Cancel',wide=false,danger=false,onOk,
   onOpen&&onOpen(f);
   setTimeout(()=>{const x=$('input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea',f);x&&x.focus()},30)};
 const confirmBox=(msg,fn,ok='Delete')=>modal({title:'Please confirm',body:`<p>${msg}</p>`,ok,danger:true,onOk:()=>{fn()}});
+
+/* ---- Location targeting for ads (country -> state -> district). The lists come from the server (GET /api/geo/options). ---- */
+let GEO=null;
+const geoStateHtml=(c,s)=>{if(!c||!GEO)return'';const list=GEO.states&&GEO.states[c];
+  return list?`<select class="inp" name="gstate"><option value="">All states</option>${list.map(x=>`<option value="${esc(x)}"${x===s?' selected':''}>${esc(x)}</option>`).join('')}</select>`
+    :`<input class="inp" name="gstate" value="${esc(s||'')}" maxlength="60" placeholder="State / region (optional)">`};
+const geoDistrictHtml=d=>`<input class="inp" name="gdistrict" value="${esc(d||'')}" maxlength="60" placeholder="District or city (optional), for example Lucknow">`;
+const geoFields=(c,s,d)=>{if(!GEO||!GEO.countries)return'';
+  return `<div data-geo="1"><span class="b sm">Show it only in (optional)</span>
+   <select class="inp" name="gcountry" style="margin-top:6px"><option value="">Everyone (all countries)</option>${GEO.countries.map(x=>`<option value="${esc(x.code)}"${x.code===c?' selected':''}>${esc(x.name)}</option>`).join('')}</select>
+   <div data-geo-state style="margin-top:6px">${geoStateHtml(c,s)}</div>
+   <div class="sm muted" style="margin-top:6px">Pick a country to show this ad only there, and if you want, one state. The place is found from the viewer's internet connection, so it is a close guess: the country is very reliable and the state is usually right. Leave it on "Everyone" to show the ad everywhere.</div></div>`};
+const geoPickerInit=f=>{const root=f&&f.querySelector&&f.querySelector('[data-geo]');if(!root)return;
+  const sel=root.querySelector('[name=gcountry]'),st=root.querySelector('[data-geo-state]');
+  sel.addEventListener('change',()=>{st.innerHTML=geoStateHtml(sel.value,'')})};
+const geoRead=f=>{const c=(f.get('gcountry')||'').trim(),s=(f.get('gstate')||'').trim();return{targetCountry:c,targetState:c?s:'',targetDistrict:''}};
 const field=(label,inner,hint)=>`<label class="field"><span>${label}</span>${inner}${hint?`<small class="muted">${hint}</small>`:''}</label>`;
 const inp=(name,val='',extra='')=>`<input class="inp" name="${name}" value="${esc(val)}" ${extra}>`;
 const sel=(name,opts,cur,extra='')=>`<select class="inp" name="${name}" ${extra}>${opts.map(o=>{const[v,l]=Array.isArray(o)?o:[o,o];return`<option value="${esc(v)}" ${v===cur?'selected':''}>${esc(l)}</option>`}).join('')}</select>`;
@@ -1449,7 +1465,7 @@ function salahGuardState(nowMs, cfg) {
 }
 
 SRC.settings=()=>api('/api/admin/settings');
-SRC.ads=()=>api('/api/admin/ads');
+SRC.ads=async()=>{if(!GEO){try{GEO=await api('/api/geo/options')}catch(e){}}return api('/api/admin/ads')};
 SRC.notify=()=>api('/api/admin/broadcasts').then(r=>r.broadcasts);
 SRC.audit=()=>api('/api/admin/audit').then(r=>r.entries);
 [7,30,90].forEach(n=>{SRC['an'+n]=()=>api('/api/admin/analytics?days='+n)});
@@ -1474,7 +1490,7 @@ V['l-camp']=()=>{
       const open=c.status==='submitted'||c.status==='draft';
       return `<div class="card pad" style="margin-bottom:12px"><div class="row between wrap" style="align-items:flex-start;gap:10px"><div style="min-width:0"><div class="b">${esc(c.name)}</div><div class="sm muted" style="word-break:break-all">${esc(c.ownerName)} · ${esc(c.ownerEmail)}</div><div class="sm muted">Reference ${esc(c.ref)} · created ${esc(when(c.createdAt))}</div></div><div class="right">${campStatus(c.status)}<div class="b" style="font-size:20px;margin-top:4px">${rp(c.amountPaise)}</div><div class="sm muted">${c.targetImpressions>0?c.targetImpressions.toLocaleString()+' views':c.days+' days'}</div></div></div>
       <div style="margin-top:12px">${media}</div>
-      <div class="row wrap" style="gap:6px;margin-top:10px">${c.placements.map(p=>chip(CAMP_PL[p]||p,'blue')).join('')}${c.type==='video'&&c.placements.includes('midroll')?chip('mid-roll at '+c.midAfter+'s','gray'):''}${c.skip?chip('skippable','gray'):''}</div>
+      <div class="row wrap" style="gap:6px;margin-top:10px">${c.placements.map(p=>chip(CAMP_PL[p]||p,'blue')).join('')}${c.type==='video'&&c.placements.includes('midroll')?chip('mid-roll at '+c.midAfter+'s','gray'):''}${c.skip?chip('skippable','gray'):''}${c.targetLabel?chip('Only in '+c.targetLabel,'gray'):''}</div>
       ${c.clickUrl?`<div class="sm" style="margin-top:8px;word-break:break-all">Link: <a href="${esc(c.clickUrl)}" target="_blank" rel="noopener noreferrer">${esc(c.clickUrl)}</a></div>`:''}
       ${c.payMethod?`<div class="card pad-sm" style="background:var(--surface-2);box-shadow:none;margin-top:10px"><div class="sm muted">Paid by ${esc(CAMP_PAY[c.payMethod]||c.payMethod)}${c.payerName?' · '+esc(c.payerName):''}</div><div class="b" style="word-break:break-all">${esc(c.payRef)}</div><div class="sm muted">Sent ${esc(when(c.submittedAt))}</div></div>`:(c.status==='draft'?'<div class="sm muted" style="margin-top:10px">The creator has not paid yet.</div>':'')}
       ${c.status==='live'||c.status==='ended'||c.status==='completed'?`<div class="sm" style="margin-top:10px">${c.targetImpressions>0?`${esc(when(c.startAt))}${c.status==='live'?'':' → '+esc(when(c.endAt))}`:`${esc(when(c.startAt))} → ${esc(when(c.endAt))}`} · <b>${(c.impressions||0).toLocaleString()}</b> views · <b>${(c.clicks||0).toLocaleString()}</b> clicks</div>${c.targetImpressions>0?`<div style="margin-top:8px"><div class="row between sm"><span><b>${Math.min(c.impressions||0,c.targetImpressions).toLocaleString()}</b> of ${c.targetImpressions.toLocaleString()} views delivered</span><b>${Math.min(100,Math.floor((c.impressions||0)/c.targetImpressions*100))}%</b></div><div style="height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.min(100,(c.impressions||0)/c.targetImpressions*100)}%;background:var(--green,#16a34a)"></div></div><div class="sm muted" style="margin-top:4px">Rate: ${rp(c.cpmPaise)} per 1,000 views${c.status==='completed'?' · finished by itself':''}</div></div>`:''}`:''}
@@ -1633,7 +1649,7 @@ V['l-ads']=()=>pageH('Halal ads','Upload banners or video ads and choose where t
     reelCard+vastCard+tabs('tab',[['all','All',A.ads.length],['home','Home banner',A.ads.filter(a=>a.placements.includes('home')).length],['watch','Under videos',A.ads.filter(a=>a.placements.includes('watch')).length],['reels','Reels',A.ads.filter(a=>a.placements.includes('reels')).length],['preroll','Video start',A.ads.filter(a=>a.placements.includes('preroll')).length],['midroll','Video middle',A.ads.filter(a=>a.placements.includes('midroll')).length],['paused','Paused',A.ads.filter(a=>!a.active).length]])+
     `<div class="card"><div class="tbl-wrap"><table style="min-width:820px"><thead><tr><th>Ad</th><th>Where</th><th>Performance</th><th>Schedule</th><th>Status</th><th class="right">Actions</th></tr></thead><tbody>${list.length?list.map(a=>`<tr>
       <td><div class="row">${a.type==='image'?`<img src="${esc(a.mediaUrl)}" alt="" style="width:64px;height:36px;object-fit:cover;border-radius:8px;flex:none" onerror="this.style.visibility='hidden'">`:`<span class="thumb" style="width:64px;height:36px;border-radius:8px">${ic('play','sm')}</span>`}<div style="min-width:0"><div class="b">${esc(a.name)}</div><div class="sm muted">${a.type==='video'?'Video':'Image'}${a.clickUrl?' · has link':''}</div></div></div></td>
-      <td><div class="row wrap" style="gap:4px">${a.placements.map(p=>chip(PL_NAME[p]||p,'green')).join('')}</div></td>
+      <td><div class="row wrap" style="gap:4px">${a.placements.map(p=>chip(PL_NAME[p]||p,'green')).join('')}</div>${a.targetLabel?`<div class="sm muted" style="margin-top:4px">Only in: ${esc(a.targetLabel)}</div>`:''}</td>
       <td><div>${a.impressions.toLocaleString()} views</div><div class="sm muted">${a.clicks.toLocaleString()} clicks · CTR ${a.impressions?(a.clicks/a.impressions*100).toFixed(2):'0.00'}%</div></td>
       <td class="sm">${esc(dateOnly(a.startsAt))} → ${a.endsAt?esc(dateOnly(a.endsAt)):'no end'}</td><td>${adStatus(a)}</td>
       <td class="right"><div class="row" style="justify-content:flex-end"><button type="button" class="btn sm" data-act="l-ad-toggle" data-id="${esc(a.id)}" ${LIVE.busy===a.id?'disabled':''}>${a.active?'Pause':'Resume'}</button><button type="button" class="btn sm" data-act="l-ad-edit" data-id="${esc(a.id)}">Edit</button><button type="button" class="btn sm danger" data-act="l-ad-del" data-id="${esc(a.id)}" data-name="${esc(a.name)}" ${LIVE.busy===a.id?'disabled':''}>Delete</button></div></td></tr>`).join(''):`<tr><td colspan="6">${empty('No ads here yet','Tap “Upload new ad” to add your first banner.')}</td></tr>`}</tbody></table></div></div>`});
@@ -1769,8 +1785,9 @@ Object.assign(ACT,{
    ${field('Link when tapped (optional)','<input class="inp" name="click" placeholder="https://…" autocapitalize="none">')}
    <div><span class="b sm">Show it on</span><div class="stack" style="margin-top:6px">${plChecks(['home'])}</div></div>
    ${vidAdFields(null)}
+   ${geoFields('','','')}
    <div class="grid g2">${field('Start date (optional)','<input class="inp" type="date" name="start">')}${field('End date (optional)','<input class="inp" type="date" name="end">')}</div></div>`,
-   onOpen:f=>{let dim=null;const box=$('#adDim',f),show=()=>{if(!box||!dim)return;const pl=[...f.querySelectorAll('input[name=pl]:checked')].map(x=>x.value),w=dim.w,h=dim.h,r=h/w,m=[];
+   onOpen:f=>{geoPickerInit(f);let dim=null;const box=$('#adDim',f),show=()=>{if(!box||!dim)return;const pl=[...f.querySelectorAll('input[name=pl]:checked')].map(x=>x.value),w=dim.w,h=dim.h,r=h/w,m=[];
       if((pl.includes('home')||pl.includes('watch'))&&(r<.5625||r>1.25))m.push('For Home / Under videos a shape between wide (16:9) and 4:5 fits best. This one will be cropped or shown with bars.');
       if((pl.includes('home')||pl.includes('watch'))&&w<720)m.push('The file is small and may look blurry. Use at least 1080 pixels wide.');
       if(pl.includes('reels')&&r<1.6)m.push('A Reels ad fills the whole phone screen. A tall 1080\u00D71920 file looks best.');
@@ -1789,16 +1806,18 @@ Object.assign(ACT,{
      (async()=>{LIVE.busy='adnew';render();toast(compress?'Compressing… please wait':'Uploading ad…');
        try{let up=file;if(compress){up=isVid?await adCompressVideo(file):await adCompressImage(file);toast('Uploading ad…')}
          if(up.size>30*1024*1024)throw new Error('Still over 30 MB after compressing. Please use a shorter video.');
-         const url=await adUpload(up);await api('/api/admin/ads',{method:'POST',body:JSON.stringify({name,type:isVid?'video':'image',mediaUrl:url,clickUrl:click,placements:pls,midAfter:+f.get('midAfter')||30,skip:!!f.get('skip'),startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)})});toast('Ad is ready')}
+         const url=await adUpload(up);await api('/api/admin/ads',{method:'POST',body:JSON.stringify(Object.assign({name,type:isVid?'video':'image',mediaUrl:url,clickUrl:click,placements:pls,midAfter:+f.get('midAfter')||30,skip:!!f.get('skip'),startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)},geoRead(f)))});toast('Ad is ready')}
        catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
  'l-ad-edit':el=>{const a=adFiles().find(x=>x.id===el.dataset.id);if(!a)return;
    modal({title:'Edit ad',ok:'Save changes',body:`<div class="stack">${field('Ad name (shown as the title on the banner)',`<input class="inp" name="name" maxlength="80" value="${esc(a.name)}">`)}${field('Link when tapped',`<input class="inp" name="click" value="${esc(a.clickUrl)}" placeholder="https://…" autocapitalize="none">`)}
      <div><span class="b sm">Show it on</span><div class="stack" style="margin-top:6px">${plChecks(a.placements)}</div></div>
      ${a.type==='video'?vidAdFields(a):''}
+     ${geoFields(a.targetCountry,a.targetState,a.targetDistrict)}
      <div class="grid g2">${field('Start date',`<input class="inp" type="date" name="start" value="${a.startsAt?new Date(a.startsAt).toISOString().slice(0,10):''}">`)}${field('End date',`<input class="inp" type="date" name="end" value="${a.endsAt?new Date(a.endsAt).toISOString().slice(0,10):''}">`)}</div></div>`,
+     onOpen:geoPickerInit,
      onOk:f=>{const name=(f.get('name')||'').trim(),click=(f.get('click')||'').trim(),pls=f.getAll('pl');if(!name)return'Give the ad a name.';if(click&&!/^https?:\/\//.test(click))return'The link must start with http:// or https://';if(!pls.length)return'Choose where the ad should appear.';
        if((pls.includes('preroll')||pls.includes('midroll'))&&a.type!=='video')return'Video start and Video middle work only for video ads. This ad is an image.';
-       (async()=>{LIVE.busy=a.id;render();try{await api('/api/admin/ads/'+a.id,{method:'PATCH',body:JSON.stringify(Object.assign({name,clickUrl:click,placements:pls,startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)},a.type==='video'?{midAfter:+f.get('midAfter')||30,skip:!!f.get('skip')}:{}))});toast('Ad updated')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
+       (async()=>{LIVE.busy=a.id;render();try{await api('/api/admin/ads/'+a.id,{method:'PATCH',body:JSON.stringify(Object.assign({name,clickUrl:click,placements:pls,startsAt:dateMs(f.get('start')),endsAt:dateMs(f.get('end'),true)},a.type==='video'?{midAfter:+f.get('midAfter')||30,skip:!!f.get('skip')}:{},GEO?geoRead(f):{}))});toast('Ad updated')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}})()}})},
  'l-ad-toggle':async el=>{const a=adFiles().find(x=>x.id===el.dataset.id);if(!a)return;LIVE.busy=a.id;render();
    try{await api('/api/admin/ads/'+a.id,{method:'PATCH',body:JSON.stringify({active:!a.active})});toast(a.active?'Ad paused':'Ad is live again')}catch(e){lerr(e)}finally{LIVE.busy=null;load('ads',true);render()}},
  'l-ad-del':el=>{const id=el.dataset.id;confirmBox(`Delete the ad <b>${esc(el.dataset.name)}</b>? Its numbers are lost too.`,async()=>{LIVE.busy=id;render();

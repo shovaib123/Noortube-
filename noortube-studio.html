@@ -805,7 +805,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
     const adDis = () => (S.adBusy ? 'disabled style="opacity:.55"' : '');
     const AD_SEC = AD_BTN + ' border border-gray-200 dark:border-studio-border hover:bg-gray-50 dark:hover:bg-studio-hover';
     let adFile = null, adPreview = '';
-    function adFormInit() { S.adForm = { name: '', clickUrl: '', placements: [], views: 10000, skip: true, midAfter: 30, compress: true }; if (adPreview) { try { URL.revokeObjectURL(adPreview); } catch (e) {} } adFile = null; adPreview = ''; }
+    function adFormInit() { S.adForm = { name: '', clickUrl: '', placements: [], views: 10000, skip: true, midAfter: 30, compress: true, country: '', state: '', district: '' }; if (adPreview) { try { URL.revokeObjectURL(adPreview); } catch (e) {} } adFile = null; adPreview = ''; }
     const adIsVid = () => !!(adFile && /^video\//.test(adFile.type));
     const adUsd = (paise) => (S.adInfo && S.adInfo.usdRate > 0) ? (Math.ceil(paise / 100 / S.adInfo.usdRate * 100) / 100) : 0;
     const AD_VIEWS = [1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000], AD_VIDEO_PL = ['preroll', 'midroll'];
@@ -841,7 +841,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
       return { any: 'upi://pay?' + q, apps: inApp ? [] : android ? [['Google Pay', intent('com.google.android.apps.nbu.paisa.user')], ['PhonePe', intent('com.phonepe.app')], ['Paytm', intent('net.one97.paytm')]] : ios ? [['Google Pay', 'gpay://upi/pay?' + q], ['PhonePe', 'phonepe://pay?' + q], ['Paytm', 'paytmmp://pay?' + q]] : [] };
     }
     async function loadAds(force) {
-      try { const r = await Promise.all([api('/api/campaigns/info'), api('/api/me/campaigns')]); S.adInfo = r[0]; S.adList = r[1].campaigns || []; S.adErr = null; }
+      try { const r = await Promise.all([api('/api/campaigns/info'), api('/api/me/campaigns'), S.geo ? Promise.resolve(S.geo) : api('/api/geo/options').catch(() => null)]); S.adInfo = r[0]; S.adList = r[1].campaigns || []; S.geo = r[2] || S.geo || null; S.adErr = null; }
       catch (er) { S.adErr = er.message || 'Could not load ad campaigns'; }
       renderAds(force);
     }
@@ -895,7 +895,17 @@ const adCompressVideo=file=>new Promise(resolve=>{
       if (c.status === 'ended' || c.status === 'completed' || c.status === 'rejected' || c.status === 'cancelled') detail += `<div class="mt-3"><button type="button" data-ad="delete" data-id="${esc(c.id)}" class="${AD_SEC} w-full" style="color:#e11d48">Delete</button></div>`;
       return `<div class="${CARD} p-4"><div class="flex gap-3"><div class="rounded-lg bg-gray-100 dark:bg-studio-hover" style="width:96px;height:72px;flex-shrink:0;overflow:hidden">${media}</div>
         <div class="min-w-0 flex-1"><div class="flex items-start justify-between gap-2"><p class="font-semibold text-sm truncate">${esc(c.name)}</p><span class="px-2 py-0.5 rounded-full text-[11px] font-semibold" style="flex-shrink:0;${st[1]}">${st[0]}</span></div>
-          <p class="text-xs text-studio-muted mt-0.5">${c.targetImpressions > 0 ? c.targetImpressions.toLocaleString() + ' views' : c.days + ' days'} \u00B7 ${inr(c.amountPaise)}</p><div class="flex flex-wrap gap-1 mt-1.5">${places}</div></div></div>${detail}${S.adPay === c.id && c.status === 'draft' ? adPayPanel(c) : ''}</div>`;
+          <p class="text-xs text-studio-muted mt-0.5">${c.targetImpressions > 0 ? c.targetImpressions.toLocaleString() + ' views' : c.days + ' days'} \u00B7 ${inr(c.amountPaise)}</p><div class="flex flex-wrap gap-1 mt-1.5">${places}</div>${c.targetLabel ? `<p class="text-[11px] text-studio-muted mt-1">Shown only in: ${esc(c.targetLabel)}</p>` : ''}</div></div>${detail}${S.adPay === c.id && c.status === 'draft' ? adPayPanel(c) : ''}</div>`;
+    }
+    function adGeoHtml(F) {
+      const G = S.geo; if (!G || !G.countries) return '';
+      const cs = G.countries.map((c) => `<option value="${esc(c.code)}" ${F.country === c.code ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+      const list = F.country && G.states && G.states[F.country];
+      let st = '';
+      if (F.country) st = list
+        ? `<select data-f="state" class="${SDQ_IN} mt-2"><option value="">All states</option>${list.map((s) => `<option value="${esc(s)}" ${F.state === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`
+        : `<input data-f="state" value="${esc(F.state)}" maxlength="60" class="${SDQ_IN} mt-2" placeholder="State / region (optional)">`;
+      return `<div><label class="text-xs text-studio-muted">Who should see your ad?</label><select data-f="country" class="${SDQ_IN} mt-1"><option value="">Everyone (all countries)</option>${cs}</select>${st}<p class="text-[11px] text-studio-muted mt-1">Choose a country to show your ad only to people there. You can also choose one state. The place is found from the viewer's internet connection, so it is a close guess: the country is very reliable and the state is usually right. A smaller area means fewer people, so your views may take longer to finish.</p></div>`;
     }
     function adFormHtml() {
       const I = S.adInfo, F = S.adForm, vid = adIsVid(), vslot = F.placements.includes('preroll') || F.placements.includes('midroll');
@@ -915,6 +925,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
         ${F.placements.includes('midroll') ? `<div><label class="text-xs text-studio-muted">Video middle: play after how many seconds?</label><input data-f="midAfter" type="number" min="5" max="3600" value="${esc(F.midAfter)}" class="${SDQ_IN} mt-1"></div>` : ''}
         ${vslot ? `<label class="flex items-center gap-2 text-sm"><input type="checkbox" data-f="skip" ${F.skip ? 'checked' : ''} class="w-4 h-4"> Let viewers skip my ad after 5 seconds</label>` : ''}
         <div><label class="text-xs text-studio-muted">How many views do you want?</label><select data-f="views" class="${SDQ_IN} mt-1">${AD_VIEWS.map((d) => `<option value="${d}" ${Number(F.views) === d ? 'selected' : ''}>${d.toLocaleString()} views</option>`).join('')}</select><p class="text-[11px] text-studio-muted mt-1">One view = your ad was shown once to a person. Your ad stops by itself when all the views are delivered.</p></div>
+        ${adGeoHtml(F)}
         <label class="flex items-start gap-2 text-sm"><input type="checkbox" data-f="compress" ${F.compress ? 'checked' : ''} class="mt-1 w-4 h-4"><span><b>Compress to fit (recommended)</b><span class="block text-[11px] text-studio-muted">Makes your file smaller so it loads fast. A video takes about as long as the video to compress.</span></span></label>
         <div class="rounded-xl bg-gray-50 dark:bg-studio-hover p-4"><p class="text-xs text-studio-muted">Total price</p><p class="text-2xl font-bold">${inr(total)}${usd ? ' <span class="text-sm font-medium text-studio-muted">\u2248 $' + usd.toFixed(2) + '</span>' : ''}</p><p class="text-[11px] text-studio-muted">${F.placements.length ? Number(F.views).toLocaleString() + ' views \u00D7 ' + inr(Math.round(cpmRs * 100)) + ' per 1,000 views' : 'Choose where your ad should show'}</p></div>
         ${S.adBusy ? `<p class="text-sm text-center text-studio-muted">${esc(S.adBusy)}</p>` : ''}
@@ -937,7 +948,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
       body.addEventListener('input', (e) => {
         const t = e.target, f = t.dataset && t.dataset.f; if (!f) return;
         if (f === 'payRef') S.adPayRef = t.value; else if (f === 'payName') S.adPayName = t.value;
-        else if (S.adForm && (f === 'name' || f === 'clickUrl' || f === 'midAfter')) S.adForm[f] = t.value;
+        else if (S.adForm && (f === 'name' || f === 'clickUrl' || f === 'midAfter' || f === 'district' || f === 'state')) S.adForm[f] = t.value;
       });
       body.addEventListener('change', (e) => {
         const t = e.target, f = t.dataset && t.dataset.f;
@@ -953,6 +964,8 @@ const adCompressVideo=file=>new Promise(resolve=>{
         if (!f) return;
         if (f === 'payMethod') { S.adPayMethod = t.value; return; }
         if (!S.adForm) return;
+        if (f === 'country') { S.adForm.country = t.value; S.adForm.state = ''; S.adForm.district = ''; renderAds(true); return; }
+        if (f === 'state') { S.adForm.state = t.value.trim(); S.adForm.district = ''; renderAds(true); return; }
         if (f === 'views') { S.adForm.views = Number(t.value); renderAds(true); }
         else if (f === 'skip' || f === 'compress') S.adForm[f] = t.checked;
       });
@@ -1002,7 +1015,7 @@ const adCompressVideo=file=>new Promise(resolve=>{
             S.adBusy = 'Uploading\u2026'; renderAds(true);
             const url = await adUpload(up);
             S.adBusy = 'Saving\u2026'; renderAds(true);
-            const r = await api('/api/me/campaigns', { method: 'POST', body: JSON.stringify({ name, type: vid ? 'video' : 'image', mediaUrl: url, clickUrl: F.clickUrl.trim(), placements: F.placements, views: Number(F.views), midAfter: Number(F.midAfter) || 30, skip: !!F.skip }) });
+            const r = await api('/api/me/campaigns', { method: 'POST', body: JSON.stringify({ name, type: vid ? 'video' : 'image', mediaUrl: url, clickUrl: F.clickUrl.trim(), placements: F.placements, views: Number(F.views), midAfter: Number(F.midAfter) || 30, skip: !!F.skip, targetCountry: F.country || '', targetState: F.country ? (F.state || '') : '', targetDistrict: '' }) });
             S.adShowForm = false; adFormInit(); S.adPay = r.campaign.id; S.adPayTab = null; S.adPayMethod = null; S.adPayRef = ''; S.adPayName = '';
             S.adBusy = ''; await loadAds(true); showToast('Campaign created', 'Now pay to start it');
           } catch (er) { S.adBusy = ''; showToast(er.message || 'Could not create the campaign'); renderAds(true); }

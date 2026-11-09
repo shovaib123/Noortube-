@@ -40,6 +40,9 @@ function parseRangeHeader(rangeHeader, size) {
   end = Math.min(end, size - 1);
   return { start, end };
 }
+// The Android (Play Store) app adds "NoorTubeApp" to its user agent (see capacitor.config.json). The website and PWA never send it.
+// Used to hide Nazrana and ad-campaign payments inside the Play app only.
+function isPlayApp(request) { return /NoorTubeApp/i.test((request && request.headers && request.headers.get("User-Agent")) || ""); }
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -219,6 +222,7 @@ async function currentUserOrGuest(request, env) {
     "SELECT users.* FROM anon_sessions JOIN users ON users.id = anon_sessions.user_id WHERE anon_sessions.anon_id = ?"
   ).bind(anonId).first();
   if (existing) return existing;
+  if (await guestBlocked(db, env, request)) return null; // too many new guests from one network this hour
   const id = uid("guest");
   const email = `${anonId}@guest.noortube.local`;
   const guestNum = 1000 + (Math.abs(anonId.split("").reduce((a, c) => a * 31 + c.charCodeAt(0), 7)) % 9000);
@@ -228,6 +232,7 @@ async function currentUserOrGuest(request, env) {
     "INSERT INTO users (id, name, email, password_hash, password_salt, role) VALUES (?,?,?,?,?,'guest')"
   ).bind(id, guestName, email, hash, salt).run();
   await db.prepare("INSERT INTO anon_sessions (anon_id, user_id) VALUES (?, ?)").bind(anonId, id).run();
+  await recordGuest(db, env, request);
   return { id, name: guestName, email, avatar_color: "#0d9488", avatar_image: null, role: "guest", suspended: 0, strikes: 0 };
 }
 // ---------- LOGIN RATE LIMIT ----------
@@ -460,7 +465,8 @@ const isVideoSlot = (list) => list.includes("preroll") || list.includes("midroll
 function adOut(a) {
   return { id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", placements: String(a.placements || "").split(",").filter(Boolean), active: !!a.active,
     startsAt: a.starts_at || null, endsAt: a.ends_at || null, impressions: a.impressions || 0, clicks: a.clicks || 0, createdAt: a.created_at,
-    midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0 };
+    midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0,
+    targetCountry: a.target_country || "", targetState: a.target_state || "", targetDistrict: a.target_district || "", targetLabel: geoLabel(a.target_country, a.target_state, a.target_district) };
 }
 
 const _adHit = new Map(); // short-lived memory of recent ad impressions/clicks (anti-spam)
@@ -1292,6 +1298,86 @@ async function ensureAdTargetCol(db) {
   adTargetOk = await has();
   return adTargetOk;
 }
+
+// ================= LOCATION TARGETING FOR ADS (country -> state -> district) =================
+// An ad can be limited to a country, to one state of it, or to one district/city. Empty = everyone.
+// Where a viewer is comes from Cloudflare (request.cf): country + region (state) + city. IP location is approximate:
+// country is very reliable, state is usually right, and the city can be wrong on mobile networks.
+const GEO_COUNTRY_CODES = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split(" ");
+const GEO_COUNTRY_SET = new Set(GEO_COUNTRY_CODES);
+const GEO_STATES = {
+  IN: ["Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chandigarh", "Chhattisgarh", "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jammu and Kashmir", "Jharkhand", "Karnataka", "Kerala", "Ladakh", "Lakshadweep", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Puducherry", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"],
+  PK: ["Azad Jammu and Kashmir", "Balochistan", "Gilgit-Baltistan", "Islamabad Capital Territory", "Khyber Pakhtunkhwa", "Punjab", "Sindh"],
+  BD: ["Barishal", "Chattogram", "Dhaka", "Khulna", "Mymensingh", "Rajshahi", "Rangpur", "Sylhet"],
+};
+const GEO_ALIAS = { orissa: "odisha", uttaranchal: "uttarakhand", pondicherry: "puducherry", "nct of delhi": "delhi", "national capital territory of delhi": "delhi", "north west frontier": "khyber pakhtunkhwa", nwfp: "khyber pakhtunkhwa", "northern areas": "gilgit baltistan", "azad kashmir": "azad jammu and kashmir", islamabad: "islamabad capital territory",
+  bangalore: "bengaluru", bombay: "mumbai", calcutta: "kolkata", madras: "chennai", poona: "pune", baroda: "vadodara", trivandrum: "thiruvananthapuram", cochin: "kochi", allahabad: "prayagraj", gurgaon: "gurugram", mysore: "mysuru", vizag: "visakhapatnam", "new delhi": "delhi", chittagong: "chattogram", dacca: "dhaka", barisal: "barishal" };
+function geoCanon(s) {
+  const n = String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\b(district|city|division|state|province|region|the)\b/g, " ").replace(/\s+/g, " ").trim();
+  return GEO_ALIAS[n] || n;
+}
+function geoLike(want, have) {
+  const a = geoCanon(want), b = geoCanon(have);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a));
+}
+function viewerGeo(request) {
+  const cf = (request && request.cf) || {};
+  let c = String(cf.country || (request && request.headers && request.headers.get("CF-IPCountry")) || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(c) || c === "XX" || c === "T1") c = "";
+  return { country: c, region: String(cf.region || ""), city: String(cf.city || "") };
+}
+// Does this ad row (target_country / target_state / target_district) match where the viewer is? Strict: if the ad is limited and we cannot tell where the viewer is, it is not shown.
+function geoMatch(a, v) {
+  const c = String(a.target_country || "").toUpperCase();
+  if (!c) return true;
+  if (c !== v.country) return false;
+  const st = String(a.target_state || "");
+  if (st && !geoLike(st, v.region)) return false;
+  const di = String(a.target_district || "");
+  if (di && !geoLike(di, v.city)) return false;
+  return true;
+}
+const geoText = (v) => String(v || "").replace(/[\u0000-\u001f<>]/g, "").trim().slice(0, 60);
+function cleanGeo(b) {
+  const country = String((b && b.targetCountry) || "").trim().toUpperCase();
+  let state = geoText(b && b.targetState);
+  const district = geoText(b && b.targetDistrict);
+  if (!country) return (state || district) ? { error: "Choose a country first" } : { country: "", state: "", district: "" };
+  if (!GEO_COUNTRY_SET.has(country)) return { error: "Choose a valid country" };
+  if (!state && district) return { error: "Choose a state before the district" };
+  if (state && GEO_STATES[country]) {
+    const hit = GEO_STATES[country].find((s) => geoCanon(s) === geoCanon(state));
+    if (!hit) return { error: "Choose a state from the list" };
+    state = hit;
+  }
+  return { country, state, district };
+}
+function geoLabel(country, state, district) {
+  if (!country) return "";
+  let name = country;
+  try { name = new Intl.DisplayNames(["en"], { type: "region" }).of(country) || country; } catch (_) {}
+  return [district, state, name].filter(Boolean).join(", ");
+}
+let geoAdsOk = false, geoCampOk = false;
+async function ensureGeoCols(db, table) {
+  const isAds = table === "ads";
+  if (isAds ? geoAdsOk : geoCampOk) return true;
+  const has = async () => { try { await db.prepare("SELECT target_country, target_state, target_district FROM " + table + " LIMIT 1").first(); return true; } catch (_) { return false; } };
+  if (!(await has())) {
+    for (const c of ["target_country", "target_state", "target_district"]) { try { await db.prepare("ALTER TABLE " + table + " ADD COLUMN " + c + " TEXT").run(); } catch (_) {} }
+  }
+  const ok = await has();
+  if (isAds) geoAdsOk = ok; else geoCampOk = ok;
+  return ok;
+}
+function geoOptions() {
+  let dn = null;
+  try { dn = new Intl.DisplayNames(["en"], { type: "region" }); } catch (_) {}
+  const countries = GEO_COUNTRY_CODES.map((code) => { let name = code; try { if (dn) name = dn.of(code) || code; } catch (_) {} return { code, name }; }).sort((a, b) => a.name.localeCompare(b.name));
+  return { countries, states: GEO_STATES };
+}
 const CAMP_VIEW_MIN = 1000, CAMP_VIEW_MAX = 1000000;
 const CAMP_BANNER_PL = ["home", "watch", "reels"], CAMP_VIDEO_PL = ["preroll", "midroll"];
 const CAMP_DAYS = [3, 7, 14, 30];
@@ -1365,7 +1451,8 @@ function campOut(c) {
   if (target > 0 && status === "ended" && (c.impressions || 0) >= target) status = "completed";
   return { id: c.id, ref: c.ref, name: c.name, type: c.type, mediaUrl: c.media_url, clickUrl: c.click_url || "", placements: String(c.placements || "").split(",").filter(Boolean), days: c.days, midAfter: c.mid_after || 30, skip: !!c.skip, amountPaise: c.amount_paise,
     status, payMethod: c.pay_method || "", payRef: c.pay_ref || "", payerName: c.payer_name || "", rejectReason: c.reject_reason || "", createdAt: c.created_at, submittedAt: c.submitted_at || null, resolvedAt: c.resolved_at || null, startAt: c.start_at || null, endAt: c.end_at || null,
-    impressions: c.impressions || 0, clicks: c.clicks || 0, targetImpressions: target, cpmPaise: c.cpm_paise || 0 };
+    impressions: c.impressions || 0, clicks: c.clicks || 0, targetImpressions: target, cpmPaise: c.cpm_paise || 0,
+    targetCountry: c.target_country || "", targetState: c.target_state || "", targetDistrict: c.target_district || "", targetLabel: geoLabel(c.target_country, c.target_state, c.target_district) };
 }
 const CAMP_SELECT = "SELECT c.*, a.impressions AS impressions, a.clicks AS clicks FROM ad_campaigns c LEFT JOIN ads a ON a.id = c.ad_id ";
 
@@ -1721,6 +1808,51 @@ async function recordSignup(db, env, request) {
     await ensureSignupTable(db);
     await db.prepare("INSERT INTO signup_log (ip, ts) VALUES (?, ?)").bind(await ipKey(request, env), Date.now()).run();
     if (Math.random() < 0.02) await db.prepare("DELETE FROM signup_log WHERE ts < ?").bind(Date.now() - 24 * 3600 * 1000).run();
+  } catch (_) {}
+}
+
+// Real watch hours = seconds actually watched on a creator's videos (video_watch_stats) / 3600.
+// The stored users.watch_hours is only a manual/demo value, so the larger of the two is shown. Never throws.
+async function watchHoursFor(db, ownerId, stored) {
+  const base = Number(stored) || 0;
+  try {
+    await ensureRetentionTables(db);
+    const r = await db.prepare("SELECT COALESCE(SUM(s.seconds), 0) AS sec FROM video_watch_stats s JOIN videos v ON v.id = s.video_id WHERE v.owner_id = ?").bind(ownerId).first();
+    return Math.max(base, Math.round(((r && r.sec) || 0) / 36) / 100);
+  } catch (_) { return base; }
+}
+async function withWatchHours(db, users) {
+  try {
+    await ensureRetentionTables(db);
+    const r = await db.prepare("SELECT v.owner_id AS oid, COALESCE(SUM(s.seconds), 0) AS sec FROM video_watch_stats s JOIN videos v ON v.id = s.video_id GROUP BY v.owner_id").all();
+    const m = {};
+    for (const x of (r.results || [])) m[x.oid] = x.sec || 0;
+    return users.map((u) => ({ ...u, watch_hours: Math.max(Number(u.watch_hours) || 0, Math.round((m[u.id] || 0) / 36) / 100) }));
+  } catch (_) { return users; }
+}
+
+// 2b) Guest limit: stops one network from mass-creating guest accounts to fill likes/comments. Fails open.
+const GUEST_MAX_PER_IP_HOUR = 30;
+const REPORT_AUTO_HIDE_AT = 10; // different signed-in users who must report one video/reel before it is hidden automatically
+let guestTableReady = false;
+async function ensureGuestTable(db) {
+  if (guestTableReady) return;
+  await db.prepare("CREATE TABLE IF NOT EXISTS guest_log (ip TEXT NOT NULL, ts INTEGER NOT NULL)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_guest_log ON guest_log (ip, ts)").run();
+  guestTableReady = true;
+}
+async function guestBlocked(db, env, request) {
+  try {
+    await ensureGuestTable(db);
+    const r = await db.prepare("SELECT COUNT(*) AS n FROM guest_log WHERE ip = ? AND ts > ?").bind(await ipKey(request, env), Date.now() - 3600 * 1000).first();
+    return !!r && r.n >= GUEST_MAX_PER_IP_HOUR;
+  } catch (_) { return false; }
+}
+async function recordGuest(db, env, request) {
+  try {
+    await ensureGuestTable(db);
+    await db.prepare("INSERT INTO guest_log (ip, ts) VALUES (?, ?)").bind(await ipKey(request, env), Date.now()).run();
+    if (Math.random() < 0.02) await db.prepare("DELETE FROM guest_log WHERE ts < ?").bind(Date.now() - 24 * 3600 * 1000).run();
   } catch (_) {}
 }
 
@@ -2180,7 +2312,7 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/me") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
-      return json({ user: publicUser(u, true) });
+      return json({ user: publicUser({ ...u, watch_hours: await watchHoursFor(db, u.id, u.watch_hours) }, true) });
     }
     if (method === "DELETE" && path === "/api/me") {
       const u = await currentUser(request, env);
@@ -2238,22 +2370,22 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/me/following") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
-      const rows = await db.prepare("SELECT followee_id, bell FROM follows WHERE follower_id = ?").bind(u.id).all();
+      const rows = await db.prepare("SELECT followee_id, bell FROM follows WHERE follower_id = ? LIMIT 5000").bind(u.id).all();
       return json({ following: rows.results.map(r => ({ userId: r.followee_id, bell: !!r.bell })) });
     }
     if (method === "GET" && path === "/api/me/saved") {
       const u = await currentUser(request, env);
       if (!u) return err("Not signed in", 401);
       const rows = await db.prepare(
-        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color FROM saved_videos JOIN videos ON videos.id = saved_videos.video_id JOIN users ON users.id = videos.owner_id WHERE saved_videos.user_id = ?"
+        "SELECT videos.*, users.name as owner_name, users.avatar_color as owner_avatar_color FROM saved_videos JOIN videos ON videos.id = saved_videos.video_id JOIN users ON users.id = videos.owner_id WHERE saved_videos.user_id = ? LIMIT 2000"
       ).bind(u.id).all();
       return json({ videos: rows.results.map(videoOut) });
     }
     if (method === "GET" && path === "/api/me/votes") {
       const u = (await currentUser(request, env)) || (await lookupGuestIfExists(request, env));
       if (!u) return json({ videoVotes: {}, reelLikes: [] });
-      const vRows = await db.prepare("SELECT video_id, value FROM video_likes WHERE user_id = ?").bind(u.id).all();
-      const rRows = await db.prepare("SELECT reel_id FROM reel_likes WHERE user_id = ?").bind(u.id).all();
+      const vRows = await db.prepare("SELECT video_id, value FROM video_likes WHERE user_id = ? LIMIT 5000").bind(u.id).all();
+      const rRows = await db.prepare("SELECT reel_id FROM reel_likes WHERE user_id = ? LIMIT 5000").bind(u.id).all();
       const videoVotes = {};
       for (const row of vRows.results) videoVotes[row.video_id] = row.value;
       return json({ videoVotes, reelLikes: rRows.results.map(row => row.reel_id) });
@@ -2311,8 +2443,8 @@ async function handleRequest(request, env) {
         await ensurePlatformTables(db);
         const A = await getAdsenseCfg(db), g = salahGuardState(Date.now(), await getAppSettings(db));
         const M = await getAdmobCfg(db), N = await getManCfg(db);
-        let nazOn = true;
-        try { const nz = await db.prepare("SELECT v FROM sadaqah_settings WHERE k = 'enabled'").first(); nazOn = !(nz && nz.v === "0"); } catch (_) {}
+        let nazOn = !isPlayApp(request);
+        try { const nz = await db.prepare("SELECT v FROM sadaqah_settings WHERE k = 'enabled'").first(); nazOn = !(nz && nz.v === "0") && !isPlayApp(request); } catch (_) {}
         return json({ nazrana: { enabled: nazOn }, man: (!N.enabled || g.active) ? { enabled: false } : { enabled: true, app: N.app, home: N.home, watch: N.watch, hh: N.heightHome, hw: N.heightWatch }, adsense: (!A.enabled || g.active) ? { enabled: false } : { enabled: true, client: A.client, slots: A.slots }, admob: (!M.enabled || g.active) ? { enabled: false } : { enabled: true, test: M.test, banner: M.banner, interstitial: M.interstitial, everyVideos: M.everyVideos, everyReels: M.everyReels, minGapSec: M.minGapMin * 60 } });
       } catch (_) { return json({ adsense: { enabled: false }, admob: { enabled: false } }); }
     }
@@ -2419,6 +2551,7 @@ async function handleRequest(request, env) {
     if (method === "GET" && path === "/api/campaigns/info") {
       const u = await currentUser(request, env);
       if (!u) return err("Sign in required", 401);
+      if (isPlayApp(request)) return json({ ok: true, enabled: false, ready: false, prices: {}, durations: CAMP_DAYS, usdRate: 0, methods: {}, pay: {} });
       try {
         const C = await getCampSettings(db);
         return json({ ok: true, enabled: C.enabled, ready: C.ready, prices: C.prices, durations: CAMP_DAYS, usdRate: C.usdRate, methods: C.methods,
@@ -2457,6 +2590,7 @@ async function handleRequest(request, env) {
       if (!u) return err("Sign in required", 401);
       if (u.role === "guest") return err("Please sign in with a real account", 403);
       if (u.suspended) return err("Your account is suspended", 403);
+      if (isPlayApp(request)) return err("Ad campaigns are not available in the app", 403);
       const b = await request.json().catch(() => ({}));
       try {
         await ensurePlatformTables(db);
@@ -2483,9 +2617,16 @@ async function handleRequest(request, env) {
         if ((open && open.n || 0) >= 5) return err("You already have 5 campaigns waiting. Finish or cancel one first.", 400);
         const cpmPaise = Math.round(cpmRs * 100), amount = Math.round(views / 1000 * cpmPaise);
         if (!(amount > 0)) return err("Could not work out the price", 400);
+        const geo = cleanGeo(b);
+        if (geo.error) return err(geo.error, 400);
+        if (geo.country && !(await ensureGeoCols(db, "ad_campaigns"))) return err("Location targeting is not ready yet. Please try again.", 500);
         const id = uid("camp"), ref = campRef(), midAfter = Math.max(5, Math.min(3600, Math.round(Number(b.midAfter) || 30)));
         await db.prepare("INSERT INTO ad_campaigns (id, ref, owner_id, name, type, media_url, click_url, placements, days, mid_after, skip, amount_paise, status, created_at, target_impressions, cpm_paise) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'draft', ?, ?, ?)")
           .bind(id, ref, u.id, name, type, media, click || null, places.join(","), 0, midAfter, b.skip ? 1 : 0, amount, Date.now(), views, cpmPaise).run();
+        if (geo.country) {
+          try { await db.prepare("UPDATE ad_campaigns SET target_country = ?, target_state = ?, target_district = ? WHERE id = ?").bind(geo.country, geo.state || null, geo.district || null, id).run(); }
+          catch (_g) { await db.prepare("DELETE FROM ad_campaigns WHERE id = ?").bind(id).run(); return err("Could not save the location. Please try again.", 500); }
+        }
         const row = await db.prepare(CAMP_SELECT + "WHERE c.id = ?").bind(id).first();
         return json({ ok: true, campaign: campOut(row) });
       } catch (_) { return err("Could not create the campaign", 500); }
@@ -2550,6 +2691,12 @@ async function handleRequest(request, env) {
                 .bind(adId, "Campaign: " + c.name, c.type, c.media_url, c.click_url || "", places.join(","), now, end, now).run();
             }
             if (tgt > 0) { try { await db.prepare("UPDATE ads SET target_impressions = ? WHERE id = ?").bind(tgt, adId).run(); } catch (_) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("Could not start the campaign. Please try again.", 500); } }
+            if (c.target_country) {
+              // the campaign was bought for one place only: if the location cannot be copied to the ad, do not start it for everyone
+              let gok = false;
+              try { gok = await ensureGeoCols(db, "ads") && !!(await db.prepare("UPDATE ads SET target_country = ?, target_state = ?, target_district = ? WHERE id = ?").bind(c.target_country, c.target_state || null, c.target_district || null, adId).run()); } catch (_) { gok = false; }
+              if (!gok) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("Could not set the location for this campaign. Please try again.", 500); }
+            }
             const r = await db.prepare("UPDATE ad_campaigns SET status = 'live', ad_id = ?, start_at = ?, end_at = ?, resolved_at = ? WHERE id = ? AND status IN ('submitted', 'draft')").bind(adId, now, end, now, c.id).run();
             if (!r.meta || r.meta.changes !== 1) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(adId).run(); return err("This campaign was already handled", 409); }
             try { await addNotification(db, c.owner_id, "info", "Your ad campaign is live", "Payment received. Your campaign \"" + c.name + "\" is now live" + (tgt > 0 ? ". It stops by itself after " + tgt.toLocaleString("en-US") + " views." : " for " + c.days + " days.") + " You can see its views and clicks in Studio > Halal Ads.", true); } catch (_) {}
@@ -2677,7 +2824,7 @@ async function handleRequest(request, env) {
           const cutoff = new Date(Date.now() - 62 * 24 * 3600 * 1000).toISOString().slice(0, 10);
           const rv = await db.prepare("SELECT COALESCE(SUM(views), 0) as v FROM reels WHERE owner_id = ? AND uploaded_at >= ?").bind(u.id, cutoff).first();
           // Path A (videos): 1,000 followers + 3,000 watch hours.  Path B (reels): 500 followers + 10 lakh reel views in 62 days.
-          const ok = ((fc?.c || 0) >= 1000 && (u.watch_hours || 0) >= 3000) || ((fc?.c || 0) >= 500 && (rv?.v || 0) >= 1000000);
+          const ok = ((fc?.c || 0) >= 1000 && (await watchHoursFor(db, u.id, u.watch_hours)) >= 3000) || ((fc?.c || 0) >= 500 && (rv?.v || 0) >= 1000000);
           if (!ok) return err("Monetization requirements not met", 403);
           if (!(await isEmailVerified(db, u))) return err("Please verify your email before enabling monetization.", 403);
         }
@@ -2685,7 +2832,7 @@ async function handleRequest(request, env) {
       }
       if (b.payoutInfo !== undefined) {
         const pi = b.payoutInfo;
-        if (!pi || typeof pi !== "object" || !["bank", "paypal", "upi", "mobile"].includes(pi.method)) return err("Invalid payout details");
+        if (!pi || typeof pi !== "object" || !["bank", "paypal", "wise", "upi", "mobile"].includes(pi.method)) return err("Invalid payout details");
         const clean = (v, n) => String(v == null ? "" : v).trim().slice(0, n);
         fields.push("payout_method = ?", "payout_account_name = ?", "payout_account_number = ?", "payout_routing_code = ?");
         vals.push(pi.method, clean(pi.accountName, 100), clean(pi.accountNumber, 100), clean(pi.routingCode, 50));
@@ -2733,6 +2880,20 @@ async function handleRequest(request, env) {
       if (!row) return err("Follow the channel first", 400);
       await db.prepare("UPDATE follows SET bell = ? WHERE follower_id = ? AND followee_id = ?").bind(row.bell ? 0 : 1, u.id, m[1]).run();
       return json({ ok: true, bell: !row.bell });
+    }
+    // Public profile picture of any user (so DPs show on videos, comments and channel pages). 404 when the user has no picture.
+    if (method === "GET" && (m = path.match(/^\/api\/users\/([^/]+)\/avatar$/))) {
+      const noPic = () => new Response("", { status: 404, headers: { "Cache-Control": "public, max-age=300" } });
+      try {
+        const r = await db.prepare("SELECT avatar_image FROM users WHERE id = ?").bind(m[1]).first();
+        const v = r && r.avatar_image;
+        const mm = typeof v === "string" && v.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+\/=]+)$/);
+        if (!mm) return noPic();
+        const bin = atob(mm[2]);
+        const bytes = new Uint8Array(bin.length);
+        for (let q = 0; q < bin.length; q++) bytes[q] = bin.charCodeAt(q);
+        return new Response(bytes, { headers: { "Content-Type": mm[1], "Cache-Control": "public, max-age=300, stale-while-revalidate=3600", "Cross-Origin-Resource-Policy": "cross-origin", "X-Content-Type-Options": "nosniff" } });
+      } catch (_) { return noPic(); }
     }
     if (method === "GET" && (m = path.match(/^\/api\/users\/([^/]+)$/))) {
       const user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(m[1]).first();
@@ -2819,7 +2980,7 @@ async function handleRequest(request, env) {
         await Promise.all([pRt, pDaily, pRet]);
         const cm = await db.prepare("SELECT comments.id AS id, comments.target_type AS type, comments.target_id AS tid, comments.text AS text, comments.created_at AS at, users.name AS name, users.avatar_color AS color FROM comments JOIN users ON users.id = comments.user_id WHERE comments.user_id != ? AND ((comments.target_type = 'video' AND comments.target_id IN (SELECT id FROM videos WHERE owner_id = ?)) OR (comments.target_type = 'reel' AND comments.target_id IN (SELECT id FROM reels WHERE owner_id = ?))) ORDER BY comments.created_at DESC LIMIT 30").bind(u.id, u.id, u.id).all();
         return json({
-          ok: true, now, followers: (fc && fc.c) || 0, watchHours: u.watch_hours || 0, reelViews62d: (rv && rv.v) || 0,
+          ok: true, now, followers: (fc && fc.c) || 0, watchHours: await watchHoursFor(db, u.id, u.watch_hours), reelViews62d: (rv && rv.v) || 0,
           need: { followers: 1000, watchHours: 3000, reelViews: 1000000, reelFollowers: 500 },
           videos: vids.results.map(v => ({ id: v.id, title: v.title, thumbnail: v.thumbnail, fileUrl: v.file_url, views: v.views || 0, likes: v.likes || 0, dislikes: v.dislikes || 0, duration: v.duration, monetized: !!v.monetized, hidden: !!v.hidden, copyrightStatus: v.copyright_status, uploadedAt: v.uploaded_at, comments: v.comments || 0, saves: v.saves || 0 })),
           reels: rls.results.map(r => ({ id: r.id, title: r.title, thumbnail: r.thumbnail, fileUrl: r.file_url, views: r.views || 0, likes: r.likes || 0, hidden: !!r.hidden, uploadedAt: r.uploaded_at, comments: r.comments || 0 })),
@@ -2884,6 +3045,8 @@ async function handleRequest(request, env) {
         return json({ ok: false, times: {}, guard: { active: false }, guardOn: false });
       }
     }
+    // ----- public: country / state lists for the ad location pickers -----
+    if (method === "GET" && path === "/api/geo/options") return json({ ok: true, ...geoOptions() });
     // ----- public: which ad(s) to show in a placement. Nothing is served while the Salah guard is active. -----
     if (method === "GET" && path === "/api/ads") {
       try {
@@ -2894,8 +3057,12 @@ async function handleRequest(request, env) {
         if (g.active) return json({ ads: [], guard: { active: true, name: g.name, untilMs: g.untilMs } });
         const vOnly = (placement === "preroll" || placement === "midroll") ? " AND type = 'video'" : "";
         const tgtOk = await ensureAdTargetCol(db), tgtSql = tgtOk ? " AND (COALESCE(target_impressions, 0) <= 0 OR impressions < target_impressions)" : "";
-        const rows = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + tgtSql + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ? ORDER BY RANDOM() LIMIT 3")
-          .bind(now, now, "%," + placement + ",%").all();
+        // Location targeting: only ads for the viewer's country (or for everyone) are read, then state / district are checked below.
+        const geoOk = await ensureGeoCols(db, "ads"), vg = viewerGeo(request);
+        const geoSql = geoOk ? " AND (COALESCE(target_country, '') = '' OR target_country = ?)" : "";
+        const rows0 = await db.prepare("SELECT * FROM ads WHERE active = 1" + vOnly + tgtSql + " AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (',' || placements || ',') LIKE ?" + geoSql + " ORDER BY RANDOM() LIMIT " + (geoOk ? 30 : 3))
+          .bind(...(geoOk ? [now, now, "%," + placement + ",%", vg.country] : [now, now, "%," + placement + ",%"])).all();
+        const rows = { results: geoOk ? (rows0.results || []).filter((a) => geoMatch(a, vg)).slice(0, 3) : (rows0.results || []) };
         return json({ reelEvery: placement === "reels" ? await getReelAdEvery(db) : undefined, ads: await Promise.all((rows.results || []).map(async (a) => ({ id: a.id, name: a.name, type: a.type, mediaUrl: a.media_url, clickUrl: a.click_url || "", midAfter: a.mid_after || 30, skipAfter: a.skip_after || 0, t: await mintAdToken(env, a.id).catch(() => "") }))), vast: await (async () => { if (placement !== "preroll" && placement !== "midroll") return undefined; const v = await getVastCfg(db); return (placement === "preroll" ? v.pre : v.mid) && v.tags.length ? { tags: v.tags, midAfter: v.midAfter, gapSec: v.gapSec, native: v.native } : undefined; })() });
       } catch (_) { return json({ ads: [] }); }
     }
@@ -2995,6 +3162,9 @@ async function handleRequest(request, env) {
       const starts = b.startsAt ? Number(b.startsAt) : null, ends = b.endsAt ? Number(b.endsAt) : null;
       if (starts && ends && ends < starts) return err("The end date is before the start date", 400);
       if (isVideoSlot(places) && type !== "video") return err("Pre-roll and mid-roll ads must be a video file (MP4)", 400);
+      const geo = cleanGeo(b);
+      if (geo.error) return err(geo.error, 400);
+      if (geo.country && !(await ensureGeoCols(db, "ads"))) return err("Location targeting is not ready yet. Please try again.", 500);
       const id = uid("ad");
       const midAfter = Math.max(5, Math.min(3600, Math.round(Number(b.midAfter) || 30))), skipAfter = b.skip ? 5 : 0;
       if (await ensureAdVideoCols(db)) {
@@ -3004,6 +3174,10 @@ async function handleRequest(request, env) {
         if (isVideoSlot(places)) return err("The server could not prepare video ads yet. Please try again.", 500);
         await db.prepare("INSERT INTO ads (id, name, type, media_url, click_url, placements, active, starts_at, ends_at, created_at) VALUES (?,?,?,?,?,?,1,?,?,?)")
           .bind(id, name, type, media, click, [...new Set(places)].join(","), starts || null, ends || null, Date.now()).run();
+      }
+      if (geo.country) {
+        try { await db.prepare("UPDATE ads SET target_country = ?, target_state = ?, target_district = ? WHERE id = ?").bind(geo.country, geo.state || null, geo.district || null, id).run(); }
+        catch (_g) { await db.prepare("DELETE FROM ads WHERE id = ?").bind(id).run(); return err("Could not save the location. Please try again.", 500); }
       }
       return json({ ok: true, id });
     }
@@ -3029,6 +3203,12 @@ async function handleRequest(request, env) {
           if (b.midAfter !== undefined) { sets.push("mid_after = ?"); vals.push(Math.max(5, Math.min(3600, Math.round(Number(b.midAfter) || 30)))); }
           if (b.skip !== undefined) { sets.push("skip_after = ?"); vals.push(b.skip ? 5 : 0); }
         }
+      }
+      if (b.targetCountry !== undefined || b.targetState !== undefined || b.targetDistrict !== undefined) {
+        const g = cleanGeo({ targetCountry: b.targetCountry !== undefined ? b.targetCountry : ad.target_country, targetState: b.targetState !== undefined ? b.targetState : ad.target_state, targetDistrict: b.targetDistrict !== undefined ? b.targetDistrict : ad.target_district });
+        if (g.error) return err(g.error, 400);
+        if (!(await ensureGeoCols(db, "ads"))) return err("Location targeting is not ready yet. Please try again.", 500);
+        sets.push("target_country = ?", "target_state = ?", "target_district = ?"); vals.push(g.country || null, g.state || null, g.district || null);
       }
       if (!sets.length) return err("Nothing to change", 400);
       await db.prepare("UPDATE ads SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, ad.id).run();
@@ -3171,6 +3351,7 @@ async function handleRequest(request, env) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Please sign in to give nazrana", 401);
       if (u.suspended) return err("This account cannot give nazrana", 403);
+      if (isPlayApp(request)) return err("Nazrana is not available in the app", 403);
       try { await ensureSadaqahTables(db); } catch (_) { return err("Nazrana is temporarily unavailable. Try again later.", 503); }
       const S = await getSadaqahSettings(db);
       if (!S.enabled) return err("Nazrana is switched off right now.", 403);
@@ -3654,7 +3835,7 @@ async function handleRequest(request, env) {
       const u = await currentUser(request, env);
       if (!u || u.role !== "admin") return err("Not allowed", 403);
       const rows = await db.prepare("SELECT * FROM users WHERE role != 'guest' ORDER BY created_at DESC").all();
-      return json({ users: rows.results.map((r) => publicUser(r, true)) });
+      return json({ users: (await withWatchHours(db, rows.results)).map((r) => publicUser(r, true)) });
     }
     if (method === "PATCH" && (m = path.match(/^\/api\/admin\/users\/([^/]+)\/suspend$/))) {
       const u = await currentUser(request, env);
@@ -3785,6 +3966,12 @@ async function handleRequest(request, env) {
       const id = uid("rp");
       await db.prepare("INSERT INTO reports (id, target_type, target_id, reporter_id, reason, status) VALUES (?,?,?,?,?,'open')")
         .bind(id, targetType, targetId, u.id, reason).run();
+      // Auto-hide: when REPORT_AUTO_HIDE_AT different signed-in users have an open report on the same video/reel, hide it (same as admin "Deactivate").
+      // Exactly-equal check so an admin who re-activates it is not overridden again by the next report. Guests are not counted. Never blocks the report itself.
+      try {
+        const rc = await db.prepare("SELECT COUNT(DISTINCT reports.reporter_id) AS n FROM reports JOIN users ON users.id = reports.reporter_id WHERE reports.target_type = ? AND reports.target_id = ? AND reports.status = 'open' AND users.role != 'guest'").bind(targetType, targetId).first();
+        if (rc && rc.n === REPORT_AUTO_HIDE_AT) await db.prepare(`UPDATE ${table} SET hidden = 1 WHERE id = ?`).bind(targetId).run();
+      } catch (_) {}
       return json({ ok: true, id });
     }
     if (method === "POST" && (m = path.match(/^\/api\/comments\/([^/]+)\/vote$/))) {
@@ -3872,6 +4059,9 @@ async function handleRequest(request, env) {
                WHEN reports.target_type = 'comment' THEN (SELECT substr(text, 1, 80) FROM comments WHERE id = reports.target_id)
                WHEN reports.target_type = 'user' THEN (SELECT name FROM users WHERE id = reports.target_id)
                ELSE NULL END as target_title,
+          CASE WHEN reports.target_type = 'video' THEN (SELECT file_url FROM videos WHERE id = reports.target_id)
+               WHEN reports.target_type = 'reel' THEN (SELECT file_url FROM reels WHERE id = reports.target_id)
+               ELSE NULL END as target_file_url,
           CASE WHEN reports.target_type = 'video' THEN (SELECT hidden FROM videos WHERE id = reports.target_id)
                WHEN reports.target_type = 'reel' THEN (SELECT hidden FROM reels WHERE id = reports.target_id)
                ELSE 0 END as target_hidden,
@@ -3888,6 +4078,7 @@ async function handleRequest(request, env) {
           targetType: r.target_type,
           targetId: r.target_id,
           targetTitle: r.target_title || "(deleted)",
+          targetFileUrl: r.target_file_url || "",
           targetHidden: !!r.target_hidden,
           targetRemoved: !!r.target_removed,
           reporterId: r.reporter_id,
@@ -4009,6 +4200,8 @@ async function handleRequest(request, env) {
       const u = await currentUserOrGuest(request, env);
       if (!u) return err("Sign in required", 401);
       const { value } = await request.json().catch(() => ({ value: 1 })); // 1 = like, -1 = dislike
+      if (value !== 1 && value !== -1) return err("Invalid vote");
+      if (!(await db.prepare("SELECT 1 FROM videos WHERE id = ?").bind(m[1]).first())) return err("Video not found", 404);
       const existing = await db.prepare("SELECT value FROM video_likes WHERE user_id = ? AND video_id = ?").bind(u.id, m[1]).first();
       if (existing && existing.value === value) {
         await db.prepare("DELETE FROM video_likes WHERE user_id = ? AND video_id = ?").bind(u.id, m[1]).run();
@@ -4122,7 +4315,7 @@ async function handleRequest(request, env) {
     // ---------- STATUSES ----------
     if (method === "GET" && path === "/api/statuses") {
       const rows = await db.prepare(
-        "SELECT statuses.*, users.name as owner_name, users.avatar_color as owner_avatar_color FROM statuses JOIN users ON users.id = statuses.owner_id WHERE statuses.created_at >= datetime('now', '-1 day') ORDER BY statuses.created_at DESC"
+        "SELECT statuses.*, users.name as owner_name, users.avatar_color as owner_avatar_color FROM statuses JOIN users ON users.id = statuses.owner_id WHERE statuses.created_at >= datetime('now', '-1 day') ORDER BY statuses.created_at DESC LIMIT 300"
       ).all();
       return json({ statuses: rows.results.map(statusOut) });
     }
