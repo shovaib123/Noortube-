@@ -966,7 +966,12 @@ const LIVE={d:{},busy:null,pf:null,drafts:{},cp:null,cpMap:{},pmsg:'',rmsg:'',fo
   scan:{busy:false,res:null,err:''},demo:{busy:false,res:null,err:'',deleted:false}};
 const SRC={
   tfa:()=>api('/api/admin/2fa'),
-  users:()=>api('/api/admin/users').then(r=>r.users||[]),
+  users:async()=>{ /* loads users in pages of 1000 (works with an older server too: it just sends everything at once) */
+    let all=[],before='',guard=0;
+    for(;;){const r=await api('/api/admin/users?limit=1000'+(before?'&before='+encodeURIComponent(before):''));
+      all=all.concat(r.users||[]);
+      if(!r.has_more||!r.next||++guard>500)break;before=r.next}
+    return all},
   pvideos:()=>api('/api/videos').then(r=>r.videos||[]),
   preels:()=>api('/api/reels').then(r=>r.reels||[]),
   pstatus:()=>api('/api/statuses').then(r=>r.statuses||[]),
